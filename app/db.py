@@ -112,9 +112,10 @@ class MemoryStore:
         return max(ts) if ts else None
 
     def open_signals(self, day: date, module: Optional[str] = None, symbol: Optional[str] = None) -> list:
-        return [dict(r) for r in self.rows
-                if r["trade_day"] == day and r["status"] in ("OPEN", "TP1")
-                and (module is None or r["module"] == module) and (symbol is None or r["symbol"] == symbol)]
+        with self.lock:
+            return [dict(r) for r in self.rows
+                    if r["trade_day"] == day and r["status"] in ("OPEN", "TP1")
+                    and (module is None or r["module"] == module) and (symbol is None or r["symbol"] == symbol)]
 
     def update_outcome(self, sid: int, status: str, r_result: Optional[float]):
         with self.lock:
@@ -128,15 +129,16 @@ class MemoryStore:
 
     def stats(self, since: date) -> list:
         agg: dict = {}
-        for r in self.rows:
-            if r["trade_day"] < since:
-                continue
-            a = agg.setdefault(r["module"], {"module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0})
-            a["n"] += 1
-            if r["status"] not in ("OPEN", "TP1", "EXPIRED") and r["r_result"] is not None:
-                a["closed"] += 1
-                a["sum_r"] += r["r_result"]
-                a["wins"] += 1 if r["r_result"] > 0 else 0
+        with self.lock:
+            for r in self.rows:
+                if r["trade_day"] < since:
+                    continue
+                a = agg.setdefault(r["module"], {"module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0})
+                a["n"] += 1
+                if r["status"] not in ("OPEN", "TP1", "EXPIRED") and r["r_result"] is not None:
+                    a["closed"] += 1
+                    a["sum_r"] += r["r_result"]
+                    a["wins"] += 1 if r["r_result"] > 0 else 0
         return list(agg.values())
 
 
@@ -144,7 +146,7 @@ class PostgresStore(MemoryStore):
     kind = "postgres"
 
     def __init__(self, dsn: str):
-        import psycopg2.pool  # imported lazily so tests run without the driver
+        import psycopg2.pool
         self.dsn = dsn
         self.pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn)
 
@@ -227,14 +229,16 @@ class PostgresStore(MemoryStore):
         return row[0] if row else None
 
     def open_signals(self, day: date, module: Optional[str] = None, symbol: Optional[str] = None) -> list:
-        sql = f"SELECT {COLS} FROM signals WHERE trade_day=%s AND status IN ('OPEN','TP1') ORDER BY bar_ts, id"
+        # Append all filters before ORDER BY; SQL clause order is WHERE -> ORDER BY.
+        sql = f"SELECT {COLS} FROM signals WHERE trade_day=%s AND status IN ('OPEN','TP1')"
         params: list = [day]
-        if module:
+        if module is not None:
             sql += " AND module=%s"
             params.append(module)
-        if symbol:
+        if symbol is not None:
             sql += " AND symbol=%s"
             params.append(symbol)
+        sql += " ORDER BY bar_ts, id"
         return [_row_to_dict(r) for r in self._run(sql, params, "all")]
 
     def update_outcome(self, sid: int, status: str, r_result: Optional[float]):
