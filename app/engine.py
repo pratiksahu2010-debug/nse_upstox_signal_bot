@@ -315,7 +315,12 @@ class Engine:
                    "score": sig.score, "trig": sig.trigger,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
                                "telegram_text": message}}
-            sid = self.store.add_signal(row)
+            try:
+                sid = self.store.add_signal(row)
+            except Exception:
+                d["rejects"]["storage_error"] += 1
+                log.exception("could not persist signal %s/%s; alert was not sent", module, sig.symbol)
+                continue
             if sid is None:
                 d["rejects"]["duplicate"] += 1
                 continue
@@ -325,15 +330,22 @@ class Engine:
             try:
                 result = self.notify(message)
                 ok = result is not False
-                self.store.mark_notification(sid, ok, None if ok else "notify returned false")
-                if ok:
-                    sent += 1
-                else:
-                    d["rejects"]["telegram_failed"] += 1
+                delivery_error = None if ok else "notify returned false"
             except Exception as e:
-                self.store.mark_notification(sid, False, str(e))
-                d["rejects"]["telegram_failed"] += 1
+                ok = False
+                delivery_error = str(e)
                 log.exception("Telegram delivery failed for signal id=%s", sid)
+            try:
+                self.store.mark_notification(sid, ok, delivery_error)
+            except Exception:
+                # If Telegram succeeded but this write failed, the outbox may retry
+                # and produce a duplicate; that is safer than silently losing an alert.
+                d["rejects"]["delivery_state_error"] += 1
+                log.exception("could not persist Telegram delivery state for signal id=%s", sid)
+            if ok:
+                sent += 1
+            else:
+                d["rejects"]["telegram_failed"] += 1
         return sent
 
     def _deliver_pending(self, d: dict, now: datetime):
