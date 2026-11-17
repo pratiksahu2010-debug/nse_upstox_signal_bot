@@ -199,3 +199,65 @@ def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypa
     monkeypatch.setattr(db, "PostgresStore", unavailable)
     with pytest.raises(RuntimeError, match="database unavailable"):
         make_store("postgresql://unavailable")
+
+
+def test_tracker_tp1_on_final_bar_closes_eod_with_half_position_mark_to_market():
+    final_bar = _bars([(100, 101.3, 100.4, 101.0)])
+    final_bar.index = pd.DatetimeIndex([pd.Timestamp("2026-11-17 15:10", tz=IST)])
+    status, result = simulate(_row(), final_bar, time(15, 15))
+    assert status == "EOD"
+    assert result == pytest.approx(0.5 * 1.2 + 0.5 * 1.0)
+
+
+def test_tracker_tp1_same_bar_breakeven_is_conservative():
+    bars = _bars([(100, 101.3, 99.9, 100.2)])
+    status, result = simulate(_row(), bars, time(15, 15))
+    assert status == "TP1_BE"
+    assert result == pytest.approx(0.6)
+
+
+def test_memory_store_terminal_outcome_and_expiry_are_restart_safe():
+    store = MemoryStore()
+    row = _row()
+    row.update({"module": "normal", "symbol": "TEST", "trade_day": row["bar_ts"].date(),
+                "entry": 100.0, "sl": 99.0, "tp1": 101.2, "tp2": 102.2,
+                "score": 80, "trig": "test", "details": {}})
+    sid = store.add_signal(row)
+    store.update_outcome(sid, "TP1", 0.6)
+    assert store.open_signals(row["trade_day"])[0]["status"] == "TP1"
+    store.update_outcome(sid, "TP2", 1.7)
+    assert store.open_signals(row["trade_day"]) == []
+    assert store.rows[0]["closed_at"] is not None
+    sid2 = store.add_signal(row | {"symbol": "TEST2"})
+    store.expire_old(row["trade_day"] + timedelta(days=1))
+    assert store.rows[1]["status"] == "EXPIRED"
+    assert store.rows[1]["closed_at"] is not None
+
+
+def test_postgres_run_discards_broken_connection_and_retries_once():
+    import psycopg2
+    from app.db import PostgresStore
+
+    class Cursor:
+        def __init__(self, fail): self.fail = fail
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def execute(self, sql, params):
+            if self.fail: raise psycopg2.OperationalError("connection reset")
+        def fetchone(self): return (42,)
+
+    class Conn:
+        def __init__(self, fail): self.fail, self.closed = fail, 0
+        def cursor(self): return Cursor(self.fail)
+        def commit(self): pass
+        def rollback(self): pass
+
+    class Pool:
+        def __init__(self): self.items, self.closed = [Conn(True), Conn(False)], []
+        def getconn(self): return self.items.pop(0)
+        def putconn(self, conn, close=False): self.closed.append(close)
+
+    store = PostgresStore.__new__(PostgresStore)
+    store.pool = Pool()
+    assert store._run("SELECT 42", fetch="one") == (42,)
+    assert store.pool.closed == [True, False]
