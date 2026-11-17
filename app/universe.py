@@ -151,13 +151,18 @@ def resolve_mcx(rows: Iterable[dict], today: datetime) -> list:
 def load_mcx(today: datetime, rows=None) -> list:
     """Load the MCX segment independently so a transient failure can be retried."""
     source = rows if rows is not None else stream_master("MCX")
-    return resolve_mcx(source, today)
+    resolved = resolve_mcx(source, today)
+    if not resolved:
+        raise RuntimeError("MCX instrument master resolved no active futures")
+    return resolved
 
 
 def build_universe(today: Optional[datetime] = None, nse_rows=None, mcx_rows=None) -> Universe:
     today = today or datetime.now(IST)
     uni = resolve_nse(nse_rows if nse_rows is not None else stream_master("NSE"), today,
                       S.NORMAL_50, S.NORMAL_RESERVE, S.ORB_100, S.ORB_RESERVE, S.INDICES)
+    if not uni.normal and not uni.orb:
+        raise RuntimeError("NSE instrument master resolved no configured symbols")
     try:
         uni.mcx = load_mcx(today, mcx_rows)
     except Exception as e:
