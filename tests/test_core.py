@@ -187,10 +187,13 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     first = eng.cycle("normal", now)
     assert first["signals"] == 0
     assert len(store.pending_notifications()) == 1
+    # Simulate the five-minute retry interval without advancing the market candle.
+    eng.last_outbox_retry_at = now - timedelta(minutes=5)
     second = eng.cycle("normal", now)
     assert len(delivered) == 1
     assert store.pending_notifications() == []
-    assert second["rejects"].get("duplicate", 0) == 1
+    # The signal is suppressed by the active cooldown after the outbox retry.
+    assert second["rejects"].get("cooldown", 0) == 1
 
 
 def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypatch):
