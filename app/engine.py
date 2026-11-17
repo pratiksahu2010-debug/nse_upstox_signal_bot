@@ -16,18 +16,17 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from . import mod_mcx, mod_normal, mod_orb
-from . import symbols as S
-from .common import Ctx, Signal, SymbolInfo, market_bias
-from .config import ENGINE, IST, MCX, NORMAL, OPTION_QUOTE, ORB
+from . import mod_normal
+from .common import Ctx, Signal, SymbolInfo
+from .config import ENGINE, IST, NORMAL, OPTION_QUOTE
 from .indicators import add_indicators, compute_features
 from .telegram import format_signal, send
 from .tracker import simulate
-from .universe import Universe, build_universe, load_mcx, pick_option
+from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
-MODULES = {"normal": (mod_normal, NORMAL), "orb": (mod_orb, ORB), "mcx": (mod_mcx, MCX)}
-NEAR_MISS = {"score", "htf_15m", "market_bias", "no_trigger", "sl_too_wide", "chasing", "extended_vwap"}
+MODULES = {"normal": (mod_normal, NORMAL)}
+NEAR_MISS = {"htf_15m", "adx_min", "di_direction", "rsi_direction", "ema_vwap"}
 OHLCV = ["open", "high", "low", "close", "volume"]
 
 
@@ -58,11 +57,9 @@ class Engine:
         self.builder = universe_builder
         self.uni: Optional[Universe] = None
         self.states: dict = {}                      # (module, symbol) -> SymbolState
-        self.bias, self.bias_at = "neutral", None
         self.diag: dict = {}
         self.closed_days: set = set()               # (segment, date) flagged as holiday
         self.prewarmed: set = set()
-        self.mcx_retry_at: Optional[datetime] = None
         self.last_heartbeat: dict = {}
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
@@ -74,24 +71,6 @@ class Engine:
     def ensure_universe(self, now: datetime):
         today = now.strftime("%Y-%m-%d")
         if self.uni and self.uni.built_on == today:
-            # MCX master failures are isolated during universe construction so NSE
-            # signals can continue. Retry the failed segment on a bounded schedule.
-            if (self.uni.mcx_error and _on("ENABLE_MCX")
-                    and (self.mcx_retry_at is None or now >= self.mcx_retry_at)):
-                self.mcx_retry_at = now + timedelta(minutes=5)
-                try:
-                    mcx = load_mcx(now)
-                    self.uni.mcx = mcx
-                    self.uni.mcx_error = ""
-                    for key in [k for k in self.states if k[0] == "mcx"]:
-                        self.states.pop(key, None)
-                    for info in mcx:
-                        self.states[("mcx", info.symbol)] = SymbolState(info)
-                    log.info("MCX universe recovered: %d symbols", len(mcx))
-                except Exception as e:
-                    self.uni.mcx_error = str(e)[:200]
-                    self.last_error = f"MCX universe retry: {e}"
-                    log.warning("MCX universe retry failed: %s", e)
             return
         if self.uni and now.time() < time(7, 30):
             return
@@ -104,17 +83,15 @@ class Engine:
                 raise
             return
         self.uni = uni
-        # A rebuilt daily universe must never inherit the previous session's index bias.
-        self.bias, self.bias_at = "neutral", None
+        # Rebuild the complete single universe once per trading day.
         self.states = {}
-        for m in ("normal", "orb", "mcx"):
-            for info in uni.by_module(m):
-                self.states[(m, info.symbol)] = SymbolState(info)
+        for info in uni.normal:
+            self.states[("normal", info.symbol)] = SymbolState(info)
         try:
             self.store.expire_old(now.date())
         except Exception as e:
             log.warning("expire_old failed: %s", e)
-        log.info("universe ready: %s", {m: len(uni.by_module(m)) for m in MODULES})
+        log.info("universe ready: stocks=%d indices=%d", sum(not x.is_index for x in uni.normal), sum(x.is_index for x in uni.normal))
 
     def _mod_states(self, module: str) -> list:
         return [st for (m, _), st in self.states.items() if m == module and not st.disabled]
@@ -142,16 +119,6 @@ class Engine:
         st.hist, st.warm_day = h, now.date()
         st.warm_retry_at = None
         st.err = ""
-        if module == "mcx":
-            n_days = len(set(h.index.date)) if len(h) else 0
-            if n_days < 3:
-                st.disabled = "insufficient_history"
-                return
-            active = h[h["volume"] > 0].groupby(h[h["volume"] > 0].index.date).size()
-            med_bars = float(active.median()) if len(active) else 0.0
-            med_vol = float(h.loc[h["volume"] > 0, "volume"].median()) if (h["volume"] > 0).any() else 0.0
-            if med_bars < MCX.min_active_bars_day or med_vol < MCX.min_median_bar_vol:
-                st.disabled = f"illiquid (bars/day {med_bars:.0f}, median vol {med_vol:.1f})"
 
     def _load(self, st: SymbolState, now: datetime, module: str) -> Optional[pd.DataFrame]:
         if (st.warm_day != now.date()
@@ -179,7 +146,7 @@ class Engine:
         if key in self.prewarmed or not self.uni:
             return
         self.prewarmed.add(key)
-        mods = ("normal", "orb") if segment == "nse" else ("mcx",)
+        mods = ("normal",) if segment == "nse" else ()
         states = [(m, st) for m in mods for st in self._mod_states(m)]
         log.info("prewarm %s: %d symbols", segment, len(states))
 
@@ -226,46 +193,11 @@ class Engine:
             _time.sleep(5)
         return out
 
-    # ------------------------------------------------------------------ bias
-    def _set_bias(self, df: Optional[pd.DataFrame], now: datetime):
-        if df is None or len(df) < 50:
-            self.bias, self.bias_at = "neutral", None
-            return False
-        # Never stamp yesterday's historical close as a fresh live index bias.
-        latest = pd.Timestamp(df.index[-1])
-        latest = latest.tz_localize(IST) if latest.tzinfo is None else latest.tz_convert(IST)
-        expected = latest_eligible_bar(now)
-        max_age = timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
-        if latest.date() != now.date() or latest > expected or expected - latest > max_age:
-            self.bias = "neutral"
-            self.bias_at = None
-            return False
-        f = compute_features(add_indicators(df))
-        if f is None:
-            self.bias = "neutral"
-            self.bias_at = None
-            return False
-        self.bias, self.bias_at = market_bias(f), now
-        return True
-
-    def _refresh_bias(self, now: datetime):
-        if self.bias_at and (now - self.bias_at) < timedelta(minutes=4):
-            return
-        st = self.states.get(("normal", S.BIAS_INDEX))
-        if not st:
-            self.bias, self.bias_at = "neutral", None
-            return
-        try:
-            self._set_bias(self._load(st, now, "normal"), now)
-        except Exception as e:
-            self.bias = "neutral"
-            log.warning("bias refresh failed: %s", e)
-
     # ------------------------------------------------------------------ cycle
     def cycle(self, module: str, now: datetime, force: bool = False) -> dict:
         mod, cfg = MODULES[module]
         day = now.date()
-        seg = "mcx" if module == "mcx" else "nse"
+        seg = "nse"
         d = {"module": module, "at": now.strftime("%H:%M:%S"), "symbols": 0, "loaded": 0, "signals": 0,
              "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force}
         self.diag[module] = d
@@ -285,19 +217,14 @@ class Engine:
                 return d
         d["scope"] = "full" if full else "tracking"
         d["symbols"] = len(states)
-        if module != "normal" and full:
-            self._refresh_bias(now)
 
         data = self._load_many(module, states, now, force)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
-        if module == "normal" and S.BIAS_INDEX in data:
-            self._set_bias(data[S.BIAS_INDEX], now)
 
         expected = latest_eligible_bar(now)
-        taken = self.store.symbols_today(module, day) if module == "orb" else set()
         cands: list = []
         for sym, df in data.items():
             st = self.states[(module, sym)]
@@ -318,8 +245,7 @@ class Engine:
             if f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars):
                 d["rejects"]["stale_data"] += 1
                 continue
-            ctx = Ctx(bias=self.bias if module != "mcx" else "neutral", ignore_time=force,
-                      signaled_today=lambda s_, taken=taken: s_ in taken)
+            ctx = Ctx(ignore_time=force)
             try:
                 sig, why = mod.evaluate(st.info, ind, f, ctx)
             except Exception as e:  # one bad symbol must never kill the cycle
@@ -359,8 +285,10 @@ class Engine:
                         d["rejects"]["cooldown"] += 1
                         continue
             sig.forced = force
-            if module != "mcx":
-                sig.option = self._option_for(sig, now)
+            sig.option = self._option_for(sig, now)
+            if sig.option is None:
+                d["rejects"]["option_unavailable"] += 1
+                continue
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
@@ -449,7 +377,7 @@ class Engine:
             self.ensure_universe(now)
             out = {}
             t = floor5(now).time()
-            for m, enabled in (("normal", _on("ENABLE_NORMAL")), ("orb", _on("ENABLE_ORB")), ("mcx", _on("ENABLE_MCX"))):
+            for m, enabled in (("normal", _on("ENABLE_NORMAL")),):
                 if only and only != m:
                     continue
                 if not enabled and not force:
@@ -484,10 +412,8 @@ class Engine:
         t = now.time()
         if ENGINE.prewarm_nse <= t < time(9, 15):
             self.prewarm(now, "nse")
-        if ENGINE.prewarm_mcx <= t < MCX.first_signal and now.time() < time(9, 0):
-            self.prewarm(now, "mcx")
         if ENGINE.heartbeat_min:
-            for m in ("normal", "orb", "mcx"):
+            for m in ("normal",):
                 d = self.diag.get(m)
                 if not d or d.get("scope") not in ("full",):
                     continue
@@ -496,11 +422,9 @@ class Engine:
                     self.last_heartbeat[m] = now
                     self._notify_silent(self.heartbeat_text(m, d))
         if ENGINE.eod_summary:
-            for tag, end in (("nse", NORMAL.session_end), ("mcx", MCX.session_end)):
+            for tag, end in (("nse", NORMAL.session_end),):
                 key = (tag, now.date())
                 if key not in self.eod_sent and t >= (datetime.combine(now.date(), end) + timedelta(minutes=20)).time():
-                    if tag == "mcx" and t < time(23, 20):
-                        continue
                     self.eod_sent.add(key)
                     self._notify_silent(self.eod_text(now.date(), tag))
 
@@ -513,11 +437,14 @@ class Engine:
     # ------------------------------------------------------------------ reports
     def heartbeat_text(self, m: str, d: dict) -> str:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
-        return (f"💓 <b>{m.upper()} scan {d['at']}</b>\n<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}"
-                f" · bias {self.bias}</b>\n<b>top rejects: {top}</b>")
+        return "\n".join([
+            f"💓 <b>{m.upper()} scan {d['at']}</b>",
+            f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>",
+            f"<b>top rejects: {top}</b>",
+        ])
 
     def eod_text(self, day: date, tag: str) -> str:
-        mods = ("normal", "orb") if tag == "nse" else ("mcx",)
+        mods = ("normal",)
         rows = [r for r in self.store.stats(day) if r["module"] in mods]
         if not rows:
             return f"📊 <b>EOD {tag.upper()}: no signals today</b>"
@@ -530,12 +457,20 @@ class Engine:
     def status(self) -> dict:
         bud = self.client.budget.usage() if hasattr(self.client, "budget") else {}
         return {
-            "started": self.started.isoformat(), "store": getattr(self.store, "kind", "?"),
-            "universe": ({m: len(self.uni.by_module(m)) for m in MODULES} if self.uni else {}),
+            "started": self.started.isoformat(),
+            "store": getattr(self.store, "kind", "?"),
+            "universe": ({
+                "stocks": sum(not item.is_index for item in self.uni.normal),
+                "indices": sum(item.is_index for item in self.uni.normal),
+                "total": len(self.uni.normal),
+                "stock_symbols": [item.symbol for item in self.uni.normal if not item.is_index],
+                "index_symbols": [item.symbol for item in self.uni.normal if item.is_index],
+            } if self.uni else {}),
             "dropped": self.uni.dropped if self.uni else {},
-            "mcx_disabled": {s.info.symbol: s.disabled for (m, _), s in self.states.items() if m == "mcx" and s.disabled},
-            "bias": self.bias, "api_budget": bud, "auth_failed": getattr(self.client, "auth_failed", False),
-            "closed_days": sorted(f"{a}:{b}" for a, b in self.closed_days), "last_error": self.last_error,
+            "api_budget": bud,
+            "auth_failed": getattr(self.client, "auth_failed", False),
+            "closed_days": sorted(f"{segment}:{day}" for segment, day in self.closed_days),
+            "last_error": self.last_error,
         }
 
     def diag_json(self) -> dict:

@@ -25,34 +25,29 @@ def fmt_price(x: float) -> str:
 
 
 def format_signal(sig: Signal) -> str:
-    long_ = sig.side == "LONG"
-    dot = "🟢" if long_ else "🔴"
-    info = sig.info
-    cp = "CALL (CE)" if long_ else "PUT (PE)"
-    head = f"{dot} {_b(sig.symbol)} / {_b(sig.side + (' → ' + cp if sig.module != 'mcx' else ''))}"
+    is_call = sig.side == "LONG"
+    dot = "🟢" if is_call else "🔴"
+    label = "CALL (CE)" if is_call else "PUT (PE)"
     risk = sig.risk
-    mod = {"normal": "NORMAL", "orb": "ORB", "mcx": "MCX"}[sig.module]
     rr1 = abs(sig.tp1 - sig.entry) / risk if risk else 0
     rr2 = abs(sig.tp2 - sig.entry) / risk if risk else 0
-    t = (sig.bar_ts + pd.Timedelta(minutes=5)).strftime("%H:%M")
+    close_time = (sig.bar_ts + pd.Timedelta(minutes=5)).strftime("%H:%M")
     lines = [
-        head,
-        _b(f"{mod} · {sig.trigger} · score {sig.score}/100" + (" · FORCED TEST" if sig.forced else "")),
-        _b(f"5m candle {t} closed"),
-        _b(f"Entry {fmt_price(sig.entry)} (signal-bar close)"),
-        _b(f"SL {fmt_price(sig.sl)} · risk {fmt_price(risk)} ({risk / sig.entry * 100:.2f}%)"),
-        _b(f"TP1 {fmt_price(sig.tp1)} ({rr1:.1f}R) · TP2 {fmt_price(sig.tp2)} ({rr2:.1f}R)"),
-        _b(f"Skip if price moves > {fmt_price(0.5 * sig.atr)} beyond entry before you enter"),
+        f"{dot} {_b(sig.symbol)} · {_b(label)}",
+        _b(f"5m candle closed {close_time} IST"),
+        _b(f"Entry {fmt_price(sig.entry)}"),
+        _b(f"Stop loss {fmt_price(sig.sl)} · {risk / sig.entry * 100:.2f}% risk"),
+        _b(f"Target 1 {fmt_price(sig.tp1)} ({rr1:.1f}R) · Target 2 {fmt_price(sig.tp2)} ({rr2:.1f}R)"),
+        _b("ATR-based levels · signal only, manual execution"),
     ]
     if sig.option:
-        o = sig.option
-        prem = f" · LTP {fmt_price(o['ltp'])}" if o.get("ltp") else ""
-        lines.append(_b(f"Option {o['tsym']} · lot {o['lot']}{prem}"))
-    elif info and info.lot:
-        lines.append(_b(f"Lot {info.lot}" + (f" · {info.expiry}" if info.expiry else "")))
-    lines.append(_b("Why: " + " | ".join(sig.reasons)))
+        option = sig.option
+        premium = f" · LTP {fmt_price(option['ltp'])}" if option.get("ltp") else ""
+        lines.append(_b(f"Option {option['tsym']} · lot {option['lot']}{premium}"))
+    lines.append(_b("Conditions: " + " | ".join(sig.reasons)))
+    if sig.forced:
+        lines.append(_b("FORCED TEST"))
     return "\n".join(lines)
-
 
 def send(text: str, silent: bool = False) -> bool:
     if DRY_RUN or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:

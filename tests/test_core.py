@@ -14,7 +14,7 @@ from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
 from app.tracker import simulate
-from app.universe import Universe, resolve_nse, resolve_mcx
+from app.universe import Universe, OptionRec, resolve_nse
 from app.upstox import iter_json_array
 from app import mod_normal
 from tests.synth import make_history
@@ -81,7 +81,8 @@ def test_universe_resolution_and_backfill():
     u = resolve_nse(rows, today, ["AAA", "GONE", "BBB"], ["RES"], [], [], ["NIFTY", "FINNIFTY"])
     names = [i.symbol for i in u.normal]
     assert names[0] == "NIFTY" and u.normal[0].is_index and "GONE" not in names
-    assert "RES" in names and u.dropped["normal"] == ["FINNIFTY", "GONE"]
+    assert "RES" in names and u.dropped["normal"] == ["GONE"]
+    assert u.dropped["indices"] == ["FINNIFTY"]
 
 
 class FakeClient:
@@ -102,6 +103,17 @@ class FakeClient:
         return {}
 
 
+def _test_universe(info, now):
+    expiry = now + timedelta(days=10)
+    underlying = info.underlying or info.symbol
+    options = [
+        OptionRec(expiry, 1000.0, "CE", "NSE_FO|TESTCE", f"{underlying} CE", 100),
+        OptionRec(expiry, 1000.0, "PE", "NSE_FO|TESTPE", f"{underlying} PE", 100),
+    ]
+    return Universe(normal=[info], options={underlying: options},
+                    built_on=now.strftime("%Y-%m-%d"))
+
+
 def _find_signal_case():
     info = SymbolInfo("TEST", "K", "normal", lot=100)
     for seed in range(1, 80):
@@ -119,11 +131,10 @@ def test_engine_end_to_end_dedupe_and_cooldown():
     df, t = _find_signal_case()
     now = t + timedelta(minutes=5, seconds=7)          # just after the candle closed
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, now)
     sent, store = [], MemoryStore()
     eng = Engine(FakeClient(df, now), store, notify=lambda text, silent=False: sent.append(text),
                  universe_builder=lambda n: uni)
-    eng.bias = "neutral"
     eng.ensure_universe(now)
     out = eng.cycle("normal", now)
     assert out["signals"] == 1 and len(sent) == 1
@@ -143,7 +154,7 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
     original_now = t + timedelta(minutes=5, seconds=7)
     late_now = original_now + timedelta(minutes=15)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=late_now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, late_now)
     sent = []
     eng = Engine(FakeClient(df, original_now), MemoryStore(),
                  notify=lambda message: sent.append(message),
@@ -175,7 +186,7 @@ def test_load_enforces_fetch_delay_even_for_direct_or_forced_scans():
 
     eng = Engine(CandleClient(), MemoryStore())
     state = SymbolState(
-        SymbolInfo("TEST", "K", "normal", lot=100),
+        SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST"),
         hist=pd.DataFrame(columns=["open", "high", "low", "close", "volume"]),
         warm_day=now.date(),
     )
@@ -210,20 +221,11 @@ def test_memory_store_notification_outbox_retries_until_delivered():
     assert store.pending_notifications() == []
 
 
-def test_engine_rejects_previous_session_bias():
-    now = datetime(2026, 11, 17, 10, 5, tzinfo=IST)
-    eng = Engine(FakeClient(make_history(3), now), MemoryStore())
-    previous = make_history(3, seed=19)
-    previous = previous[previous.index.date < now.date()]
-    assert eng._set_bias(previous, now) is False
-    assert eng.bias == "neutral" and eng.bias_at is None
-
-
 def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     df, t = _find_signal_case()
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, now)
     calls, delivered = [0], []
     def flaky_notify(message):
         calls[0] += 1
@@ -315,3 +317,51 @@ def test_postgres_run_discards_broken_connection_and_retries_once():
     store.pool = Pool()
     assert store._run("SELECT 42", fetch="one") == (42,)
     assert store.pool.closed == [True, False]
+
+
+def test_dynamic_index_and_optionable_midcap_resolution():
+    today = datetime(2026, 11, 17, tzinfo=IST)
+    expiry = int((today + timedelta(days=10)).timestamp() * 1000)
+    rows = []
+    for symbol in ("MIDCAP", "NO_PUT"):
+        rows.extend([
+            {"segment": "NSE_EQ", "instrument_type": "EQ", "trading_symbol": symbol,
+             "instrument_key": f"NSE_EQ|{symbol}"},
+            {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_type": "EQUITY",
+             "underlying_symbol": symbol, "expiry": expiry, "instrument_key": f"NSE_FO|{symbol}FUT",
+             "lot_size": 50, "trading_symbol": f"{symbol} FUT"},
+            {"segment": "NSE_FO", "instrument_type": "CE", "underlying_type": "EQUITY",
+             "underlying_symbol": symbol, "expiry": expiry, "strike_price": 1000,
+             "instrument_key": f"NSE_FO|{symbol}CE", "lot_size": 50, "trading_symbol": f"{symbol} CE"},
+        ])
+    rows.append({"segment": "NSE_FO", "instrument_type": "PE", "underlying_type": "EQUITY",
+                 "underlying_symbol": "MIDCAP", "expiry": expiry, "strike_price": 1000,
+                 "instrument_key": "NSE_FO|MIDCAPPE", "lot_size": 50, "trading_symbol": "MIDCAP PE"})
+    rows.extend([
+        {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "instrument_key": "NSE_FO|NIFTYFUT",
+         "lot_size": 75, "trading_symbol": "NIFTY FUT"},
+        {"segment": "NSE_FO", "instrument_type": "CE", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "strike_price": 26000,
+         "instrument_key": "NSE_FO|NIFTYCE", "lot_size": 75, "trading_symbol": "NIFTY CE"},
+        {"segment": "NSE_FO", "instrument_type": "PE", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "strike_price": 26000,
+         "instrument_key": "NSE_FO|NIFTYPE", "lot_size": 75, "trading_symbol": "NIFTY PE"},
+    ])
+    uni = resolve_nse(rows, today, ["MIDCAP", "NO_PUT"], [], require_options=True)
+    names = {item.symbol for item in uni.normal}
+    assert names == {"MIDCAP", "NIFTY"}
+    assert next(item for item in uni.normal if item.symbol == "NIFTY").is_index
+    assert {option.otype for option in uni.options["MIDCAP"]} == {"CE", "PE"}
+
+
+def test_simple_call_put_levels_are_atr_based():
+    df, ts = _find_signal_case()
+    ind = add_indicators(df.loc[:ts])
+    features = compute_features(ind)
+    info = SymbolInfo("TEST", "K", "normal", lot=100)
+    signal, reason = mod_normal.evaluate(info, ind, features, Ctx())
+    assert reason is None and signal is not None
+    assert signal.risk == pytest.approx(1.2 * features.atr, rel=0.01)
+    assert abs(signal.tp1 - signal.entry) == pytest.approx(1.5 * signal.risk, rel=0.01)
+    assert abs(signal.tp2 - signal.entry) == pytest.approx(2.0 * signal.risk, rel=0.03)

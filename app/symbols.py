@@ -1,30 +1,11 @@
-"""Static symbol lists. EDIT FREELY - the resolver validates every name against the live
-Upstox instrument master (must exist as an NSE F&O underlying with a cash EQ record) and
-silently backfills from the *_RESERVE lists when a name has been renamed or removed from
-F&O (e.g. after demergers). Disabled names are logged at startup.
+"""Candidate NSE midcap F&O stock universe.
 
-NORMAL  : 50 most liquid F&O stocks (+ indices, traded via near-month index futures)
-ORB     : 100 *different* F&O stocks with good intraday range (no overlap with NORMAL)
-MCX     : not listed here - built automatically from the MCX instrument master
+Candidates are validated against the daily Upstox instrument master. Production only
+selects stocks with cash EQ, FUT, CE and PE contracts. All index derivatives are
+separately discovered from the master using underlying_type=INDEX.
 """
 
-INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
-BIAS_INDEX = "NIFTY"   # market-bias source for stock signals
-
-NORMAL_50 = [
-    "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "INFY", "TCS", "AXISBANK", "KOTAKBANK", "LT", "ITC",
-    "BHARTIARTL", "TATASTEEL", "MARUTI", "M&M", "BAJFINANCE", "BAJAJFINSV", "HINDUNILVR", "SUNPHARMA",
-    "ADANIENT", "ADANIPORTS", "JSWSTEEL", "HINDALCO", "ONGC", "NTPC", "POWERGRID", "COALINDIA", "WIPRO",
-    "HCLTECH", "TECHM", "ASIANPAINT", "ULTRACEMCO", "TITAN", "NESTLEIND", "DRREDDY", "CIPLA", "BPCL",
-    "IOC", "GRASIM", "EICHERMOT", "HEROMOTOCO", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "VEDL",
-    "DLF", "TRENT", "HAL", "BEL", "INDIGO",
-]
-NORMAL_RESERVE = [
-    "SBILIFE", "TATAPOWER", "JIOFIN", "SHRIRAMFIN", "APOLLOHOSP", "BAJAJ-AUTO", "DIVISLAB", "BRITANNIA",
-    "HDFCLIFE", "LTIM", "TVSMOTOR", "GAIL", "PFC", "RECLTD", "IRCTC",
-]
-
-ORB_100 = [
+MIDCAP_FNO_CANDIDATES = [
     "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "AUROPHARMA", "BANDHANBNK", "BANKINDIA", "BHEL", "BIOCON",
     "BOSCHLTD", "CHOLAFIN", "COFORGE", "COLPAL", "CONCOR", "CUMMINSIND", "DABUR", "DIXON", "FEDERALBNK",
     "GLENMARK", "GODREJCP", "GODREJPROP", "HAVELLS", "HINDPETRO", "IDEA", "IDFCFIRSTB", "IGL", "INDHOTEL",
@@ -38,7 +19,7 @@ ORB_100 = [
     "VBL", "AUBANK", "ALKEM", "ANGELONE", "APLAPOLLO", "ABCAPITAL", "ADANIENSOL", "BDL", "BSE", "CDSL",
     "CAMS", "HUDCO", "IEX", "KALYANKJIL", "KEI", "LODHA",
 ]
-ORB_RESERVE = [
+MIDCAP_FNO_RESERVE = [
     "MCX", "MAZDOCK", "NBCC", "RVNL", "SUPREMEIND", "TATATECH", "HFCL", "IREDA", "LTF", "POLICYBZR",
     "NYKAA", "OBEROIRLTY", "PATANJALI", "INOXWIND", "DELHIVERY", "GMRAIRPORT", "SWIGGY", "ETERNAL",
     "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
