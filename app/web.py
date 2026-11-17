@@ -1,7 +1,7 @@
 """Flask app (gunicorn entry: app.web:app). Run with ONE worker - the scheduler lives in-process.
 
-  GET /health                         liveness (point UptimeRobot / cron-job.org here every 5 min)
-  GET /status?token=ADMIN_TOKEN       universe, API budget, bias, errors
+  GET /health                         liveness
+  GET /status?token=ADMIN_TOKEN       universe, API budget, auth and data diagnostics
   GET /diag?token=...                 per-module last cycle: scope, symbols, signals, reject reasons
   GET /stats?token=...&days=30        win rate / net R per module from tracked alerts
   GET /force?token=...&module=normal|orb|mcx|all   evaluate NOW ignoring clock windows (testing)
@@ -68,7 +68,7 @@ def _init():
 def _keepalive():
     url = os.environ["RENDER_EXTERNAL_URL"].rstrip("/") + "/health"
     while True:
-        time.sleep(600)       # Render free web services sleep after 15 min without inbound traffic
+        time.sleep(600)
         try:
             requests.get(url, timeout=10)
         except requests.RequestException:
@@ -87,7 +87,10 @@ def status():
     _init()
     if not _auth():
         return jsonify(error="unauthorized"), 401
-    return jsonify(engine.status())
+    result = engine.status()
+    if hasattr(engine.client, "diagnostics"):
+        result["upstox"] = engine.client.diagnostics()
+    return jsonify(result)
 
 
 @app.get("/diag")
@@ -103,7 +106,10 @@ def stats():
     _init()
     if not _auth():
         return jsonify(error="unauthorized"), 401
-    days = int(request.args.get("days", 30))
+    try:
+        days = max(1, min(365, int(request.args.get("days", 30))))
+    except (TypeError, ValueError):
+        return jsonify(error="days must be an integer from 1 to 365"), 400
     since = (datetime.now(IST) - timedelta(days=days)).date()
     rows = engine.store.stats(since)
     for r in rows:
@@ -118,6 +124,8 @@ def force():
     if not _auth():
         return jsonify(error="unauthorized"), 401
     mod = request.args.get("module", "all")
+    if mod not in ("all", "normal", "orb", "mcx"):
+        return jsonify(error="module must be all, normal, orb or mcx"), 400
     only = None if mod == "all" else mod
 
     def run():
