@@ -103,6 +103,8 @@ class Engine:
                 raise
             return
         self.uni = uni
+        # A rebuilt daily universe must never inherit the previous session's index bias.
+        self.bias, self.bias_at = "neutral", None
         self.states = {}
         for m in ("normal", "orb", "mcx"):
             for info in uni.by_module(m):
@@ -206,6 +208,7 @@ class Engine:
     # ------------------------------------------------------------------ bias
     def _set_bias(self, df: Optional[pd.DataFrame], now: datetime):
         if df is None or len(df) < 50:
+            self.bias, self.bias_at = "neutral", None
             return False
         # Never stamp yesterday's historical close as a fresh live index bias.
         latest = pd.Timestamp(df.index[-1])
@@ -229,6 +232,7 @@ class Engine:
             return
         st = self.states.get(("normal", S.BIAS_INDEX))
         if not st:
+            self.bias, self.bias_at = "neutral", None
             return
         try:
             self._set_bias(self._load(st, now, "normal"), now)
