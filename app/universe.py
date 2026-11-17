@@ -77,7 +77,7 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
                 index_futs.setdefault(und, []).append(item)
             elif und in want:
                 fut_by_und.setdefault(und, []).append(item)
-        elif typ in ("CE", "PE") and exp <= horizon:
+        elif (typ in ("CE", "PE") and exp <= horizon\n              and (und in want or underlying_type == "INDEX" or und in explicit_indices)):
             opts.setdefault(und, []).append(OptionRec(
                 exp, float(row.get("strike_price") or 0), typ,
                 row.get("instrument_key", ""), row.get("trading_symbol", ""),
