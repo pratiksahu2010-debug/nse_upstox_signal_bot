@@ -83,7 +83,7 @@ class Engine:
                 raise
             return
         self.uni = uni
-        # A rebuilt daily universe must never inherit the previous session's index bias.
+        # Rebuild the complete single universe once per trading day.
         self.states = {}
         for info in uni.normal:
             self.states[("normal", info.symbol)] = SymbolState(info)
@@ -225,7 +225,6 @@ class Engine:
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
         expected = latest_eligible_bar(now)
-        taken = set()
         cands: list = []
         for sym, df in data.items():
             st = self.states[(module, sym)]
