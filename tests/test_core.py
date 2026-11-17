@@ -14,7 +14,7 @@ from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
 from app.tracker import simulate
-from app.universe import Universe, resolve_nse, resolve_mcx
+from app.universe import Universe, OptionRec, resolve_nse, resolve_mcx
 from app.upstox import iter_json_array
 from app import mod_normal
 from tests.synth import make_history
@@ -102,6 +102,17 @@ class FakeClient:
         return {}
 
 
+def _test_universe(info, now):
+    expiry = now + timedelta(days=10)
+    underlying = info.underlying or info.symbol
+    options = [
+        OptionRec(expiry, 1000.0, "CE", "NSE_FO|TESTCE", f"{underlying} CE", 100),
+        OptionRec(expiry, 1000.0, "PE", "NSE_FO|TESTPE", f"{underlying} PE", 100),
+    ]
+    return Universe(normal=[info], options={underlying: options},
+                    built_on=now.strftime("%Y-%m-%d"))
+
+
 def _find_signal_case():
     info = SymbolInfo("TEST", "K", "normal", lot=100)
     for seed in range(1, 80):
@@ -119,7 +130,7 @@ def test_engine_end_to_end_dedupe_and_cooldown():
     df, t = _find_signal_case()
     now = t + timedelta(minutes=5, seconds=7)          # just after the candle closed
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, now)
     sent, store = [], MemoryStore()
     eng = Engine(FakeClient(df, now), store, notify=lambda text, silent=False: sent.append(text),
                  universe_builder=lambda n: uni)
@@ -143,7 +154,7 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
     original_now = t + timedelta(minutes=5, seconds=7)
     late_now = original_now + timedelta(minutes=15)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=late_now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, late_now)
     sent = []
     eng = Engine(FakeClient(df, original_now), MemoryStore(),
                  notify=lambda message: sent.append(message),
@@ -175,7 +186,7 @@ def test_load_enforces_fetch_delay_even_for_direct_or_forced_scans():
 
     eng = Engine(CandleClient(), MemoryStore())
     state = SymbolState(
-        SymbolInfo("TEST", "K", "normal", lot=100),
+        SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST"),
         hist=pd.DataFrame(columns=["open", "high", "low", "close", "volume"]),
         warm_day=now.date(),
     )
