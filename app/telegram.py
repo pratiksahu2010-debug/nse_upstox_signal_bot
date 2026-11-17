@@ -72,7 +72,18 @@ def send(text: str, silent: bool = False) -> bool:
             if r.status_code == 200:
                 return True
             if r.status_code == 429:
-                time.sleep(float(r.json().get("parameters", {}).get("retry_after", 3)) + 0.5)
+                # Telegram may return a malformed/non-JSON body during overload.
+                # Keep retry bounded so a bad response cannot crash delivery or
+                # block the worker for an unbounded period.
+                try:
+                    body = r.json()
+                    parameters = body.get("parameters", {}) if isinstance(body, dict) else {}
+                    retry_after = float(parameters.get("retry_after", 3))
+                except (ValueError, TypeError, AttributeError):
+                    retry_after = 3.0
+                if not (retry_after > 0 and retry_after < float("inf")):
+                    retry_after = 3.0
+                time.sleep(max(1.0, min(30.0, retry_after)) + 0.5)
                 continue
             log.error("telegram %s: %s", r.status_code, r.text[:200])
             if r.status_code in (400, 401, 403, 404):
