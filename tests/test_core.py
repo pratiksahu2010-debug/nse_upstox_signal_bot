@@ -187,9 +187,9 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     first = eng.cycle("normal", now)
     assert first["signals"] == 0
     assert len(store.pending_notifications()) == 1
-    # The outbox intentionally throttles retries to one attempt per five minutes.
-    retry_now = now + timedelta(minutes=5)
-    second = eng.cycle("normal", retry_now)
+    # Simulate the five-minute retry interval without advancing the market candle.
+    eng.last_outbox_retry_at = now - timedelta(minutes=5)
+    second = eng.cycle("normal", now)
     assert len(delivered) == 1
     assert store.pending_notifications() == []
     assert second["rejects"].get("duplicate", 0) == 1
