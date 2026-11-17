@@ -157,6 +157,36 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
     assert out["rejects"].get("stale_data", 0) == 1
     assert sent == []
 
+
+def test_load_enforces_fetch_delay_even_for_direct_or_forced_scans():
+    from app.engine import SymbolState
+
+    now = datetime(2026, 11, 17, 10, 5, 0, tzinfo=IST)
+    candle_ts = pd.Timestamp("2026-11-17 10:00", tz=IST)
+    candles = pd.DataFrame(
+        [[100.0, 101.0, 99.0, 100.5, 1000.0]],
+        index=pd.DatetimeIndex([candle_ts]),
+        columns=["open", "high", "low", "close", "volume"],
+    )
+
+    class CandleClient:
+        def intraday(self, key):
+            return candles
+
+    eng = Engine(CandleClient(), MemoryStore())
+    state = SymbolState(
+        SymbolInfo("TEST", "K", "normal", lot=100),
+        hist=pd.DataFrame(columns=["open", "high", "low", "close", "volume"]),
+        warm_day=now.date(),
+    )
+
+    # At the exact close boundary, the six-second fetch delay has not elapsed.
+    assert eng._load(state, now, "normal").empty
+    # Once the configured delay has elapsed, the closed candle is eligible.
+    loaded = eng._load(state, now + timedelta(seconds=6), "normal")
+    assert len(loaded) == 1
+    assert loaded.index[-1] == candle_ts
+
 def test_weekend_and_empty_universe_safe():
     store = MemoryStore()
     eng = Engine(FakeClient(make_history(3), datetime(2026, 11, 14, 10, 0, tzinfo=IST)), store,
