@@ -180,9 +180,21 @@ class Engine:
     # ------------------------------------------------------------------ bias
     def _set_bias(self, df: Optional[pd.DataFrame], now: datetime):
         if df is None or len(df) < 50:
-            return
+            return False
+        # Never stamp yesterday's historical close as a fresh live index bias.
+        latest = pd.Timestamp(df.index[-1])
+        latest = latest.tz_localize(IST) if latest.tzinfo is None else latest.tz_convert(IST)
+        expected = floor5(now) - timedelta(minutes=ENGINE.candle_min)
+        max_age = timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
+        if latest.date() != now.date() or latest > expected or expected - latest > max_age:
+            self.bias = "neutral"
+            self.bias_at = None
+            return False
         f = compute_features(add_indicators(df))
+        if f is None:
+            return False
         self.bias, self.bias_at = market_bias(f), now
+        return True
 
     def _refresh_bias(self, now: datetime):
         if self.bias_at and (now - self.bias_at) < timedelta(minutes=4):
@@ -226,11 +238,8 @@ class Engine:
         data = self._load_many(module, states, now, force)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
-        if states and data and d["loaded"] == 0 and not force and t_close >= time(9, 30) and not d["errors"]:
-            self.closed_days.add((seg, day))
-            d["scope"] = "market_closed_today"
-            log.info("%s: no bars today (holiday?) - idle until tomorrow", seg)
-            return d
+        # Empty/stale responses are not proof of an exchange holiday. Keep the
+        # scheduler retrying; holiday detection must come from a trusted calendar.
         if module == "normal" and S.BIAS_INDEX in data:
             self._set_bias(data[S.BIAS_INDEX], now)
 
@@ -277,13 +286,15 @@ class Engine:
         day = now.date()
         cands.sort(key=lambda s: -s.score)
         sent = 0
+        accepted = 0
+        self._deliver_pending(d)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
         for sig in cands:
-            if already + sent >= cfg.daily_cap:
+            if already + accepted >= cfg.daily_cap:
                 d["rejects"]["daily_cap"] += 1
                 continue
-            if sent >= cfg.per_cycle_top:
+            if accepted >= cfg.per_cycle_top:
                 d["rejects"]["cycle_top_n"] += 1
                 continue
             if cd:
@@ -297,19 +308,52 @@ class Engine:
             sig.forced = force
             if module != "mcx":
                 sig.option = self._option_for(sig, now)
+            message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger,
-                   "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force}}
+                   "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
+                               "telegram_text": message}}
             sid = self.store.add_signal(row)
             if sid is None:
                 d["rejects"]["duplicate"] += 1
                 continue
+            accepted += 1
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
-            self.notify(format_signal(sig))
-            sent += 1
+            try:
+                ok = bool(self.notify(message))
+                self.store.mark_notification(sid, ok, None if ok else "notify returned false")
+                if ok:
+                    sent += 1
+                else:
+                    d["rejects"]["telegram_failed"] += 1
+            except Exception as e:
+                self.store.mark_notification(sid, False, str(e))
+                d["rejects"]["telegram_failed"] += 1
+                log.exception("Telegram delivery failed for signal id=%s", sid)
         return sent
+
+    def _deliver_pending(self, d: dict):
+        try:
+            pending = self.store.pending_notifications()
+        except Exception:
+            d["rejects"]["outbox_read_error"] += 1
+            log.exception("could not read Telegram outbox")
+            return
+        for item in pending:
+            try:
+                ok = bool(self.notify(item["text"]))
+                self.store.mark_notification(item["id"], ok, None if ok else "notify returned false")
+                if not ok:
+                    d["rejects"]["telegram_retry_failed"] += 1
+            except Exception as e:
+                try:
+                    self.store.mark_notification(item["id"], False, str(e))
+                except Exception:
+                    log.exception("could not persist Telegram retry failure")
+                d["rejects"]["telegram_retry_failed"] += 1
+                log.exception("Telegram retry failed for signal id=%s", item["id"])
 
     def _option_for(self, sig: Signal, now: datetime) -> Optional[dict]:
         if not self.uni or not sig.info:
