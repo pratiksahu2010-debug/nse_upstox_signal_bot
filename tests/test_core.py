@@ -137,6 +137,26 @@ def test_engine_end_to_end_dedupe_and_cooldown():
     assert out3["signals"] == 0
 
 
+
+def test_force_run_still_rejects_stale_market_data(monkeypatch):
+    df, t = _find_signal_case()
+    original_now = t + timedelta(minutes=5, seconds=7)
+    late_now = original_now + timedelta(minutes=15)
+    info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
+    uni = Universe(normal=[info], built_on=late_now.strftime("%Y-%m-%d"))
+    sent = []
+    eng = Engine(FakeClient(df, original_now), MemoryStore(),
+                 notify=lambda message: sent.append(message),
+                 universe_builder=lambda n: uni)
+    eng.ensure_universe(late_now)
+    monkeypatch.setattr("app.engine._time.sleep", lambda seconds: None)
+
+    out = eng.cycle("normal", late_now, force=True)
+
+    assert out["signals"] == 0
+    assert out["rejects"].get("stale_data", 0) == 1
+    assert sent == []
+
 def test_weekend_and_empty_universe_safe():
     store = MemoryStore()
     eng = Engine(FakeClient(make_history(3), datetime(2026, 11, 14, 10, 0, tzinfo=IST)), store,
