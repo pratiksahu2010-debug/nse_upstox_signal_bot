@@ -34,6 +34,7 @@ class Universe:
     options: dict = field(default_factory=dict)      # underlying -> list[OptionRec]
     dropped: dict = field(default_factory=dict)      # module -> list of names not resolvable
     built_on: str = ""
+    mcx_error: str = ""
 
     def by_module(self, m: str) -> list:
         return {"normal": self.normal, "orb": self.orb, "mcx": self.mcx}[m]
@@ -147,15 +148,23 @@ def resolve_mcx(rows: Iterable[dict], today: datetime) -> list:
     return out[:MC.max_symbols]
 
 
+def load_mcx(today: datetime, rows=None) -> list:
+    """Load the MCX segment independently so a transient failure can be retried."""
+    source = rows if rows is not None else stream_master("MCX")
+    return resolve_mcx(source, today)
+
+
 def build_universe(today: Optional[datetime] = None, nse_rows=None, mcx_rows=None) -> Universe:
     today = today or datetime.now(IST)
     uni = resolve_nse(nse_rows if nse_rows is not None else stream_master("NSE"), today,
                       S.NORMAL_50, S.NORMAL_RESERVE, S.ORB_100, S.ORB_RESERVE, S.INDICES)
     try:
-        uni.mcx = resolve_mcx(mcx_rows if mcx_rows is not None else stream_master("MCX"), today)
+        uni.mcx = load_mcx(today, mcx_rows)
     except Exception as e:
+        # Keep NSE available, but preserve the failure so Engine can retry MCX later.
         log.error("MCX master failed: %s", e)
         uni.mcx = []
+        uni.mcx_error = str(e)[:200]
     log.info("universe: normal=%d (incl %d idx) orb=%d mcx=%d | dropped %s",
              len(uni.normal), sum(1 for x in uni.normal if x.is_index), len(uni.orb), len(uni.mcx), uni.dropped)
     return uni
