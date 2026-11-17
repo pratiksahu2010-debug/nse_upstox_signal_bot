@@ -255,16 +255,12 @@ class Engine:
                 return d
         d["scope"] = "full" if full else "tracking"
         d["symbols"] = len(states)
-        if module != "normal" and full:
-            self._refresh_bias(now)
 
         data = self._load_many(module, states, now, force)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
-        if module == "normal" and S.BIAS_INDEX in data:
-            self._set_bias(data[S.BIAS_INDEX], now)
 
         expected = latest_eligible_bar(now)
         taken = set()
