@@ -19,7 +19,11 @@ def _configure(monkeypatch, responses, sleeps):
     monkeypatch.setattr(telegram, "TELEGRAM_TOKEN", "test-token")
     monkeypatch.setattr(telegram, "TELEGRAM_CHAT_ID", "test-chat")
     monkeypatch.setattr(telegram, "_last", [0.0])
-    monkeypatch.setattr(telegram.time, "monotonic", lambda: 1000.0)
+    clock = [1000.0]
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+    monkeypatch.setattr(telegram.time, "monotonic", monotonic)
     monkeypatch.setattr(telegram.time, "sleep", sleeps.append)
     calls = []
 
