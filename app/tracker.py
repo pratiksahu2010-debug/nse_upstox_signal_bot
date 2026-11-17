@@ -41,7 +41,18 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
             if hit_sl:
                 return "SL", -1.0
             if hit_tp1:
+                # TP1 books half; the remaining half is protected at breakeven.
+                # OHLC cannot reveal the intrabar path, so resolve same-bar
+                # breakeven/TP2 collisions conservatively (breakeven wins).
                 stage = "TP1"
+                hit_be = lo <= entry if s > 0 else hi >= entry
+                hit_tp2 = hi >= tp2 if s > 0 else lo <= tp2
+                if hit_be:
+                    return "TP1_BE", 0.5 * r1
+                if hit_tp2:
+                    return "TP2", 0.5 * r1 + 0.5 * r2
+                if end >= session_end:
+                    return "EOD", 0.5 * r1 + 0.5 * s * (cl - entry) / risk
                 continue
             if end >= session_end:
                 return "EOD", s * (cl - entry) / risk
