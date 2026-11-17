@@ -42,16 +42,25 @@ def _init():
     with _start_lock:
         if _started:
             return
-        _started = True
-        store = make_store(config.DATABASE_URL)
-        engine = Engine(UpstoxClient(), store)
-        if not config.UPSTOX_TOKEN:
-            log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
-        if config.RUN_SCHEDULER:
-            scheduler.start(engine)
-            send(f"<b>✅ Signal bot started {datetime.now(IST):%d %b %H:%M} IST · store {store.kind}</b>", silent=True)
-        if config.KEEPALIVE and os.getenv("RENDER_EXTERNAL_URL"):
-            threading.Thread(target=_keepalive, daemon=True).start()
+        if _started:
+            return
+        try:
+            store = make_store(config.DATABASE_URL)
+            candidate = Engine(UpstoxClient(), store)
+            if not config.UPSTOX_TOKEN:
+                log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
+            if config.RUN_SCHEDULER:
+                scheduler.start(candidate)
+                send(f"<b>✅ Signal bot started {datetime.now(IST):%d %b %H:%M} IST · store {store.kind}</b>", silent=True)
+            engine = candidate
+            if config.KEEPALIVE and os.getenv("RENDER_EXTERNAL_URL"):
+                threading.Thread(target=_keepalive, daemon=True).start()
+            _started = True
+        except Exception:
+            engine = None
+            _started = False
+            log.exception("application startup failed; a later request may retry initialization")
+            raise
 
 
 def _keepalive():
