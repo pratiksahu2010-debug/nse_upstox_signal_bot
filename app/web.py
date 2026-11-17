@@ -88,8 +88,13 @@ def _keepalive():
 @app.get("/")
 @app.get("/health")
 def health():
-    _init()
-    return jsonify(ok=True, time=datetime.now(IST).isoformat(timespec="seconds"))
+    # Liveness must never wait for database, broker, universe or scheduler startup.
+    # Render uses this endpoint to decide whether the HTTP process is reachable.
+    return jsonify(
+        ok=True,
+        time=datetime.now(IST).isoformat(timespec="seconds"),
+        initialized=_started,
+    )
 
 
 @app.get("/status")
