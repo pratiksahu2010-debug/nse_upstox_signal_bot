@@ -2,8 +2,9 @@
 
 Rules (deliberately conservative):
   * entry = signal-bar close; stop = SL; if SL and TP1 are touched in the same bar, SL wins.
-  * TP1 books 50 %; the stop of the remainder moves to entry. If entry and TP2 are touched
-    in the same later bar, entry (breakeven) wins.
+  * TP1 books 50 %; the stop of the remainder moves to entry. If TP1 and entry are both
+    touched in one OHLC bar, breakeven wins for the remainder; if entry and TP2 are both
+    touched in a later bar, breakeven also wins.
   * Anything still open at session_end is closed at that bar's close ('EOD').
 R result: SL = -1R; TP1_BE = +0.5*R1; TP2 = 0.5*R1 + 0.5*R2; EOD = mark-to-market.
 The replay always starts from the signal bar, so it is idempotent across cycles/restarts.
