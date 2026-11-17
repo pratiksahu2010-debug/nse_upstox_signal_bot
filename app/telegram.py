@@ -47,7 +47,7 @@ def format_signal(sig: Signal) -> str:
     lines.append(_b("Conditions: " + " | ".join(sig.reasons)))
     if sig.forced:
         lines.append(_b("FORCED TEST"))
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 def send(text: str, silent: bool = False) -> bool:
     if DRY_RUN or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
