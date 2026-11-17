@@ -327,3 +327,39 @@ def test_postgres_run_discards_broken_connection_and_retries_once():
     store.pool = Pool()
     assert store._run("SELECT 42", fetch="one") == (42,)
     assert store.pool.closed == [True, False]
+
+
+def test_dynamic_index_and_optionable_midcap_resolution():
+    today = datetime(2026, 11, 17, tzinfo=IST)
+    expiry = int((today + timedelta(days=10)).timestamp() * 1000)
+    rows = []
+    for symbol in ("MIDCAP", "NO_PUT"):
+        rows.extend([
+            {"segment": "NSE_EQ", "instrument_type": "EQ", "trading_symbol": symbol,
+             "instrument_key": f"NSE_EQ|{symbol}"},
+            {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_type": "EQUITY",
+             "underlying_symbol": symbol, "expiry": expiry, "instrument_key": f"NSE_FO|{symbol}FUT",
+             "lot_size": 50, "trading_symbol": f"{symbol} FUT"},
+            {"segment": "NSE_FO", "instrument_type": "CE", "underlying_type": "EQUITY",
+             "underlying_symbol": symbol, "expiry": expiry, "strike_price": 1000,
+             "instrument_key": f"NSE_FO|{symbol}CE", "lot_size": 50, "trading_symbol": f"{symbol} CE"},
+        ])
+    rows.append({"segment": "NSE_FO", "instrument_type": "PE", "underlying_type": "EQUITY",
+                 "underlying_symbol": "MIDCAP", "expiry": expiry, "strike_price": 1000,
+                 "instrument_key": "NSE_FO|MIDCAPPE", "lot_size": 50, "trading_symbol": "MIDCAP PE"})
+    rows.extend([
+        {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "instrument_key": "NSE_FO|NIFTYFUT",
+         "lot_size": 75, "trading_symbol": "NIFTY FUT"},
+        {"segment": "NSE_FO", "instrument_type": "CE", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "strike_price": 26000,
+         "instrument_key": "NSE_FO|NIFTYCE", "lot_size": 75, "trading_symbol": "NIFTY CE"},
+        {"segment": "NSE_FO", "instrument_type": "PE", "underlying_type": "INDEX",
+         "underlying_symbol": "NIFTY", "expiry": expiry, "strike_price": 26000,
+         "instrument_key": "NSE_FO|NIFTYPE", "lot_size": 75, "trading_symbol": "NIFTY PE"},
+    ])
+    uni = resolve_nse(rows, today, ["MIDCAP", "NO_PUT"], [], require_options=True)
+    names = {item.symbol for item in uni.normal}
+    assert names == {"MIDCAP", "NIFTY"}
+    assert next(item for item in uni.normal if item.symbol == "NIFTY").is_index
+    assert {option.otype for option in uni.options["MIDCAP"]} == {"CE", "PE"}
