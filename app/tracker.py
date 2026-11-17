@@ -2,8 +2,9 @@
 
 Rules (deliberately conservative):
   * entry = signal-bar close; stop = SL; if SL and TP1 are touched in the same bar, SL wins.
-  * TP1 books 50 %; the stop of the remainder moves to entry. If entry and TP2 are touched
-    in the same later bar, entry (breakeven) wins.
+  * TP1 books 50 %; the stop of the remainder moves to entry. If TP1 and entry are both
+    touched in one OHLC bar, breakeven wins for the remainder; if entry and TP2 are both
+    touched in a later bar, breakeven also wins.
   * Anything still open at session_end is closed at that bar's close ('EOD').
 R result: SL = -1R; TP1_BE = +0.5*R1; TP2 = 0.5*R1 + 0.5*R2; EOD = mark-to-market.
 The replay always starts from the signal bar, so it is idempotent across cycles/restarts.
@@ -41,7 +42,18 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
             if hit_sl:
                 return "SL", -1.0
             if hit_tp1:
+                # TP1 books half; the remaining half is protected at breakeven.
+                # OHLC cannot reveal the intrabar path, so resolve same-bar
+                # breakeven/TP2 collisions conservatively (breakeven wins).
                 stage = "TP1"
+                hit_be = lo <= entry if s > 0 else hi >= entry
+                hit_tp2 = hi >= tp2 if s > 0 else lo <= tp2
+                if hit_be:
+                    return "TP1_BE", 0.5 * r1
+                if hit_tp2:
+                    return "TP2", 0.5 * r1 + 0.5 * r2
+                if end >= session_end:
+                    return "EOD", 0.5 * r1 + 0.5 * s * (cl - entry) / risk
                 continue
             if end >= session_end:
                 return "EOD", s * (cl - entry) / risk
