@@ -37,9 +37,9 @@ def _pick_future(futs: list, today: datetime, roll_days: int = 2):
     return next((f for f in live if (f[0].date() - today.date()).days >= roll_days), live[-1])
 
 
-def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
-                normal_reserve: list, orb_names: list = None, orb_reserve: list = None,
-                indices: list = None, require_options: bool = False) -> Universe:
+def resolve_nse(rows: Iterable[dict], today: datetime, stock_candidates: list,
+                stock_reserve: list, extra_candidates: list = None, extra_reserve: list = None,
+                index_allowlist: list = None, require_options: bool = False) -> Universe:
     """Resolve selected equity F&O underlyings and dynamically discover index derivatives.
 
     Index futures are identified by Upstox's documented underlying_type=INDEX. Equity
