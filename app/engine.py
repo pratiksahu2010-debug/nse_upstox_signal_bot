@@ -23,7 +23,7 @@ from .config import ENGINE, IST, MCX, NORMAL, OPTION_QUOTE, ORB
 from .indicators import add_indicators, compute_features
 from .telegram import format_signal, send
 from .tracker import simulate
-from .universe import Universe, build_universe, pick_option
+from .universe import Universe, build_universe, load_mcx, pick_option
 
 log = logging.getLogger("engine")
 MODULES = {"normal": (mod_normal, NORMAL), "orb": (mod_orb, ORB), "mcx": (mod_mcx, MCX)}
@@ -61,6 +61,7 @@ class Engine:
         self.diag: dict = {}
         self.closed_days: set = set()               # (segment, date) flagged as holiday
         self.prewarmed: set = set()
+        self.mcx_retry_at: Optional[datetime] = None
         self.last_heartbeat: dict = {}
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
@@ -72,6 +73,24 @@ class Engine:
     def ensure_universe(self, now: datetime):
         today = now.strftime("%Y-%m-%d")
         if self.uni and self.uni.built_on == today:
+            # MCX master failures are isolated during universe construction so NSE
+            # signals can continue. Retry the failed segment on a bounded schedule.
+            if (self.uni.mcx_error and _on("ENABLE_MCX")
+                    and (self.mcx_retry_at is None or now >= self.mcx_retry_at)):
+                self.mcx_retry_at = now + timedelta(minutes=5)
+                try:
+                    mcx = load_mcx(now)
+                    self.uni.mcx = mcx
+                    self.uni.mcx_error = ""
+                    for key in [k for k in self.states if k[0] == "mcx"]:
+                        self.states.pop(key, None)
+                    for info in mcx:
+                        self.states[("mcx", info.symbol)] = SymbolState(info)
+                    log.info("MCX universe recovered: %d symbols", len(mcx))
+                except Exception as e:
+                    self.uni.mcx_error = str(e)[:200]
+                    self.last_error = f"MCX universe retry: {e}"
+                    log.warning("MCX universe retry failed: %s", e)
             return
         if self.uni and now.time() < time(7, 30):
             return
