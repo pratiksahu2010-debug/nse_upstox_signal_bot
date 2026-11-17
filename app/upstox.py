@@ -1,22 +1,20 @@
-"""Upstox REST client: rate-limited candle fetch + streaming instrument-master parser.
+"""Upstox REST client: rate-limited, thread-safe candle fetch and streamed instrument master.
 
-Endpoints used (Upstox API v3):
-  GET /v3/historical-candle/intraday/{key}/minutes/5            -> today's candles
-  GET /v3/historical-candle/{key}/minutes/5/{to_date}/{from_date} -> previous sessions
-  https://assets.upstox.com/market-quote/instruments/exchange/{NSE|MCX}.json.gz
-Candle row: [timestamp(ISO, +05:30), open, high, low, close, volume, open_interest].
-Ordering is not guaranteed by the docs, so frames are always sorted by timestamp.
+Analytics Tokens are read-only market-data credentials valid for one year. They do
+not use the daily OAuth refresh flow; a replacement token must be generated in
+Upstox Developer Apps and supplied to set_token()/the Render environment.
 """
 import codecs
 import gzip
 import io
 import json
 import logging
+import math
 import threading
 import time
 from collections import deque
-from datetime import datetime, timedelta
-from typing import Callable, Iterator, Optional
+from datetime import datetime
+from typing import Iterator, Optional
 from urllib.parse import quote
 
 import pandas as pd
@@ -27,11 +25,11 @@ from .config import ENGINE, IST, UPSTOX_TOKEN
 log = logging.getLogger("upstox")
 BASE = "https://api.upstox.com"
 MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/{seg}.json.gz"
+OHLCV = ["open", "high", "low", "close", "volume", "oi"]
 
 
 class Budget:
     """Sliding-window limiter: per-second, per-minute and per-30-minute caps."""
-
     def __init__(self, per_sec: int, per_min: int, per_30: int):
         self.caps = ((1.0, per_sec), (60.0, per_min), (1800.0, per_30))
         self.hits: deque = deque()
@@ -71,74 +69,203 @@ class UpstoxError(Exception):
 
 class UpstoxClient:
     def __init__(self, token: str = UPSTOX_TOKEN, budget: Optional[Budget] = None):
-        self.token = token
+        self._token = token or ""
         self.budget = budget or Budget(ENGINE.rate_per_sec, ENGINE.rate_per_min, ENGINE.rate_per_30min)
-        self.session = requests.Session()
-        self.session.headers.update({"Accept": "application/json"})
+        self._local = threading.local()
+        self._state_lock = threading.Lock()
         self.auth_failed = False
+        self.auth_status = None
+        self.last_success_at = None
+        self.last_error = ""
+        self.last_status = None
+        self.request_count = 0
+        self.failure_count = 0
+
+    def _session(self):
+        # requests.Session is not documented as thread-safe. Each worker owns one.
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update({"Accept": "application/json"})
+            self._local.session = session
+        return session
+
+    def set_token(self, token: str):
+        """Install a newly generated token and clear the latched auth failure."""
+        token = (token or "").strip()
+        if not token:
+            raise ValueError("new Upstox token must not be empty")
+        with self._state_lock:
+            self._token = token
+            self.auth_failed = False
+            self.auth_status = None
+            self.last_error = ""
+            self.last_status = None
+
+    def diagnostics(self) -> dict:
+        with self._state_lock:
+            return {
+                "token_configured": bool(self._token),
+                "auth_failed": self.auth_failed,
+                "auth_status": self.auth_status,
+                "last_success_at": self.last_success_at,
+                "last_error": self.last_error,
+                "last_status": self.last_status,
+                "request_count": self.request_count,
+                "failure_count": self.failure_count,
+            }
+
+    @staticmethod
+    def _retry_after(value, fallback: float) -> float:
+        try:
+            # Upstox normally returns seconds. Ignore HTTP-date or malformed values.
+            return max(0.5, min(30.0, float(value)))
+        except (TypeError, ValueError):
+            return max(0.5, min(30.0, fallback))
 
     def _get(self, path: str, params: Optional[dict] = None, retries: int = 3) -> dict:
         url = BASE + path
-        headers = {"Authorization": f"Bearer {self.token}"}
+        with self._state_lock:
+            token = self._token
+            auth_failed = self.auth_failed
+        if not token:
+            raise UpstoxError("UPSTOX_ACCESS_TOKEN is not configured")
+        if auth_failed:
+            raise UpstoxError("Upstox authentication is rejected; replace the Analytics Token")
+
         last = None
-        for attempt in range(retries):
+        for attempt in range(max(1, retries)):
             self.budget.acquire()
             try:
-                r = self.session.get(url, params=params, headers=headers, timeout=15)
+                r = self._session().get(
+                    url, params=params, headers={"Authorization": f"Bearer {token}"},
+                    timeout=(5, 15),
+                )
             except requests.RequestException as e:
-                last = e
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            if r.status_code == 429:
-                time.sleep(float(r.headers.get("Retry-After", 2 * (attempt + 1))))
-                last = UpstoxError("429 rate limited")
-                continue
+                last = UpstoxError(f"network error: {type(e).__name__}")
+                with self._state_lock:
+                    self.failure_count += 1
+                    self.last_error = str(last)
+                if attempt + 1 < retries:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                break
+
+            with self._state_lock:
+                self.request_count += 1
+                self.last_status = r.status_code
+
             if r.status_code in (401, 403):
-                self.auth_failed = True
-                raise UpstoxError(f"auth error {r.status_code}: token invalid/expired")
-            if r.status_code >= 500:
-                last = UpstoxError(f"{r.status_code}")
-                time.sleep(1.5 * (attempt + 1))
-                continue
+                with self._state_lock:
+                    self.auth_failed = True
+                    self.auth_status = r.status_code
+                    self.failure_count += 1
+                    self.last_error = f"authentication rejected ({r.status_code})"
+                raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+
+            if r.status_code == 429:
+                last = UpstoxError("429 rate limited")
+                delay = self._retry_after(r.headers.get("Retry-After"), 2.0 * (attempt + 1))
+                with self._state_lock:
+                    self.failure_count += 1
+                    self.last_error = str(last)
+                if attempt + 1 < retries:
+                    time.sleep(delay)
+                    continue
+                break
+
+            if r.status_code in (408, 425) or 500 <= r.status_code <= 599:
+                last = UpstoxError(f"temporary HTTP {r.status_code}")
+                with self._state_lock:
+                    self.failure_count += 1
+                    self.last_error = str(last)
+                if attempt + 1 < retries:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                break
+
             if r.status_code != 200:
+                with self._state_lock:
+                    self.failure_count += 1
+                    self.last_error = f"HTTP {r.status_code}"
                 raise UpstoxError(f"{r.status_code}: {r.text[:200]}")
-            self.auth_failed = False
-            return r.json()
-        raise UpstoxError(f"failed after {retries} tries: {last}")
+
+            try:
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("response JSON root is not an object")
+            except (ValueError, json.JSONDecodeError) as e:
+                last = UpstoxError(f"invalid JSON response: {type(e).__name__}")
+                with self._state_lock:
+                    self.failure_count += 1
+                    self.last_error = str(last)
+                if attempt + 1 < retries:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                break
+
+            with self._state_lock:
+                self.last_success_at = datetime.now(IST).isoformat(timespec="seconds")
+                self.last_error = ""
+                self.last_status = r.status_code
+            return payload
+
+        raise UpstoxError(f"failed after {max(1, retries)} tries: {last}")
 
     @staticmethod
     def _frame(candles: list) -> pd.DataFrame:
         if not candles:
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "oi"])
-        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "volume", "oi"][:len(candles[0])])
-        df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(IST)
-        df = df.set_index("ts").sort_index()
+            return pd.DataFrame(columns=OHLCV)
+        rows = []
+        for candle in candles:
+            if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+                continue
+            # The API may omit open_interest; preserve the standard six OHLCV fields.
+            try:
+                ts = pd.to_datetime(candle[0], utc=True).tz_convert(IST)
+                o, h, low, close, volume = [float(x) for x in candle[1:6]]
+                oi = float(candle[6]) if len(candle) > 6 and candle[6] is not None else float("nan")
+            except (TypeError, ValueError, OverflowError):
+                continue
+            vals = (o, h, low, close, volume)
+            if not all(math.isfinite(x) for x in vals):
+                continue
+            if volume < 0 or h < max(o, close, low) or low > min(o, close, h):
+                continue
+            rows.append((ts, o, h, low, close, volume, oi))
+        if not rows:
+            return pd.DataFrame(columns=OHLCV)
+        df = pd.DataFrame(rows, columns=["ts"] + OHLCV).set_index("ts").sort_index()
         df = df[~df.index.duplicated(keep="last")]
-        for col in ("open", "high", "low", "close", "volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df.dropna(subset=["open", "high", "low", "close"]).fillna({"volume": 0})
+        return df
 
     def intraday(self, key: str, interval: int = 5) -> pd.DataFrame:
         d = self._get(f"/v3/historical-candle/intraday/{quote(key, safe='')}/minutes/{interval}")
-        return self._frame(d.get("data", {}).get("candles", []))
+        return self._frame((d.get("data") or {}).get("candles") or [])
 
     def historical(self, key: str, from_date, to_date, interval: int = 5) -> pd.DataFrame:
         path = (f"/v3/historical-candle/{quote(key, safe='')}/minutes/{interval}/"
                 f"{to_date:%Y-%m-%d}/{from_date:%Y-%m-%d}")
         d = self._get(path)
-        return self._frame(d.get("data", {}).get("candles", []))
+        return self._frame((d.get("data") or {}).get("candles") or [])
 
     def ltp(self, keys: list[str]) -> dict:
-        """Best-effort LTP lookup (used only for the option premium in the alert).
-        Returns {instrument_key_or_symbol: price}; empty dict if the shape is unexpected."""
+        """Best-effort LTP lookup (used only for the option premium in the alert)."""
         try:
             d = self._get("/v2/market-quote/ltp", {"instrument_key": ",".join(keys)}, retries=2)
             out = {}
             for k, v in (d.get("data") or {}).items():
+                if not isinstance(v, dict):
+                    continue
                 px = v.get("last_price", v.get("ltp"))
                 tok = v.get("instrument_token")
                 if px is not None:
-                    out[tok or k] = float(px)
+                    try:
+                        px = float(px)
+                        if math.isfinite(px) and px > 0:
+                            out[tok or k] = px
+                    except (TypeError, ValueError):
+                        continue
             return out
         except Exception as e:  # premium is optional
             log.warning("ltp lookup failed: %s", e)
@@ -176,7 +303,7 @@ def iter_json_array(fobj, chunk: int = 1 << 20) -> Iterator[dict]:
         buf += inc.decode(data, final=not data)
         i = 0
         while True:
-            while i < len(buf) and buf[i] in " \r\n\t,[":
+            while i < len(buf) and buf[i] in " \r\n\t,[": 
                 i += 1
             if i >= len(buf) or buf[i] == "]":
                 break
@@ -193,14 +320,14 @@ def iter_json_array(fobj, chunk: int = 1 << 20) -> Iterator[dict]:
 
 def stream_master(segment_file: str) -> Iterator[dict]:
     """segment_file: 'NSE' or 'MCX'. Yields instrument dicts."""
-    r = requests.get(MASTER_URL.format(seg=segment_file), stream=True, timeout=120)
-    r.raise_for_status()
-    raw = r.raw
-    raw.decode_content = False
-    head = raw.read(2)
-    buffered = io.BufferedReader(_Chain(head, raw), buffer_size=1 << 20)
-    fobj = gzip.GzipFile(fileobj=buffered) if head == b"\x1f\x8b" else buffered
-    yield from iter_json_array(fobj)
+    with requests.get(MASTER_URL.format(seg=segment_file), stream=True, timeout=(10, 120)) as r:
+        r.raise_for_status()
+        raw = r.raw
+        raw.decode_content = False
+        head = raw.read(2)
+        buffered = io.BufferedReader(_Chain(head, raw), buffer_size=1 << 20)
+        fobj = gzip.GzipFile(fileobj=buffered) if head == b"\x1f\x8b" else buffered
+        yield from iter_json_array(fobj)
 
 
 def expiry_to_date(v) -> Optional[datetime]:
@@ -212,8 +339,9 @@ def expiry_to_date(v) -> Optional[datetime]:
         if x > 1e11:
             x /= 1000.0
         return datetime.fromtimestamp(x, tz=IST)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         try:
-            return pd.Timestamp(v).tz_localize(IST).to_pydatetime()
+            t = pd.Timestamp(v)
+            return (t.tz_localize(IST) if t.tzinfo is None else t.tz_convert(IST)).to_pydatetime()
         except Exception:
             return None
