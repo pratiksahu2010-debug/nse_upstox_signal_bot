@@ -235,7 +235,7 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     df, t = _find_signal_case()
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
-    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    uni = _test_universe(info, now)
     calls, delivered = [0], []
     def flaky_notify(message):
         calls[0] += 1
