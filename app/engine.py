@@ -88,14 +88,13 @@ class Engine:
         # A rebuilt daily universe must never inherit the previous session's index bias.
         self.bias, self.bias_at = "neutral", None
         self.states = {}
-        for m in ("normal", "orb", "mcx"):
-            for info in uni.by_module(m):
-                self.states[(m, info.symbol)] = SymbolState(info)
+        for info in uni.normal:
+            self.states[("normal", info.symbol)] = SymbolState(info)
         try:
             self.store.expire_old(now.date())
         except Exception as e:
             log.warning("expire_old failed: %s", e)
-        log.info("universe ready: %s", {m: len(uni.by_module(m)) for m in MODULES})
+        log.info("universe ready: stocks=%d indices=%d", sum(not x.is_index for x in uni.normal), sum(x.is_index for x in uni.normal))
 
     def _mod_states(self, module: str) -> list:
         return [st for (m, _), st in self.states.items() if m == module and not st.disabled]
@@ -123,16 +122,6 @@ class Engine:
         st.hist, st.warm_day = h, now.date()
         st.warm_retry_at = None
         st.err = ""
-        if module == "mcx":
-            n_days = len(set(h.index.date)) if len(h) else 0
-            if n_days < 3:
-                st.disabled = "insufficient_history"
-                return
-            active = h[h["volume"] > 0].groupby(h[h["volume"] > 0].index.date).size()
-            med_bars = float(active.median()) if len(active) else 0.0
-            med_vol = float(h.loc[h["volume"] > 0, "volume"].median()) if (h["volume"] > 0).any() else 0.0
-            if med_bars < MCX.min_active_bars_day or med_vol < MCX.min_median_bar_vol:
-                st.disabled = f"illiquid (bars/day {med_bars:.0f}, median vol {med_vol:.1f})"
 
     def _load(self, st: SymbolState, now: datetime, module: str) -> Optional[pd.DataFrame]:
         if (st.warm_day != now.date()
@@ -299,8 +288,7 @@ class Engine:
             if f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars):
                 d["rejects"]["stale_data"] += 1
                 continue
-            ctx = Ctx(bias=self.bias if module != "mcx" else "neutral", ignore_time=force,
-                      signaled_today=lambda s_, taken=taken: s_ in taken)
+            ctx = Ctx(ignore_time=force)
             try:
                 sig, why = mod.evaluate(st.info, ind, f, ctx)
             except Exception as e:  # one bad symbol must never kill the cycle
@@ -340,8 +328,7 @@ class Engine:
                         d["rejects"]["cooldown"] += 1
                         continue
             sig.forced = force
-            if module != "mcx":
-                sig.option = self._option_for(sig, now)
+            sig.option = self._option_for(sig, now)
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
@@ -465,8 +452,6 @@ class Engine:
         t = now.time()
         if ENGINE.prewarm_nse <= t < time(9, 15):
             self.prewarm(now, "nse")
-        if ENGINE.prewarm_mcx <= t < MCX.first_signal and now.time() < time(9, 0):
-            self.prewarm(now, "mcx")
         if ENGINE.heartbeat_min:
             for m in ("normal",):
                 d = self.diag.get(m)
@@ -480,8 +465,6 @@ class Engine:
             for tag, end in (("nse", NORMAL.session_end),):
                 key = (tag, now.date())
                 if key not in self.eod_sent and t >= (datetime.combine(now.date(), end) + timedelta(minutes=20)).time():
-                    if tag == "mcx" and t < time(23, 20):
-                        continue
                     self.eod_sent.add(key)
                     self._notify_silent(self.eod_text(now.date(), tag))
 
@@ -514,7 +497,6 @@ class Engine:
             "started": self.started.isoformat(), "store": getattr(self.store, "kind", "?"),
             "universe": ({"normal": len(self.uni.normal), "stocks": sum(not x.is_index for x in self.uni.normal),\n                          "indices": sum(x.is_index for x in self.uni.normal)} if self.uni else {}),
             "dropped": self.uni.dropped if self.uni else {},
-            "mcx_disabled": {s.info.symbol: s.disabled for (m, _), s in self.states.items() if m == "mcx" and s.disabled},
             "bias": self.bias, "api_budget": bud, "auth_failed": getattr(self.client, "auth_failed", False),
             "closed_days": sorted(f"{a}:{b}" for a, b in self.closed_days), "last_error": self.last_error,
         }
