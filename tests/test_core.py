@@ -166,3 +166,27 @@ def test_engine_rejects_previous_session_bias():
     previous = previous[previous.index.date < now.date()]
     assert eng._set_bias(previous, now) is False
     assert eng.bias == "neutral" and eng.bias_at is None
+
+
+def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
+    df, t = _find_signal_case()
+    now = t + timedelta(minutes=5, seconds=7)
+    info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
+    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    calls, delivered = [0], []
+    def flaky_notify(message):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("temporary Telegram outage")
+        delivered.append(message)
+        return True
+    store = MemoryStore()
+    eng = Engine(FakeClient(df, now), store, notify=flaky_notify, universe_builder=lambda n: uni)
+    eng.ensure_universe(now)
+    first = eng.cycle("normal", now)
+    assert first["signals"] == 0
+    assert len(store.pending_notifications()) == 1
+    second = eng.cycle("normal", now)
+    assert len(delivered) == 1
+    assert store.pending_notifications() == []
+    assert second["rejects"].get("duplicate", 0) == 1
