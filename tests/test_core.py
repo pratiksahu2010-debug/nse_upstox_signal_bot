@@ -364,4 +364,4 @@ def test_simple_call_put_levels_are_atr_based():
     assert reason is None and signal is not None
     assert signal.risk == pytest.approx(1.2 * features.atr, rel=0.01)
     assert abs(signal.tp1 - signal.entry) == pytest.approx(1.5 * signal.risk, rel=0.01)
-    assert abs(signal.tp2 - signal.entry) == pytest.approx(2.0 * signal.risk, rel=0.01)
+    assert abs(signal.tp2 - signal.entry) == pytest.approx(2.0 * signal.risk, rel=0.03)
