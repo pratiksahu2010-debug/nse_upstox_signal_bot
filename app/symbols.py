@@ -1,11 +1,8 @@
-"""Static symbol lists. EDIT FREELY - the resolver validates every name against the live
-Upstox instrument master (must exist as an NSE F&O underlying with a cash EQ record) and
-silently backfills from the *_RESERVE lists when a name has been renamed or removed from
-F&O (e.g. after demergers). Disabled names are logged at startup.
+"""Candidate NSE midcap F&O stock universe.
 
-NORMAL  : 50 most liquid F&O stocks (+ indices, traded via near-month index futures)
-ORB     : 100 *different* F&O stocks with good intraday range (no overlap with NORMAL)
-MCX     : not listed here - built automatically from the MCX instrument master
+Candidates are validated against the daily Upstox instrument master. Production only
+selects stocks with cash EQ, FUT, CE and PE contracts. The engine separately discovers
+all index underlyings with underlying_type=INDEX from the same master.
 """
 
 INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
@@ -44,3 +41,4 @@ ORB_RESERVE = [
     "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
     "ICICIPRULI", "LICI", "TITAGARH", "NCC",
 ]
+\n\n# Reuse the existing 100-stock F&O candidate basket as the single midcap candidate\n# list. Invalid/non-optionable names are dropped; reserves backfill only from this\n# reviewed midcap-oriented candidate pool.\nMIDCAP_FNO_100 = ORB_100\nMIDCAP_FNO_RESERVE = ORB_RESERVE\n
