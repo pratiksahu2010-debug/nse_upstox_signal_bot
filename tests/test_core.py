@@ -353,3 +353,15 @@ def test_dynamic_index_and_optionable_midcap_resolution():
     assert names == {"MIDCAP", "NIFTY"}
     assert next(item for item in uni.normal if item.symbol == "NIFTY").is_index
     assert {option.otype for option in uni.options["MIDCAP"]} == {"CE", "PE"}
+
+
+def test_simple_call_put_levels_are_atr_based():
+    df, ts = _find_signal_case()
+    ind = add_indicators(df.loc[:ts])
+    features = compute_features(ind)
+    info = SymbolInfo("TEST", "K", "normal", lot=100)
+    signal, reason = mod_normal.evaluate(info, ind, features, Ctx())
+    assert reason is None and signal is not None
+    assert signal.risk == pytest.approx(1.2 * features.atr, rel=0.01)
+    assert abs(signal.tp1 - signal.entry) == pytest.approx(1.5 * signal.risk, rel=0.01)
+    assert abs(signal.tp2 - signal.entry) == pytest.approx(2.0 * signal.risk, rel=0.01)
