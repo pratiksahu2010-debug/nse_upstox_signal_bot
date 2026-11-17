@@ -17,8 +17,7 @@ import numpy as np
 import pandas as pd
 
 from . import mod_normal
-from . import symbols as S
-from .common import Ctx, Signal, SymbolInfo, market_bias
+from .common import Ctx, Signal, SymbolInfo
 from .config import ENGINE, IST, NORMAL, OPTION_QUOTE
 from .indicators import add_indicators, compute_features
 from .telegram import format_signal, send
@@ -196,41 +195,6 @@ class Engine:
             pending = retry
             _time.sleep(5)
         return out
-
-    # ------------------------------------------------------------------ bias
-    def _set_bias(self, df: Optional[pd.DataFrame], now: datetime):
-        if df is None or len(df) < 50:
-            self.bias, self.bias_at = "neutral", None
-            return False
-        # Never stamp yesterday's historical close as a fresh live index bias.
-        latest = pd.Timestamp(df.index[-1])
-        latest = latest.tz_localize(IST) if latest.tzinfo is None else latest.tz_convert(IST)
-        expected = latest_eligible_bar(now)
-        max_age = timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
-        if latest.date() != now.date() or latest > expected or expected - latest > max_age:
-            self.bias = "neutral"
-            self.bias_at = None
-            return False
-        f = compute_features(add_indicators(df))
-        if f is None:
-            self.bias = "neutral"
-            self.bias_at = None
-            return False
-        self.bias, self.bias_at = market_bias(f), now
-        return True
-
-    def _refresh_bias(self, now: datetime):
-        if self.bias_at and (now - self.bias_at) < timedelta(minutes=4):
-            return
-        st = self.states.get(("normal", S.BIAS_INDEX))
-        if not st:
-            self.bias, self.bias_at = "neutral", None
-            return
-        try:
-            self._set_bias(self._load(st, now, "normal"), now)
-        except Exception as e:
-            self.bias = "neutral"
-            log.warning("bias refresh failed: %s", e)
 
     # ------------------------------------------------------------------ cycle
     def cycle(self, module: str, now: datetime, force: bool = False) -> dict:
