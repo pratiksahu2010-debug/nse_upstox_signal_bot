@@ -6,7 +6,6 @@ separately discovered from the master using underlying_type=INDEX.
 """
 
 INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
-BIAS_INDEX = "NIFTY"   # market-bias source for stock signals
 
 NORMAL_50 = [
     "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "INFY", "TCS", "AXISBANK", "KOTAKBANK", "LT", "ITC",
