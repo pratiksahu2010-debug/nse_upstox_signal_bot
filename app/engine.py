@@ -26,7 +26,7 @@ from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
 MODULES = {"normal": (mod_normal, NORMAL)}
-NEAR_MISS = {"score", "htf_15m", "market_bias", "no_trigger", "sl_too_wide", "chasing", "extended_vwap"}
+NEAR_MISS = {"htf_15m", "adx_min", "di_direction", "rsi_direction", "ema_vwap"}
 OHLCV = ["open", "high", "low", "close", "volume"]
 
 
@@ -57,11 +57,9 @@ class Engine:
         self.builder = universe_builder
         self.uni: Optional[Universe] = None
         self.states: dict = {}                      # (module, symbol) -> SymbolState
-        self.bias, self.bias_at = "neutral", None
         self.diag: dict = {}
         self.closed_days: set = set()               # (segment, date) flagged as holiday
         self.prewarmed: set = set()
-        self.mcx_retry_at: Optional[datetime] = None
         self.last_heartbeat: dict = {}
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
@@ -441,8 +439,9 @@ class Engine:
     # ------------------------------------------------------------------ reports
     def heartbeat_text(self, m: str, d: dict) -> str:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
-        return (f"💓 <b>{m.upper()} scan {d['at']}</b>\n<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}"
-                f" · bias {self.bias}</b>\n<b>top rejects: {top}</b>")
+        return (f"💓 <b>{m.upper()} scan {d['at']}</b>\\n"
+                f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>\\n"
+                f"<b>top rejects: {top}</b>")
 
     def eod_text(self, day: date, tag: str) -> str:
         mods = ("normal",)
@@ -458,11 +457,18 @@ class Engine:
     def status(self) -> dict:
         bud = self.client.budget.usage() if hasattr(self.client, "budget") else {}
         return {
-            "started": self.started.isoformat(), "store": getattr(self.store, "kind", "?"),
-            "universe": ({"normal": len(self.uni.normal), "stocks": sum(not x.is_index for x in self.uni.normal),\n                          "indices": sum(x.is_index for x in self.uni.normal)} if self.uni else {}),
+            "started": self.started.isoformat(),
+            "store": getattr(self.store, "kind", "?"),
+            "universe": ({
+                "stocks": sum(not item.is_index for item in self.uni.normal),
+                "indices": sum(item.is_index for item in self.uni.normal),
+                "total": len(self.uni.normal),
+            } if self.uni else {}),
             "dropped": self.uni.dropped if self.uni else {},
-            "bias": self.bias, "api_budget": bud, "auth_failed": getattr(self.client, "auth_failed", False),
-            "closed_days": sorted(f"{a}:{b}" for a, b in self.closed_days), "last_error": self.last_error,
+            "api_budget": bud,
+            "auth_failed": getattr(self.client, "auth_failed", False),
+            "closed_days": sorted(f"{segment}:{day}" for segment, day in self.closed_days),
+            "last_error": self.last_error,
         }
 
     def diag_json(self) -> dict:
