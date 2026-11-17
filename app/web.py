@@ -42,8 +42,6 @@ def _init():
     with _start_lock:
         if _started:
             return
-        if _started:
-            return
         try:
             store = make_store(config.DATABASE_URL)
             candidate = Engine(UpstoxClient(), store)
@@ -51,8 +49,12 @@ def _init():
                 log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
             if config.RUN_SCHEDULER:
                 scheduler.start(candidate)
-                send(f"<b>✅ Signal bot started {datetime.now(IST):%d %b %H:%M} IST · store {store.kind}</b>", silent=True)
             engine = candidate
+            if config.RUN_SCHEDULER:
+                try:
+                    send(f"<b>✅ Signal bot started {datetime.now(IST):%d %b %H:%M} IST · store {store.kind}</b>", silent=True)
+                except Exception:
+                    log.exception("startup notification failed; scheduler remains active")
             if config.KEEPALIVE and os.getenv("RENDER_EXTERNAL_URL"):
                 threading.Thread(target=_keepalive, daemon=True).start()
             _started = True
