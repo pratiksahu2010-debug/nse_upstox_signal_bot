@@ -62,8 +62,9 @@ def test_tracker_outcomes():
     assert st == "TP2" and r == pytest.approx(0.5 * 1.2 + 0.5 * 2.2)
     st, r = simulate(_row(), _bars([(100, 101.3, 100.1, 101), (101, 101.4, 99.9, 100)]), end)
     assert st == "TP1_BE" and r == pytest.approx(0.6)
+    short_bar = _bars([(99.5, 99.8, 98.7, 99.0)])
     assert simulate(_row("SHORT") | {"sl": 101.0, "tp1": 98.8, "tp2": 97.8},
-                    _bars([(100, 100.4, 98.7, 99)]), end)[0] == "TP1"
+                    short_bar, end)[0] == "TP1"
 
 
 def test_universe_resolution_and_backfill():
