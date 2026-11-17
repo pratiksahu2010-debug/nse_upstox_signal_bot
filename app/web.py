@@ -4,7 +4,7 @@
   GET /status                         universe, API budget, auth and data diagnostics
   GET /diag                           per-module last cycle: scope, symbols, signals, reject reasons
   GET /stats?days=30                  win rate / net R per module from tracked alerts
-  GET /force?module=normal|orb|mcx|all evaluate NOW ignoring clock windows (testing)
+  GET /force?module=normal|all       evaluate NOW ignoring clock windows (testing)
   GET /test-telegram                  Use Authorization: Bearer ADMIN_TOKEN for admin routes.
 """
 import hmac
@@ -139,8 +139,8 @@ def force():
     if not _auth():
         return jsonify(error="unauthorized"), 401
     mod = request.args.get("module", "all")
-    if mod not in ("all", "normal", "orb", "mcx"):
-        return jsonify(error="module must be all, normal, orb or mcx"), 400
+    if mod not in ("all", "normal"):
+        return jsonify(error="module must be all or normal"), 400
     only = None if mod == "all" else mod
 
     def run():
