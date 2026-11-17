@@ -157,11 +157,17 @@ class UpstoxClient:
 
             if r.status_code in (401, 403):
                 with self._state_lock:
-                    self.auth_failed = True
-                    self.auth_status = r.status_code
-                    self.failure_count += 1
-                    self.last_error = f"authentication rejected ({r.status_code})"
-                raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+                    # A token may have been rotated while this request was in flight.
+                    # Never let a late rejection of the old token poison the new token.
+                    token_is_current = self._token == token
+                    if token_is_current:
+                        self.auth_failed = True
+                        self.auth_status = r.status_code
+                        self.failure_count += 1
+                        self.last_error = f"authentication rejected ({r.status_code})"
+                if token_is_current:
+                    raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+                raise UpstoxError("stale token rejected after token rotation; current token remains active")
 
             if r.status_code == 429:
                 last = UpstoxError("429 rate limited")
