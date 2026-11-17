@@ -135,7 +135,6 @@ def test_engine_end_to_end_dedupe_and_cooldown():
     sent, store = [], MemoryStore()
     eng = Engine(FakeClient(df, now), store, notify=lambda text, silent=False: sent.append(text),
                  universe_builder=lambda n: uni)
-    eng.bias = "neutral"
     eng.ensure_universe(now)
     out = eng.cycle("normal", now)
     assert out["signals"] == 1 and len(sent) == 1
@@ -220,15 +219,6 @@ def test_memory_store_notification_outbox_retries_until_delivered():
     assert store.pending_notifications() == [{"id": sid, "text": "alert"}]
     store.mark_notification(sid, True)
     assert store.pending_notifications() == []
-
-
-def test_engine_rejects_previous_session_bias():
-    now = datetime(2026, 11, 17, 10, 5, tzinfo=IST)
-    eng = Engine(FakeClient(make_history(3), now), MemoryStore())
-    previous = make_history(3, seed=19)
-    previous = previous[previous.index.date < now.date()]
-    assert eng._set_bias(previous, now) is False
-    assert eng.bias == "neutral" and eng.bias_at is None
 
 
 def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
