@@ -29,11 +29,20 @@ CREATE TABLE IF NOT EXISTS signals (
     status      TEXT NOT NULL DEFAULT 'OPEN',
     r_result    DOUBLE PRECISION,
     closed_at   TIMESTAMPTZ,
+    delivery_status TEXT NOT NULL DEFAULT 'PENDING',
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    delivery_error TEXT,
+    delivered_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (module, symbol, side, bar_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_signals_day ON signals (trade_day, module);
 CREATE INDEX IF NOT EXISTS idx_signals_open ON signals (status) WHERE status IN ('OPEN', 'TP1');
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'DELIVERED';
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_error TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
 """
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
@@ -61,9 +70,26 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, closed_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
+
+    def pending_notifications(self, limit: int = 25) -> list:
+        with self.lock:
+            return [{"id": r["id"], "text": (r.get("details") or {}).get("telegram_text")}
+                    for r in self.rows if r.get("delivery_status") == "PENDING"
+                    and (r.get("details") or {}).get("telegram_text")][:limit]
+
+    def mark_notification(self, sid: int, delivered: bool, error: Optional[str] = None):
+        with self.lock:
+            for r in self.rows:
+                if r["id"] == sid:
+                    r["delivery_attempts"] = r.get("delivery_attempts", 0) + 1
+                    r["delivery_status"] = "DELIVERED" if delivered else "PENDING"
+                    r["delivery_error"] = None if delivered else str(error or "delivery failed")[:300]
+                    if delivered:
+                        r["delivered_at"] = datetime.now(timezone.utc)
+                    return
 
     def count_today(self, module: str, day: date) -> int:
         return sum(1 for r in self.rows if r["module"] == module and r["trade_day"] == day)
@@ -144,6 +170,17 @@ class PostgresStore(MemoryStore):
              s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {}))), fetch="one")
         return row[0] if row else None
 
+    def pending_notifications(self, limit: int = 100) -> list:
+        rows = self._run("SELECT id, details->>'telegram_text' FROM signals WHERE delivery_status='PENDING' "
+                         "AND COALESCE(details->>'telegram_text', '') <> '' ORDER BY id LIMIT %s", (limit,), "all")
+        return [{"id": r[0], "text": r[1]} for r in rows]
+
+    def mark_notification(self, sid: int, delivered: bool, error: Optional[str] = None):
+        status = "DELIVERED" if delivered else "PENDING"
+        self._run("UPDATE signals SET delivery_status=%s, delivery_attempts=delivery_attempts+1, "
+                  "delivery_error=%s, delivered_at=CASE WHEN %s THEN now() ELSE delivered_at END WHERE id=%s",
+                  (status, None if delivered else str(error or "delivery failed")[:300], delivered, sid))
+
     def count_today(self, module: str, day: date) -> int:
         return self._run("SELECT count(*) FROM signals WHERE module=%s AND trade_day=%s", (module, day), "one")[0]
 
@@ -198,8 +235,9 @@ def make_store(dsn: str):
             st.init()
             log.info("using Postgres")
             return st
-        except Exception as e:
-            log.error("Postgres unavailable (%s) - falling back to memory store", e)
+        except Exception:
+            log.exception("Postgres unavailable; refusing volatile fallback because DATABASE_URL is configured")
+            raise
     st = MemoryStore()
     log.warning("DATABASE_URL not set / unreachable: using in-memory store (state lost on restart)")
     return st

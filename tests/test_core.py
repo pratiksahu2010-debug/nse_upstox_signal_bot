@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from app.common import Ctx, SymbolInfo
 from app.config import IST
-from app.db import MemoryStore
+from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
 from app.tracker import simulate
@@ -142,3 +142,60 @@ def test_weekend_and_empty_universe_safe():
                  universe_builder=lambda n: Universe(built_on="2026-11-14"))
     eng.housekeeping(datetime(2026, 11, 14, 10, 0, tzinfo=IST))   # Saturday: no-op
     assert eng.run_boundary(datetime(2026, 11, 17, 3, 0, tzinfo=IST)) == {}
+
+
+def test_memory_store_notification_outbox_retries_until_delivered():
+    store = MemoryStore()
+    row = _row()
+    row.update({"module": "normal", "symbol": "TEST", "trade_day": row["bar_ts"].date(),
+                "entry": 100.0, "sl": 99.0, "tp1": 101.2, "tp2": 102.2,
+                "score": 80, "trig": "test", "details": {"telegram_text": "alert"}})
+    sid = store.add_signal(row)
+    assert sid is not None
+    assert store.pending_notifications() == [{"id": sid, "text": "alert"}]
+    store.mark_notification(sid, False, "temporary Telegram failure")
+    assert store.pending_notifications() == [{"id": sid, "text": "alert"}]
+    store.mark_notification(sid, True)
+    assert store.pending_notifications() == []
+
+
+def test_engine_rejects_previous_session_bias():
+    now = datetime(2026, 11, 17, 10, 5, tzinfo=IST)
+    eng = Engine(FakeClient(make_history(3), now), MemoryStore())
+    previous = make_history(3, seed=19)
+    previous = previous[previous.index.date < now.date()]
+    assert eng._set_bias(previous, now) is False
+    assert eng.bias == "neutral" and eng.bias_at is None
+
+
+def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
+    df, t = _find_signal_case()
+    now = t + timedelta(minutes=5, seconds=7)
+    info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
+    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    calls, delivered = [0], []
+    def flaky_notify(message):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("temporary Telegram outage")
+        delivered.append(message)
+        return True
+    store = MemoryStore()
+    eng = Engine(FakeClient(df, now), store, notify=flaky_notify, universe_builder=lambda n: uni)
+    eng.ensure_universe(now)
+    first = eng.cycle("normal", now)
+    assert first["signals"] == 0
+    assert len(store.pending_notifications()) == 1
+    second = eng.cycle("normal", now)
+    assert len(delivered) == 1
+    assert store.pending_notifications() == []
+    assert second["rejects"].get("duplicate", 0) == 1
+
+
+def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypatch):
+    import app.db as db
+    def unavailable(_dsn):
+        raise RuntimeError("database unavailable")
+    monkeypatch.setattr(db, "PostgresStore", unavailable)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        make_store("postgresql://unavailable")
