@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from app.common import Ctx, SymbolInfo
 from app.config import IST
-from app.db import MemoryStore
+from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
 from app.tracker import simulate
@@ -190,3 +190,12 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     assert len(delivered) == 1
     assert store.pending_notifications() == []
     assert second["rejects"].get("duplicate", 0) == 1
+
+
+def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypatch):
+    import app.db as db
+    def unavailable(_dsn):
+        raise RuntimeError("database unavailable")
+    monkeypatch.setattr(db, "PostgresStore", unavailable)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        make_store("postgresql://unavailable")
