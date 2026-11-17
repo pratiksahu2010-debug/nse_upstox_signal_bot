@@ -84,7 +84,6 @@ class Engine:
             return
         self.uni = uni
         # A rebuilt daily universe must never inherit the previous session's index bias.
-        self.bias, self.bias_at = "neutral", None
         self.states = {}
         for info in uni.normal:
             self.states[("normal", info.symbol)] = SymbolState(info)
@@ -439,9 +438,11 @@ class Engine:
     # ------------------------------------------------------------------ reports
     def heartbeat_text(self, m: str, d: dict) -> str:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
-        return (f"💓 <b>{m.upper()} scan {d['at']}</b>\\n"
-                f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>\\n"
-                f"<b>top rejects: {top}</b>")
+        return "\\n".join([
+            f"💓 <b>{m.upper()} scan {d['at']}</b>",
+            f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>",
+            f"<b>top rejects: {top}</b>",
+        ])
 
     def eod_text(self, day: date, tag: str) -> str:
         mods = ("normal",)
