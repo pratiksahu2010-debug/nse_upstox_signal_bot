@@ -463,6 +463,8 @@ class Engine:
                 "stocks": sum(not item.is_index for item in self.uni.normal),
                 "indices": sum(item.is_index for item in self.uni.normal),
                 "total": len(self.uni.normal),
+                "stock_symbols": [item.symbol for item in self.uni.normal if not item.is_index],
+                "index_symbols": [item.symbol for item in self.uni.normal if item.is_index],
             } if self.uni else {}),
             "dropped": self.uni.dropped if self.uni else {},
             "api_budget": bud,
