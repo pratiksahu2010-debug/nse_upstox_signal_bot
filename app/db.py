@@ -101,9 +101,11 @@ class MemoryStore:
         return {r["symbol"] for r in self.rows if r["module"] == module and r["trade_day"] == day}
 
     def expire_old(self, day: date):
-        for r in self.rows:
-            if r["trade_day"] < day and r["status"] in ("OPEN", "TP1"):
-                r["status"] = "EXPIRED"
+        with self.lock:
+            for r in self.rows:
+                if r["trade_day"] < day and r["status"] in ("OPEN", "TP1"):
+                    r["status"] = "EXPIRED"
+                    r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
 
     def last_signal_ts(self, module: str, symbol: str, side: str) -> Optional[datetime]:
         ts = [r["bar_ts"] for r in self.rows if r["module"] == module and r["symbol"] == symbol and r["side"] == side]
@@ -115,11 +117,14 @@ class MemoryStore:
                 and (module is None or r["module"] == module) and (symbol is None or r["symbol"] == symbol)]
 
     def update_outcome(self, sid: int, status: str, r_result: Optional[float]):
-        for r in self.rows:
-            if r["id"] == sid:
-                r["status"] = status
-                if r_result is not None:
-                    r["r_result"] = r_result
+        with self.lock:
+            for r in self.rows:
+                if r["id"] == sid:
+                    r["status"] = status
+                    if r_result is not None:
+                        r["r_result"] = r_result
+                    if status not in ("OPEN", "TP1"):
+                        r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
 
     def stats(self, since: date) -> list:
         agg: dict = {}
@@ -141,21 +146,41 @@ class PostgresStore(MemoryStore):
     def __init__(self, dsn: str):
         import psycopg2.pool  # imported lazily so tests run without the driver
         self.dsn = dsn
-        self.pool = psycopg2.pool.ThreadedConnectionPool(1, 4, dsn)
+        self.pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn)
 
     def _run(self, sql: str, params=None, fetch: str = "none"):
-        conn = self.pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                out = cur.fetchall() if fetch == "all" else cur.fetchone() if fetch == "one" else None
-            conn.commit()
-            return out
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            self.pool.putconn(conn)
+        from psycopg2 import InterfaceError, OperationalError
+        for attempt in range(2):
+            conn = self.pool.getconn()
+            discard = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    out = cur.fetchall() if fetch == "all" else cur.fetchone() if fetch == "one" else None
+                conn.commit()
+                return out
+            except (OperationalError, InterfaceError):
+                discard = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    log.warning("Postgres connection failed; discarding connection and retrying once")
+                    continue
+                raise
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    discard = True
+                raise
+            finally:
+                self.pool.putconn(conn, close=discard or bool(conn.closed))
+
+    def close(self):
+        """Close pooled connections during graceful process shutdown."""
+        self.pool.closeall()
 
     def init(self):
         self._run(SCHEMA)
@@ -193,7 +218,8 @@ class PostgresStore(MemoryStore):
         return {r[0] for r in rows}
 
     def expire_old(self, day: date):
-        self._run("UPDATE signals SET status='EXPIRED' WHERE status IN ('OPEN','TP1') AND trade_day < %s", (day,))
+        self._run("UPDATE signals SET status='EXPIRED', closed_at=COALESCE(closed_at, now()) "
+                  "WHERE status IN ('OPEN','TP1') AND trade_day < %s", (day,))
 
     def last_signal_ts(self, module: str, symbol: str, side: str) -> Optional[datetime]:
         row = self._run("SELECT max(bar_ts) FROM signals WHERE module=%s AND symbol=%s AND side=%s",
@@ -201,7 +227,7 @@ class PostgresStore(MemoryStore):
         return row[0] if row else None
 
     def open_signals(self, day: date, module: Optional[str] = None, symbol: Optional[str] = None) -> list:
-        sql = f"SELECT {COLS} FROM signals WHERE trade_day=%s AND status IN ('OPEN','TP1')"
+        sql = f"SELECT {COLS} FROM signals WHERE trade_day=%s AND status IN ('OPEN','TP1') ORDER BY bar_ts, id"
         params: list = [day]
         if module:
             sql += " AND module=%s"
