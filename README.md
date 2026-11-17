@@ -3,7 +3,7 @@
 A single NSE signal engine using Upstox market data, Render, PostgreSQL and Telegram. **Signals only**: it never places orders.
 
 ## Universe
-- One midcap-oriented basket of up to 100 NSE F&O stock candidates from `app/symbols.py`.
+- One midcap-oriented candidate pool in `app/symbols.py`; the resolver selects up to 100 eligible stocks from it.
 - Each stock is accepted only when the daily Upstox master contains its NSE cash EQ, futures, and both CE and PE option contracts on a usable common expiry.
 - All NSE index underlyings with `underlying_type=INDEX` futures and both CE/PE options are discovered dynamically from the same daily master. There is no fixed five-index limit.
 - The status endpoint reports resolved stock count, index count and dropped symbols. The bot never silently substitutes a large-cap stock for an invalid candidate.
