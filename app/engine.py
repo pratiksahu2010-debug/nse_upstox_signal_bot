@@ -35,6 +35,12 @@ def floor5(now: datetime) -> datetime:
     return now.replace(minute=now.minute - now.minute % ENGINE.candle_min, second=0, microsecond=0)
 
 
+def latest_eligible_bar(now: datetime) -> datetime:
+    """Latest candle start whose close plus the configured fetch delay has passed."""
+    eligible_close = floor5(now - timedelta(seconds=ENGINE.fetch_delay_sec))
+    return eligible_close - timedelta(minutes=ENGINE.candle_min)
+
+
 @dataclass
 class SymbolState:
     info: SymbolInfo
@@ -120,7 +126,7 @@ class Engine:
         intr = self.client.intraday(st.info.key)
         if len(intr):
             intr = intr[OHLCV]
-            intr = intr[intr.index <= now - timedelta(minutes=ENGINE.candle_min)]   # closed bars only
+            intr = intr[intr.index <= latest_eligible_bar(now)]   # closed bars after fetch delay
         parts = [p for p in (st.hist, intr) if p is not None and len(p)]
         if not parts:
             return pd.DataFrame(columns=OHLCV)
@@ -148,7 +154,7 @@ class Engine:
             list(ex.map(go, states))
 
     def _load_many(self, module: str, states: list, now: datetime, force: bool) -> dict:
-        expected = floor5(now) - timedelta(minutes=ENGINE.candle_min)
+        expected = latest_eligible_bar(now)
         out: dict = {}
         pending = states
         for attempt in range(1 + ENGINE.retry_passes):
@@ -185,7 +191,7 @@ class Engine:
         # Never stamp yesterday's historical close as a fresh live index bias.
         latest = pd.Timestamp(df.index[-1])
         latest = latest.tz_localize(IST) if latest.tzinfo is None else latest.tz_convert(IST)
-        expected = floor5(now) - timedelta(minutes=ENGINE.candle_min)
+        expected = latest_eligible_bar(now)
         max_age = timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
         if latest.date() != now.date() or latest > expected or expected - latest > max_age:
             self.bias = "neutral"
@@ -246,7 +252,7 @@ class Engine:
         if module == "normal" and S.BIAS_INDEX in data:
             self._set_bias(data[S.BIAS_INDEX], now)
 
-        expected = floor5(now) - timedelta(minutes=ENGINE.candle_min)
+        expected = latest_eligible_bar(now)
         taken = self.store.symbols_today(module, day) if module == "orb" else set()
         cands: list = []
         for sym, df in data.items():
