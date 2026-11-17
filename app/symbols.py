@@ -21,7 +21,7 @@ NORMAL_RESERVE = [
     "HDFCLIFE", "LTIM", "TVSMOTOR", "GAIL", "PFC", "RECLTD", "IRCTC",
 ]
 
-ORB_100 = [
+MIDCAP_FNO_100 = [
     "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "AUROPHARMA", "BANDHANBNK", "BANKINDIA", "BHEL", "BIOCON",
     "BOSCHLTD", "CHOLAFIN", "COFORGE", "COLPAL", "CONCOR", "CUMMINSIND", "DABUR", "DIXON", "FEDERALBNK",
     "GLENMARK", "GODREJCP", "GODREJPROP", "HAVELLS", "HINDPETRO", "IDEA", "IDFCFIRSTB", "IGL", "INDHOTEL",
@@ -35,10 +35,10 @@ ORB_100 = [
     "VBL", "AUBANK", "ALKEM", "ANGELONE", "APLAPOLLO", "ABCAPITAL", "ADANIENSOL", "BDL", "BSE", "CDSL",
     "CAMS", "HUDCO", "IEX", "KALYANKJIL", "KEI", "LODHA",
 ]
-ORB_RESERVE = [
+MIDCAP_FNO_RESERVE = [
     "MCX", "MAZDOCK", "NBCC", "RVNL", "SUPREMEIND", "TATATECH", "HFCL", "IREDA", "LTF", "POLICYBZR",
     "NYKAA", "OBEROIRLTY", "PATANJALI", "INOXWIND", "DELHIVERY", "GMRAIRPORT", "SWIGGY", "ETERNAL",
     "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
     "ICICIPRULI", "LICI", "TITAGARH", "NCC",
 ]
-\n\n# Reuse the existing 100-stock F&O candidate basket as the single midcap candidate\n# list. Invalid/non-optionable names are dropped; reserves backfill only from this\n# reviewed midcap-oriented candidate pool.\nMIDCAP_FNO_100 = ORB_100\nMIDCAP_FNO_RESERVE = ORB_RESERVE\n
+\n
