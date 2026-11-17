@@ -109,12 +109,13 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
         else:
             dropped_indices.append(name)
 
-    used = set()
+    seen = set()
     for name in list(normal_names) + list(normal_reserve):
+        if name in seen:
+            continue
+        seen.add(name)
         if len([x for x in uni.normal if not x.is_index]) >= 100:
             break
-        if name in used:
-            continue
         cash = eq.get(name)
         futs = fut_by_und.get(name)
         if not cash or not futs or (require_options and not has_both_sides(name)):
@@ -126,7 +127,6 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
             continue
         uni.normal.append(SymbolInfo(name, cash["instrument_key"], "normal",
                                      lot=future[2], tick=0.05, underlying=name))
-        used.add(name)
 
     uni.dropped = {
         "normal": dropped_stocks,
