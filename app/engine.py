@@ -193,6 +193,8 @@ class Engine:
             return False
         f = compute_features(add_indicators(df))
         if f is None:
+            self.bias = "neutral"
+            self.bias_at = None
             return False
         self.bias, self.bias_at = market_bias(f), now
         return True
