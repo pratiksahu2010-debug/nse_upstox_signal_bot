@@ -81,7 +81,8 @@ def test_universe_resolution_and_backfill():
     u = resolve_nse(rows, today, ["AAA", "GONE", "BBB"], ["RES"], [], [], ["NIFTY", "FINNIFTY"])
     names = [i.symbol for i in u.normal]
     assert names[0] == "NIFTY" and u.normal[0].is_index and "GONE" not in names
-    assert "RES" in names and u.dropped["normal"] == ["GONE"]\n    assert u.dropped["indices"] == ["FINNIFTY"]
+    assert "RES" in names and u.dropped["normal"] == ["GONE"]
+    assert u.dropped["indices"] == ["FINNIFTY"]
 
 
 class FakeClient:
