@@ -326,6 +326,9 @@ class Engine:
                         continue
             sig.forced = force
             sig.option = self._option_for(sig, now)
+            if sig.option is None:
+                d["rejects"]["option_unavailable"] += 1
+                continue
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
@@ -414,7 +417,7 @@ class Engine:
             self.ensure_universe(now)
             out = {}
             t = floor5(now).time()
-            for m, enabled in (("normal", True),):
+            for m, enabled in (("normal", _on("ENABLE_NORMAL")),):
                 if only and only != m:
                     continue
                 if not enabled and not force:
