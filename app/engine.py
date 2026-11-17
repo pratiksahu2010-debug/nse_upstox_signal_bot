@@ -151,7 +151,7 @@ class Engine:
         expected = floor5(now) - timedelta(minutes=ENGINE.candle_min)
         out: dict = {}
         pending = states
-        for attempt in range(1 + (0 if force else ENGINE.retry_passes)):
+        for attempt in range(1 + ENGINE.retry_passes):
             retry = []
             with ThreadPoolExecutor(ENGINE.workers) as ex:
                 futs = {ex.submit(self._load, st, now, module): st for st in pending}
@@ -167,7 +167,7 @@ class Engine:
                     if df is None:
                         continue
                     out[st.info.symbol] = df
-                    if not force and (len(df) == 0 or df.index[-1] < expected):
+                    if len(df) == 0 or df.index[-1] < expected:
                         retry.append(st)
             if not retry or getattr(self.client, "auth_failed", False):
                 break
@@ -265,7 +265,7 @@ class Engine:
                     self.store.update_outcome(r["id"], status, rr)
             if not full:
                 continue
-            if not force and f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars):
+            if f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars):
                 d["rejects"]["stale_data"] += 1
                 continue
             ctx = Ctx(bias=self.bias if module != "mcx" else "neutral", ignore_time=force,
