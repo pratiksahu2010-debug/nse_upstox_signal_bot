@@ -2,7 +2,7 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Iterable, Optional
+from typing import Iterable, Optional
 
 from . import symbols as S
 from .common import SymbolInfo
@@ -25,15 +25,9 @@ class OptionRec:
 @dataclass
 class Universe:
     normal: list = field(default_factory=list)
-    orb: list = field(default_factory=list)
-    mcx: list = field(default_factory=list)
     options: dict = field(default_factory=dict)
     dropped: dict = field(default_factory=dict)
     built_on: str = ""
-    mcx_error: str = ""
-
-    def by_module(self, module: str) -> list:
-        return {"normal": self.normal, "orb": self.orb, "mcx": self.mcx}[module]
 
 
 def _pick_future(futs: list, today: datetime, roll_days: int = 2):
@@ -52,8 +46,8 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
     underlyings are validated against cash EQ, FUT, CE and PE records. require_options
     is enabled by production so every stock signal can map to both option directions.
     """
-    orb_names, orb_reserve, indices = orb_names or [], orb_reserve or [], indices or []
-    want = set(normal_names) | set(normal_reserve) | set(orb_names) | set(orb_reserve)
+    other_names, other_reserve, indices = orb_names or [], orb_reserve or [], indices or []
+    want = set(normal_names) | set(normal_reserve) | set(other_names) | set(other_reserve)
     explicit_indices = set(indices)
     eq: dict = {}
     fut_by_und: dict = {}
@@ -140,16 +134,7 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
     return uni
 
 
-def resolve_mcx(rows: Iterable[dict], today: datetime) -> list:
-    """Compatibility stub: MCX is intentionally disabled in this bot."""
-    return []
-
-
-def load_mcx(today: datetime, rows=None) -> list:
-    return []
-
-
-def build_universe(today: Optional[datetime] = None, nse_rows=None, mcx_rows=None) -> Universe:
+def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
     today = today or datetime.now(IST)
     rows = nse_rows if nse_rows is not None else stream_master("NSE")
     uni = resolve_nse(rows, today, S.MIDCAP_FNO_100, S.MIDCAP_FNO_RESERVE,
