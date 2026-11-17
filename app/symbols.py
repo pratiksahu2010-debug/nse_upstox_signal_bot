@@ -1,8 +1,8 @@
 """Candidate NSE midcap F&O stock universe.
 
 Candidates are validated against the daily Upstox instrument master. Production only
-selects stocks with cash EQ, FUT, CE and PE contracts. The engine separately discovers
-all index underlyings with underlying_type=INDEX from the same master.
+selects stocks with cash EQ, FUT, CE and PE contracts. All index derivatives are
+separately discovered from the master using underlying_type=INDEX.
 """
 
 INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
@@ -41,4 +41,3 @@ MIDCAP_FNO_RESERVE = [
     "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
     "ICICIPRULI", "LICI", "TITAGARH", "NCC",
 ]
-\n
