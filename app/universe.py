@@ -46,9 +46,10 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
     underlyings are validated against cash EQ, FUT, CE and PE records. require_options
     is enabled by production so every stock signal can map to both option directions.
     """
-    other_names, other_reserve, indices = orb_names or [], orb_reserve or [], indices or []
-    want = set(normal_names) | set(normal_reserve) | set(other_names) | set(other_reserve)
-    explicit_indices = set(indices)
+    extra_candidates = extra_candidates or []
+    extra_reserve = extra_reserve or []
+    explicit_indices = set(index_allowlist or [])
+    want = set(stock_candidates) | set(stock_reserve) | set(extra_candidates) | set(extra_reserve)
     eq: dict = {}
     fut_by_und: dict = {}
     index_futs: dict = {}
@@ -110,7 +111,7 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
             dropped_indices.append(name)
 
     seen = set()
-    for name in list(normal_names) + list(normal_reserve):
+    for name in list(stock_candidates) + list(stock_reserve) + list(extra_candidates) + list(extra_reserve):
         if name in seen:
             continue
         seen.add(name)
