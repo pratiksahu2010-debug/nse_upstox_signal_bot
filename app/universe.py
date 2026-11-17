@@ -1,8 +1,4 @@
-"""Resolve symbol lists into Upstox instrument keys using the live instrument master.
-
-Memory discipline: the NSE master has hundreds of thousands of rows, so it is streamed
-and only compact tuples for our ~160 underlyings are kept.
-"""
+"""Resolve one NSE midcap F&O stock universe plus every supported index derivative."""
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -10,7 +6,7 @@ from typing import Callable, Iterable, Optional
 
 from . import symbols as S
 from .common import SymbolInfo
-from .config import IST, MCX as MC, OPTION_MIN_DAYS
+from .config import IST, OPTION_MIN_DAYS
 from .upstox import expiry_to_date, stream_master
 
 log = logging.getLogger("universe")
@@ -20,7 +16,7 @@ log = logging.getLogger("universe")
 class OptionRec:
     expiry: datetime
     strike: float
-    otype: str          # CE | PE
+    otype: str
     key: str
     tsym: str
     lot: int
@@ -28,161 +24,151 @@ class OptionRec:
 
 @dataclass
 class Universe:
-    normal: list = field(default_factory=list)       # SymbolInfo (indices first)
+    normal: list = field(default_factory=list)
     orb: list = field(default_factory=list)
     mcx: list = field(default_factory=list)
-    options: dict = field(default_factory=dict)      # underlying -> list[OptionRec]
-    dropped: dict = field(default_factory=dict)      # module -> list of names not resolvable
+    options: dict = field(default_factory=dict)
+    dropped: dict = field(default_factory=dict)
     built_on: str = ""
     mcx_error: str = ""
 
-    def by_module(self, m: str) -> list:
-        return {"normal": self.normal, "orb": self.orb, "mcx": self.mcx}[m]
+    def by_module(self, module: str) -> list:
+        return {"normal": self.normal, "orb": self.orb, "mcx": self.mcx}[module]
 
 
-def _pick_future(futs: list, today: datetime, roll_days: int):
-    """futs: list of (expiry_dt, key, lot, tsym, tick). Nearest expiry that is not about to expire."""
-    futs = sorted(futs, key=lambda x: x[0])
-    live = [f for f in futs if f[0].date() >= today.date()]
+def _pick_future(futs: list, today: datetime, roll_days: int = 2):
+    live = sorted((f for f in futs if f[0].date() >= today.date()), key=lambda x: x[0])
     if not live:
         return None
-    for f in live:
-        if (f[0].date() - today.date()).days >= roll_days:
-            return f
-    return live[-1]
+    return next((f for f in live if (f[0].date() - today.date()).days >= roll_days), live[-1])
 
 
-def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list, normal_reserve: list,
-                orb_names: list, orb_reserve: list, indices: list) -> Universe:
+def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
+                normal_reserve: list, orb_names: list = None, orb_reserve: list = None,
+                indices: list = None, require_options: bool = False) -> Universe:
+    """Resolve selected equity F&O underlyings and dynamically discover index derivatives.
+
+    Index futures are identified by Upstox's documented underlying_type=INDEX. Equity
+    underlyings are validated against cash EQ, FUT, CE and PE records. require_options
+    is enabled by production so every stock signal can map to both option directions.
+    """
+    orb_names, orb_reserve, indices = orb_names or [], orb_reserve or [], indices or []
     want = set(normal_names) | set(normal_reserve) | set(orb_names) | set(orb_reserve)
-    want_idx = set(indices)
+    explicit_indices = set(indices)
     eq: dict = {}
     fut_by_und: dict = {}
-    fo_und: set = set()
+    index_futs: dict = {}
     opts: dict = {}
     horizon = today + timedelta(days=45)
-    for r in rows:
-        seg = r.get("segment")
+
+    for row in rows:
+        seg = row.get("segment")
         if seg == "NSE_EQ":
-            ts = r.get("trading_symbol")
-            if ts in want and r.get("instrument_type") == "EQ":
-                eq[ts] = r
-        elif seg == "NSE_FO":
-            und = r.get("underlying_symbol")
-            if und not in want and und not in want_idx:
-                continue
-            exp = expiry_to_date(r.get("expiry"))
-            if exp is None or exp.date() < today.date():
-                continue
-            typ = r.get("instrument_type")
-            if typ == "FUT":
-                fo_und.add(und)
-                fut_by_und.setdefault(und, []).append(
-                    (exp, r["instrument_key"], int(r.get("lot_size") or 0), r.get("trading_symbol", ""),
-                     float(r.get("tick_size") or 0.05)))
-            elif typ in ("CE", "PE") and exp <= horizon:
-                opts.setdefault(und, []).append(OptionRec(
-                    exp, float(r.get("strike_price") or 0), typ, r["instrument_key"],
-                    r.get("trading_symbol", ""), int(r.get("lot_size") or 0)))
+            sym = row.get("trading_symbol")
+            if sym in want and row.get("instrument_type") == "EQ":
+                eq[sym] = row
+            continue
+        if seg != "NSE_FO":
+            continue
+        und = row.get("underlying_symbol")
+        exp = expiry_to_date(row.get("expiry"))
+        if not und or exp is None or exp.date() < today.date():
+            continue
+        typ = row.get("instrument_type")
+        underlying_type = str(row.get("underlying_type") or "").upper()
+        if typ == "FUT":
+            item = (exp, row.get("instrument_key"), int(row.get("lot_size") or 0),
+                    row.get("trading_symbol", ""), float(row.get("tick_size") or 0.05))
+            if underlying_type == "INDEX" or und in explicit_indices:
+                index_futs.setdefault(und, []).append(item)
+            elif und in want:
+                fut_by_und.setdefault(und, []).append(item)
+        elif typ in ("CE", "PE") and exp <= horizon:
+            opts.setdefault(und, []).append(OptionRec(
+                exp, float(row.get("strike_price") or 0), typ,
+                row.get("instrument_key", ""), row.get("trading_symbol", ""),
+                int(row.get("lot_size") or 0)))
 
-    uni = Universe(built_on=today.strftime("%Y-%m-%d"))
-    uni.options = opts
-    dropped_n, dropped_o = [], []
+    uni = Universe(built_on=today.strftime("%Y-%m-%d"), options=opts)
+    dropped_stocks = []
+    dropped_indices = []
 
-    def mk(name, module):
-        r = eq.get(name)
-        futs = fut_by_und.get(name)
-        if not r or not futs:
-            return None
-        lot = sorted(futs, key=lambda x: x[0])[0][2]
-        # NSE cash tick is Rs 0.05; the master's tick_size unit is not documented, so do not trust it
-        return SymbolInfo(name, r["instrument_key"], module, lot=lot, tick=0.05, underlying=name)
+    def has_both_sides(name: str) -> bool:
+        sides = {o.otype for o in opts.get(name, [])}
+        return {"CE", "PE"}.issubset(sides)
 
-    # indices via near-month futures (volume + VWAP are meaningful; cash index has no volume)
-    for ix in indices:
-        f = _pick_future(fut_by_und.get(ix, []), today, 2)
-        if f:
-            uni.normal.append(SymbolInfo(ix, f[1], "normal", lot=f[2], tick=0.05, is_index=True,
-                                         expiry=f[0].strftime("%d%b%y").upper(), underlying=ix))
+    # Every index derivative discovered in the master, not a hard-coded five-index list.
+    for name, futs in sorted(index_futs.items()):
+        if require_options and not has_both_sides(name):
+            dropped_indices.append(name)
+            continue
+        future = _pick_future(futs, today)
+        if future:
+            uni.normal.append(SymbolInfo(
+                name, future[1], "normal", lot=future[2], tick=0.05,
+                is_index=True, expiry=future[0].strftime("%d%b%y").upper(),
+                underlying=name))
         else:
-            dropped_n.append(ix)
+            dropped_indices.append(name)
 
-    def fill(names, reserve, module, target, out, dropped, used):
-        for n in list(names) + list(reserve):
-            if len([x for x in out if not x.is_index]) >= target:
-                break
-            if n in used:
-                continue
-            info = mk(n, module)
-            if info:
-                out.append(info)
-                used.add(n)
-            elif n in names:
-                dropped.append(n)
+    used = set()
+    for name in list(normal_names) + list(normal_reserve):
+        if len([x for x in uni.normal if not x.is_index]) >= 100:
+            break
+        if name in used:
+            continue
+        cash = eq.get(name)
+        futs = fut_by_und.get(name)
+        if not cash or not futs or (require_options and not has_both_sides(name)):
+            dropped_stocks.append(name)
+            continue
+        future = _pick_future(futs, today)
+        if not future:
+            dropped_stocks.append(name)
+            continue
+        uni.normal.append(SymbolInfo(name, cash["instrument_key"], "normal",
+                                     lot=future[2], tick=0.05, underlying=name))
+        used.add(name)
 
-    used: set = set()
-    fill(normal_names, normal_reserve, "normal", 50, uni.normal, dropped_n, used)
-    fill(orb_names, orb_reserve, "orb", 100, uni.orb, dropped_o, used)
-    uni.dropped = {"normal": dropped_n, "orb": dropped_o}
+    uni.dropped = {
+        "normal": dropped_stocks,
+        "indices": dropped_indices,
+    }
     return uni
 
 
 def resolve_mcx(rows: Iterable[dict], today: datetime) -> list:
-    futs: dict = {}
-    for r in rows:
-        if r.get("segment") != "MCX_FO" or r.get("instrument_type") != "FUT":
-            continue
-        exp = expiry_to_date(r.get("expiry"))
-        if exp is None or exp.date() < today.date():
-            continue
-        und = r.get("underlying_symbol") or r.get("name")
-        futs.setdefault(und, []).append(
-            (exp, r["instrument_key"], int(r.get("lot_size") or 0), r.get("trading_symbol", ""),
-             float(r.get("tick_size") or 0.05)))
-    out = []
-    for und, lst in sorted(futs.items()):
-        f = _pick_future(lst, today, MC.roll_days)
-        if f:
-            out.append(SymbolInfo(und, f[1], "mcx", lot=f[2], tick=f[4],
-                                  expiry=f[0].strftime("%d%b%y").upper(), underlying=und))
-    return out[:MC.max_symbols]
+    """Compatibility stub: MCX is intentionally disabled in this bot."""
+    return []
 
 
 def load_mcx(today: datetime, rows=None) -> list:
-    """Load the MCX segment independently so a transient failure can be retried."""
-    source = rows if rows is not None else stream_master("MCX")
-    resolved = resolve_mcx(source, today)
-    if not resolved:
-        raise RuntimeError("MCX instrument master resolved no active futures")
-    return resolved
+    return []
 
 
 def build_universe(today: Optional[datetime] = None, nse_rows=None, mcx_rows=None) -> Universe:
     today = today or datetime.now(IST)
-    uni = resolve_nse(nse_rows if nse_rows is not None else stream_master("NSE"), today,
-                      S.NORMAL_50, S.NORMAL_RESERVE, S.ORB_100, S.ORB_RESERVE, S.INDICES)
-    if not uni.normal and not uni.orb:
-        raise RuntimeError("NSE instrument master resolved no configured symbols")
-    try:
-        uni.mcx = load_mcx(today, mcx_rows)
-    except Exception as e:
-        # Keep NSE available, but preserve the failure so Engine can retry MCX later.
-        log.error("MCX master failed: %s", e)
-        uni.mcx = []
-        uni.mcx_error = str(e)[:200]
-    log.info("universe: normal=%d (incl %d idx) orb=%d mcx=%d | dropped %s",
-             len(uni.normal), sum(1 for x in uni.normal if x.is_index), len(uni.orb), len(uni.mcx), uni.dropped)
+    rows = nse_rows if nse_rows is not None else stream_master("NSE")
+    uni = resolve_nse(rows, today, S.MIDCAP_FNO_100, S.MIDCAP_FNO_RESERVE,
+                      require_options=True)
+    stock_count = sum(not item.is_index for item in uni.normal)
+    index_count = sum(item.is_index for item in uni.normal)
+    log.info("universe ready: midcap_fno=%d/100 indices=%d | dropped=%s",
+             stock_count, index_count, uni.dropped)
+    if not uni.normal:
+        raise RuntimeError("NSE master resolved no eligible midcap stocks or index derivatives")
     return uni
 
 
-def pick_option(uni: Universe, underlying: str, spot: float, side: str, today: datetime,
-                is_index: bool) -> Optional[OptionRec]:
-    """ATM CE for LONG / ATM PE for SHORT on the nearest expiry with >= OPTION_MIN_DAYS left."""
-    recs = uni.options.get(underlying) or []
-    want = "CE" if side == "LONG" else "PE"
-    recs = [r for r in recs if r.otype == want and (r.expiry.date() - today.date()).days >= OPTION_MIN_DAYS]
-    if not recs:
+def pick_option(uni: Universe, underlying: str, spot: float, side: str,
+                today: datetime, is_index: bool) -> Optional[OptionRec]:
+    """Nearest available expiry, ATM CE for LONG or PE for SHORT."""
+    records = uni.options.get(underlying) or []
+    wanted = "CE" if side == "LONG" else "PE"
+    records = [r for r in records if r.otype == wanted
+               and (r.expiry.date() - today.date()).days >= OPTION_MIN_DAYS]
+    if not records:
         return None
-    nearest = min(r.expiry for r in recs)
-    recs = [r for r in recs if r.expiry == nearest]
-    return min(recs, key=lambda r: abs(r.strike - spot))
+    expiry = min(r.expiry for r in records)
+    same_expiry = [r for r in records if r.expiry == expiry]
+    return min(same_expiry, key=lambda r: abs(r.strike - spot))
