@@ -48,6 +48,7 @@ class SymbolState:
     warm_day: Optional[date] = None
     disabled: str = ""
     err: str = ""
+    warm_retry_at: Optional[datetime] = None
 
 
 class Engine:
@@ -120,12 +121,25 @@ class Engine:
     def _warm(self, st: SymbolState, now: datetime, module: str):
         to_d = now.date() - timedelta(days=1)
         from_d = now.date() - timedelta(days=14)
-        h = self.client.historical(st.info.key, from_d, to_d)
+        try:
+            h = self.client.historical(st.info.key, from_d, to_d)
+        except Exception:
+            st.warm_retry_at = now + timedelta(minutes=5)
+            raise
         h = h[OHLCV] if len(h) else pd.DataFrame(columns=OHLCV)
         if len(h):
             days = sorted(set(h.index.date))[-ENGINE.warm_sessions:]
             h = h[np.isin(h.index.date, days)]
+        if not len(h):
+            # An empty response can be transient. Do not mark this symbol warmed
+            # for the day; retry with a per-symbol backoff on a later scan.
+            st.hist = pd.DataFrame(columns=OHLCV)
+            st.warm_retry_at = now + timedelta(minutes=5)
+            st.err = "historical returned no bars; retry scheduled"
+            return
         st.hist, st.warm_day = h, now.date()
+        st.warm_retry_at = None
+        st.err = ""
         if module == "mcx":
             n_days = len(set(h.index.date)) if len(h) else 0
             if n_days < 3:
@@ -138,10 +152,15 @@ class Engine:
                 st.disabled = f"illiquid (bars/day {med_bars:.0f}, median vol {med_vol:.1f})"
 
     def _load(self, st: SymbolState, now: datetime, module: str) -> Optional[pd.DataFrame]:
-        if st.warm_day != now.date():
-            self._warm(st, now, module)
-            if st.disabled:
-                return None
+        if (st.warm_day != now.date()
+                and (st.warm_retry_at is None or now >= st.warm_retry_at)):
+            try:
+                self._warm(st, now, module)
+            except Exception as e:
+                st.err = str(e)[:120]
+                raise
+        if st.disabled:
+            return None
         intr = self.client.intraday(st.info.key)
         if len(intr):
             intr = intr[OHLCV]
@@ -165,10 +184,12 @@ class Engine:
         def go(item):
             m, st = item
             try:
-                if st.warm_day != now.date():
+                if (st.warm_day != now.date()
+                        and (st.warm_retry_at is None or now >= st.warm_retry_at)):
                     self._warm(st, now, m)
             except Exception as e:
-                st.err = str(e)
+                st.err = str(e)[:120]
+                st.warm_retry_at = now + timedelta(minutes=5)
         with ThreadPoolExecutor(ENGINE.workers) as ex:
             list(ex.map(go, states))
 
