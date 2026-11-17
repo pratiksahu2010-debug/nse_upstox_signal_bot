@@ -322,7 +322,8 @@ class Engine:
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
-                ok = bool(self.notify(message))
+                result = self.notify(message)
+                ok = result is not False
                 self.store.mark_notification(sid, ok, None if ok else "notify returned false")
                 if ok:
                     sent += 1
@@ -343,7 +344,8 @@ class Engine:
             return
         for item in pending:
             try:
-                ok = bool(self.notify(item["text"]))
+                result = self.notify(item["text"])
+                ok = result is not False
                 self.store.mark_notification(item["id"], ok, None if ok else "notify returned false")
                 if not ok:
                     d["rejects"]["telegram_retry_failed"] += 1
