@@ -74,7 +74,7 @@ class MemoryStore:
             self.rows.append(row)
             return self._id
 
-    def pending_notifications(self, limit: int = 100) -> list:
+    def pending_notifications(self, limit: int = 25) -> list:
         with self.lock:
             return [{"id": r["id"], "text": (r.get("details") or {}).get("telegram_text")}
                     for r in self.rows if r.get("delivery_status") == "PENDING"
