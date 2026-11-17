@@ -51,8 +51,6 @@ DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do n
 
 # Modules on/off
 ENABLE_NORMAL = _b("ENABLE_NORMAL", "1")
-ENABLE_ORB = False  # retired in the simplified single-strategy bot
-ENABLE_MCX = False  # retired in the simplified single-strategy bot
 
 
 # --------------------------------------------------------------------------- #
@@ -72,7 +70,6 @@ class Engine:
     rate_per_min: int = _i("RATE_PER_MIN", 400)
     rate_per_30min: int = _i("RATE_PER_30MIN", 1700)
     prewarm_nse: time = _t("PREWARM_NSE", "08:40")
-    prewarm_mcx: time = _t("PREWARM_MCX", "08:30")
     heartbeat_min: int = _i("HEARTBEAT_MIN", 60)      # 0 disables diagnostics heartbeat
     eod_summary: bool = _b("EOD_SUMMARY", "1")
 
@@ -112,29 +109,4 @@ class NormalCfg:
     per_cycle_top: int = _i("N_PER_CYCLE_TOP", 1000)
 
 
-# Legacy strategy settings are retained below only for backward-compatible
-# imports. ORB and MCX are disabled and are not instantiated by the engine.
-@dataclass(frozen=True)
-class OrbCfg:
-    first_signal: time = _t("O_FIRST_SIGNAL", "09:35")
-    last_entry: time = _t("O_LAST_ENTRY", "11:15")
-    session_end: time = _t("O_SESSION_END", "15:15")
-    daily_cap: int = 0
-    per_cycle_top: int = 0
-
-
-@dataclass(frozen=True)
-class McxCfg:
-    first_signal: time = _t("M_FIRST_SIGNAL", "09:30")
-    last_entry: time = _t("M_LAST_ENTRY", "22:45")
-    session_end: time = _t("M_SESSION_END", "23:25")
-    daily_cap: int = 0
-    per_cycle_top: int = 0
-
 NORMAL = NormalCfg()
-ORB = OrbCfg()
-MCX = McxCfg()
-
-# Option suggestion (NSE modules)
-OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)      # skip expiries closer than this (no 0-DTE)
-OPTION_QUOTE = _b("OPTION_QUOTE", "1")           # best-effort premium lookup at signal time
