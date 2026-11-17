@@ -438,7 +438,7 @@ class Engine:
     # ------------------------------------------------------------------ reports
     def heartbeat_text(self, m: str, d: dict) -> str:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
-        return "\\n".join([
+        return "\n".join([
             f"💓 <b>{m.upper()} scan {d['at']}</b>",
             f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>",
             f"<b>top rejects: {top}</b>",
