@@ -73,7 +73,8 @@ class Engine:
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
         today = now.strftime("%Y-%m-%d")
-        if self.uni and self.uni.built_on == today:\n            return
+        if self.uni and self.uni.built_on == today:
+            return
         if self.uni and now.time() < time(7, 30):
             return
         try:
