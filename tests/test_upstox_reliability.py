@@ -146,3 +146,23 @@ def test_session_is_thread_local():
         thread.join()
     assert len(sessions) == 2
     assert sessions[0] is not sessions[1]
+
+
+
+def test_late_401_from_old_token_does_not_poison_rotated_token(monkeypatch):
+    client = UpstoxClient("old-token", budget=NoWaitBudget())
+
+    class RotatingSession:
+        def get(self, url, **kwargs):
+            # Simulate another worker installing a replacement token while
+            # this request, authenticated with the old token, is in flight.
+            client.set_token("new-token")
+            return FakeResponse(401, text="old token rejected")
+
+    monkeypatch.setattr(client, "_session", lambda: RotatingSession())
+    with pytest.raises(UpstoxError, match="stale token rejected"):
+        client._get("/test")
+
+    assert client.auth_failed is False
+    assert client.diagnostics()["token_configured"] is True
+    assert client._token == "new-token"
