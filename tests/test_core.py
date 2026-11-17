@@ -142,3 +142,27 @@ def test_weekend_and_empty_universe_safe():
                  universe_builder=lambda n: Universe(built_on="2026-11-14"))
     eng.housekeeping(datetime(2026, 11, 14, 10, 0, tzinfo=IST))   # Saturday: no-op
     assert eng.run_boundary(datetime(2026, 11, 17, 3, 0, tzinfo=IST)) == {}
+
+
+def test_memory_store_notification_outbox_retries_until_delivered():
+    store = MemoryStore()
+    row = _row()
+    row.update({"module": "normal", "symbol": "TEST", "trade_day": row["bar_ts"].date(),
+                "entry": 100.0, "sl": 99.0, "tp1": 101.2, "tp2": 102.2,
+                "score": 80, "trig": "test", "details": {"telegram_text": "alert"}})
+    sid = store.add_signal(row)
+    assert sid is not None
+    assert store.pending_notifications() == [{"id": sid, "text": "alert"}]
+    store.mark_notification(sid, False, "temporary Telegram failure")
+    assert store.pending_notifications() == [{"id": sid, "text": "alert"}]
+    store.mark_notification(sid, True)
+    assert store.pending_notifications() == []
+
+
+def test_engine_rejects_previous_session_bias():
+    now = datetime(2026, 11, 17, 10, 5, tzinfo=IST)
+    eng = Engine(FakeClient(make_history(3), now), MemoryStore())
+    previous = make_history(3, seed=19)
+    previous = previous[previous.index.date < now.date()]
+    assert eng._set_bias(previous, now) is False
+    assert eng.bias == "neutral" and eng.bias_at is None
