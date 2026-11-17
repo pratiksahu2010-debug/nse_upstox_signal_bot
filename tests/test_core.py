@@ -1,0 +1,144 @@
+import gzip, io, json, os, sys, warnings
+from datetime import datetime, time, timedelta
+
+os.environ["AUTOSTART"] = "0"
+warnings.filterwarnings("ignore")
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from app.common import Ctx, SymbolInfo
+from app.config import IST
+from app.db import MemoryStore
+from app.engine import Engine
+from app.indicators import add_indicators, compute_features, rvol_time_of_day
+from app.tracker import simulate
+from app.universe import Universe, resolve_nse, resolve_mcx
+from app.upstox import iter_json_array
+from app import mod_normal
+from tests.synth import make_history
+
+
+def test_rsi_flat_and_monotonic():
+    idx = pd.date_range("2026-11-16 09:15", periods=60, freq="5min", tz=IST)
+    flat = pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 10.0}, index=idx)
+    assert add_indicators(flat)["rsi"].iloc[-1] == 50.0
+    up = flat.copy(); up["close"] = np.arange(60) + 100.0; up["high"] = up["close"] + .5; up["low"] = up["close"] - .5
+    assert add_indicators(up)["rsi"].iloc[-1] == 100.0
+
+
+def test_vwap_resets_each_session_and_adx_bounds():
+    df = make_history(4, seed=3)
+    ind = add_indicators(df)
+    first = ind.groupby("day").head(1)
+    assert np.allclose(first["vwap"], (first["high"] + first["low"] + first["close"]) / 3)
+    assert ind["adx"].between(0, 100).all() and (ind["atr"] > 0).all()
+
+
+def test_json_stream_chunk_boundaries():
+    rows = [{"segment": "NSE_EQ", "trading_symbol": f"S{i}", "n": [1, 2, {"x": "é"}]} for i in range(500)]
+    raw = gzip.compress(json.dumps(rows, indent=1).encode())
+    got = list(iter_json_array(gzip.GzipFile(fileobj=io.BytesIO(raw)), chunk=97))
+    assert got == rows
+
+
+def _row(side="LONG"):
+    return {"side": side, "entry": 100.0, "sl": 99.0, "tp1": 101.2, "tp2": 102.2,
+            "bar_ts": pd.Timestamp("2026-11-17 10:00", tz=IST)}
+
+
+def _bars(rows):
+    idx = pd.date_range("2026-11-17 10:05", periods=len(rows), freq="5min", tz=IST)
+    return pd.DataFrame(rows, index=idx, columns=["open", "high", "low", "close"])
+
+
+def test_tracker_outcomes():
+    end = time(15, 15)
+    assert simulate(_row(), _bars([(100, 100.5, 98.9, 99.2)]), end)[0] == "SL"
+    # SL and TP1 in one bar -> SL (conservative)
+    assert simulate(_row(), _bars([(100, 101.5, 98.9, 100)]), end) == ("SL", -1.0)
+    st, r = simulate(_row(), _bars([(100, 101.3, 100.1, 101), (101, 102.3, 100.9, 102)]), end)
+    assert st == "TP2" and r == pytest.approx(0.5 * 1.2 + 0.5 * 2.2)
+    st, r = simulate(_row(), _bars([(100, 101.3, 100.1, 101), (101, 101.4, 99.9, 100)]), end)
+    assert st == "TP1_BE" and r == pytest.approx(0.6)
+    assert simulate(_row("SHORT") | {"sl": 101.0, "tp1": 98.8, "tp2": 97.8},
+                    _bars([(100, 100.4, 98.7, 99)]), end)[0] == "TP1"
+
+
+def test_universe_resolution_and_backfill():
+    today = datetime(2026, 11, 17, tzinfo=IST)
+    exp = int((today + timedelta(days=10)).timestamp() * 1000)
+    rows = []
+    for n in ("AAA", "BBB", "RES"):
+        rows.append({"segment": "NSE_EQ", "instrument_type": "EQ", "trading_symbol": n, "instrument_key": f"NSE_EQ|{n}"})
+        rows.append({"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": n, "expiry": exp,
+                     "instrument_key": f"NSE_FO|F{n}", "lot_size": 10, "trading_symbol": f"{n} FUT"})
+    rows.append({"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": "NIFTY", "expiry": exp,
+                 "instrument_key": "NSE_FO|FNIFTY", "lot_size": 75, "trading_symbol": "NIFTY FUT"})
+    rows.append({"segment": "NSE_EQ", "instrument_type": "EQ", "trading_symbol": "GONE", "instrument_key": "NSE_EQ|GONE"})  # no F&O
+    u = resolve_nse(rows, today, ["AAA", "GONE", "BBB"], ["RES"], [], [], ["NIFTY", "FINNIFTY"])
+    names = [i.symbol for i in u.normal]
+    assert names[0] == "NIFTY" and u.normal[0].is_index and "GONE" not in names
+    assert "RES" in names and u.dropped["normal"] == ["FINNIFTY", "GONE"]
+
+
+class FakeClient:
+    def __init__(self, full: pd.DataFrame, now):
+        self.full, self.now, self.auth_failed = full, now, False
+        self.calls = 0
+
+    def historical(self, key, f, t):
+        self.calls += 1
+        return self.full[self.full.index.date < self.now.date()].assign(oi=0)
+
+    def intraday(self, key, interval=5):
+        self.calls += 1
+        d = self.full[self.full.index.date == self.now.date()]
+        return d[d.index <= self.now].assign(oi=0)
+
+    def ltp(self, keys):
+        return {}
+
+
+def _find_signal_case():
+    info = SymbolInfo("TEST", "K", "normal", lot=100)
+    for seed in range(1, 80):
+        df = make_history(7, seed=seed, last_mode="trend_down")
+        ind = add_indicators(df)
+        for t in [t for t in df.index if t.date() == df.index[-1].date()][5:]:
+            sub = ind.loc[:t]
+            f = compute_features(sub)
+            if f and mod_normal.evaluate(info, sub, f, Ctx())[0]:
+                return df, t
+    raise AssertionError("no synthetic signal found")
+
+
+def test_engine_end_to_end_dedupe_and_cooldown():
+    df, t = _find_signal_case()
+    now = t + timedelta(minutes=5, seconds=7)          # just after the candle closed
+    info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
+    uni = Universe(normal=[info], built_on=now.strftime("%Y-%m-%d"))
+    sent, store = [], MemoryStore()
+    eng = Engine(FakeClient(df, now), store, notify=lambda text, silent=False: sent.append(text),
+                 universe_builder=lambda n: uni)
+    eng.bias = "neutral"
+    eng.ensure_universe(now)
+    out = eng.cycle("normal", now)
+    assert out["signals"] == 1 and len(sent) == 1
+    assert "TEST" in sent[0] and "<b>" in sent[0] and ("🟢" in sent[0] or "🔴" in sent[0])
+    out2 = eng.cycle("normal", now)                    # same candle again -> no duplicate alert
+    assert out2["signals"] == 0 and len(sent) == 1
+    # a stale view (3 bars later with no new data) must not signal
+    late = now + timedelta(minutes=15)
+    eng.client.now = now
+    out3 = eng.cycle("normal", late)
+    assert out3["signals"] == 0
+
+
+def test_weekend_and_empty_universe_safe():
+    store = MemoryStore()
+    eng = Engine(FakeClient(make_history(3), datetime(2026, 11, 14, 10, 0, tzinfo=IST)), store,
+                 universe_builder=lambda n: Universe(built_on="2026-11-14"))
+    eng.housekeeping(datetime(2026, 11, 14, 10, 0, tzinfo=IST))   # Saturday: no-op
+    assert eng.run_boundary(datetime(2026, 11, 17, 3, 0, tzinfo=IST)) == {}

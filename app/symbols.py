@@ -1,0 +1,46 @@
+"""Static symbol lists. EDIT FREELY - the resolver validates every name against the live
+Upstox instrument master (must exist as an NSE F&O underlying with a cash EQ record) and
+silently backfills from the *_RESERVE lists when a name has been renamed or removed from
+F&O (e.g. after demergers). Disabled names are logged at startup.
+
+NORMAL  : 50 most liquid F&O stocks (+ indices, traded via near-month index futures)
+ORB     : 100 *different* F&O stocks with good intraday range (no overlap with NORMAL)
+MCX     : not listed here - built automatically from the MCX instrument master
+"""
+
+INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
+BIAS_INDEX = "NIFTY"   # market-bias source for stock signals
+
+NORMAL_50 = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "INFY", "TCS", "AXISBANK", "KOTAKBANK", "LT", "ITC",
+    "BHARTIARTL", "TATASTEEL", "MARUTI", "M&M", "BAJFINANCE", "BAJAJFINSV", "HINDUNILVR", "SUNPHARMA",
+    "ADANIENT", "ADANIPORTS", "JSWSTEEL", "HINDALCO", "ONGC", "NTPC", "POWERGRID", "COALINDIA", "WIPRO",
+    "HCLTECH", "TECHM", "ASIANPAINT", "ULTRACEMCO", "TITAN", "NESTLEIND", "DRREDDY", "CIPLA", "BPCL",
+    "IOC", "GRASIM", "EICHERMOT", "HEROMOTOCO", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "VEDL",
+    "DLF", "TRENT", "HAL", "BEL", "INDIGO",
+]
+NORMAL_RESERVE = [
+    "SBILIFE", "TATAPOWER", "JIOFIN", "SHRIRAMFIN", "APOLLOHOSP", "BAJAJ-AUTO", "DIVISLAB", "BRITANNIA",
+    "HDFCLIFE", "LTIM", "TVSMOTOR", "GAIL", "PFC", "RECLTD", "IRCTC",
+]
+
+ORB_100 = [
+    "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "AUROPHARMA", "BANDHANBNK", "BANKINDIA", "BHEL", "BIOCON",
+    "BOSCHLTD", "CHOLAFIN", "COFORGE", "COLPAL", "CONCOR", "CUMMINSIND", "DABUR", "DIXON", "FEDERALBNK",
+    "GLENMARK", "GODREJCP", "GODREJPROP", "HAVELLS", "HINDPETRO", "IDEA", "IDFCFIRSTB", "IGL", "INDHOTEL",
+    "IRFC", "JINDALSTEL", "JUBLFOOD", "LICHSGFIN", "LUPIN", "MANAPPURAM", "MARICO", "MAXHEALTH", "MFSL",
+    "MPHASIS", "MUTHOOTFIN", "NATIONALUM", "NAUKRI", "NMDC", "OBEROIRLTY", "OFSS", "PAGEIND", "PERSISTENT",
+    "PETRONET", "PIDILITIND", "PIIND", "POLYCAB", "SAIL", "SBICARD", "SHREECEM", "SIEMENS", "SRF", "SUNTV",
+    "SYNGENE", "TATACHEM", "TATACOMM", "TATAELXSI", "TORNTPHARM", "UNIONBANK", "UPL", "VOLTAS", "YESBANK",
+    "ZYDUSLIFE", "ABB", "ASHOKLEY", "ASTRAL", "BALKRISIND", "BHARATFORG", "CGPOWER", "CROMPTON", "DALBHARAT",
+    "EXIDEIND", "JSWENERGY", "KPITTECH", "LAURUSLABS", "MOTHERSON", "NHPC", "OIL", "PEL", "PHOENIXLTD",
+    "PNBHOUSING", "PRESTIGE", "RBLBANK", "SOLARINDS", "SONACOMS", "TIINDIA", "TORNTPOWER", "UNOMINDA",
+    "VBL", "AUBANK", "ALKEM", "ANGELONE", "APLAPOLLO", "ABCAPITAL", "ADANIENSOL", "BDL", "BSE", "CDSL",
+    "CAMS", "HUDCO", "IEX", "KALYANKJIL", "KEI", "LODHA",
+]
+ORB_RESERVE = [
+    "MCX", "MAZDOCK", "NBCC", "RVNL", "SUPREMEIND", "TATATECH", "HFCL", "IREDA", "LTF", "POLICYBZR",
+    "NYKAA", "OBEROIRLTY", "PATANJALI", "INOXWIND", "DELHIVERY", "GMRAIRPORT", "SWIGGY", "ETERNAL",
+    "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
+    "ICICIPRULI", "LICI", "TITAGARH", "NCC",
+]
