@@ -44,7 +44,7 @@ UPSTOX_TOKEN = _env("UPSTOX_ACCESS_TOKEN", "")          # Analytics token works 
 TELEGRAM_TOKEN = _env("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID", "")
 DATABASE_URL = _env("DATABASE_URL", "")                  # Render Postgres internal URL
-ADMIN_TOKEN = _env("ADMIN_TOKEN", "change-me")           # protects /force /stats /diag
+ADMIN_TOKEN = _env("ADMIN_TOKEN", "").strip()            # required for /force /stats /diag; fail closed
 KEEPALIVE = _b("KEEPALIVE", "1")                         # self-ping so the free dyno stays awake
 RUN_SCHEDULER = _b("RUN_SCHEDULER", "1")
 DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do not send Telegram
