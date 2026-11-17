@@ -137,7 +137,7 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
 def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
     today = today or datetime.now(IST)
     rows = nse_rows if nse_rows is not None else stream_master("NSE")
-    uni = resolve_nse(rows, today, S.MIDCAP_FNO_100, S.MIDCAP_FNO_RESERVE,
+    uni = resolve_nse(rows, today, S.MIDCAP_FNO_CANDIDATES, S.MIDCAP_FNO_RESERVE,
                       require_options=True)
     stock_count = sum(not item.is_index for item in uni.normal)
     index_count = sum(item.is_index for item in uni.normal)
