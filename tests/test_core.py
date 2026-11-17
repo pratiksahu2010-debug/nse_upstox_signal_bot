@@ -14,7 +14,7 @@ from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
 from app.tracker import simulate
-from app.universe import Universe, OptionRec, resolve_nse, resolve_mcx
+from app.universe import Universe, OptionRec, resolve_nse
 from app.upstox import iter_json_array
 from app import mod_normal
 from tests.synth import make_history
