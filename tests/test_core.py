@@ -217,7 +217,7 @@ def test_tracker_tp1_same_bar_breakeven_is_conservative():
     assert result == pytest.approx(0.6)
 
 
-def test_memory_store_terminal_outcome_and_expiry_are_restart_safe():
+def test_memory_store_terminal_outcome_and_expiry_set_closed_at():
     store = MemoryStore()
     row = _row()
     row.update({"module": "normal", "symbol": "TEST", "trade_day": row["bar_ts"].date(),
