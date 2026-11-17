@@ -1,12 +1,13 @@
 """Flask app (gunicorn entry: app.web:app). Run with ONE worker - the scheduler lives in-process.
 
   GET /health                         liveness
-  GET /status?token=ADMIN_TOKEN       universe, API budget, auth and data diagnostics
-  GET /diag?token=...                 per-module last cycle: scope, symbols, signals, reject reasons
-  GET /stats?token=...&days=30        win rate / net R per module from tracked alerts
-  GET /force?token=...&module=normal|orb|mcx|all   evaluate NOW ignoring clock windows (testing)
-  GET /test-telegram?token=...
+  GET /status                         universe, API budget, auth and data diagnostics
+  GET /diag                           per-module last cycle: scope, symbols, signals, reject reasons
+  GET /stats?days=30                  win rate / net R per module from tracked alerts
+  GET /force?module=normal|orb|mcx|all evaluate NOW ignoring clock windows (testing)
+  GET /test-telegram                  Use Authorization: Bearer ADMIN_TOKEN for admin routes.
 """
+import hmac
 import logging
 import os
 import threading
@@ -34,7 +35,16 @@ _start_lock = threading.Lock()
 
 
 def _auth() -> bool:
-    return request.args.get("token", "") == ADMIN_TOKEN
+    # Fail closed when no admin secret is configured; never accept a public default.
+    expected = (ADMIN_TOKEN or "").strip()
+    if not expected:
+        return False
+    auth = request.headers.get("Authorization", "")
+    supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    # Keep the query parameter temporarily for backward compatibility. Prefer the
+    # Authorization header because query strings are commonly retained in logs.
+    supplied = supplied or request.args.get("token", "")
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
 
 
 def _init():
