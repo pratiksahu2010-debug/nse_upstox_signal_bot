@@ -235,8 +235,9 @@ def make_store(dsn: str):
             st.init()
             log.info("using Postgres")
             return st
-        except Exception as e:
-            log.error("Postgres unavailable (%s) - falling back to memory store", e)
+        except Exception:
+            log.exception("Postgres unavailable; refusing volatile fallback because DATABASE_URL is configured")
+            raise
     st = MemoryStore()
     log.warning("DATABASE_URL not set / unreachable: using in-memory store (state lost on restart)")
     return st
