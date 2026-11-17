@@ -60,6 +60,7 @@ class Engine:
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
         self.started = datetime.now(IST)
         self.last_error = ""
+        self.last_outbox_retry_at = None
 
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
@@ -287,7 +288,7 @@ class Engine:
         cands.sort(key=lambda s: -s.score)
         sent = 0
         accepted = 0
-        self._deliver_pending(d)
+        self._deliver_pending(d, now)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
         for sig in cands:
@@ -335,9 +336,12 @@ class Engine:
                 log.exception("Telegram delivery failed for signal id=%s", sid)
         return sent
 
-    def _deliver_pending(self, d: dict):
+    def _deliver_pending(self, d: dict, now: datetime):
+        if self.last_outbox_retry_at and now - self.last_outbox_retry_at < timedelta(minutes=5):
+            return
+        self.last_outbox_retry_at = now
         try:
-            pending = self.store.pending_notifications()
+            pending = self.store.pending_notifications(limit=25)
         except Exception:
             d["rejects"]["outbox_read_error"] += 1
             log.exception("could not read Telegram outbox")
