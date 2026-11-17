@@ -94,8 +94,11 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
     dropped_indices = []
 
     def has_both_sides(name: str) -> bool:
-        sides = {o.otype for o in opts.get(name, [])}
-        return {"CE", "PE"}.issubset(sides)
+        eligible = [o for o in opts.get(name, [])
+                    if (o.expiry.date() - today.date()).days >= OPTION_MIN_DAYS]
+        ce_expiries = {o.expiry for o in eligible if o.otype == "CE"}
+        pe_expiries = {o.expiry for o in eligible if o.otype == "PE"}
+        return bool(ce_expiries & pe_expiries)
 
     # Every index derivative discovered in the master, not a hard-coded five-index list.
     for name, futs in sorted(index_futs.items()):
