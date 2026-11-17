@@ -16,17 +16,17 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from . import mod_mcx, mod_normal, mod_orb
+from . import mod_normal
 from . import symbols as S
 from .common import Ctx, Signal, SymbolInfo, market_bias
-from .config import ENGINE, IST, MCX, NORMAL, OPTION_QUOTE, ORB
+from .config import ENGINE, IST, NORMAL, OPTION_QUOTE
 from .indicators import add_indicators, compute_features
 from .telegram import format_signal, send
 from .tracker import simulate
-from .universe import Universe, build_universe, load_mcx, pick_option
+from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
-MODULES = {"normal": (mod_normal, NORMAL), "orb": (mod_orb, ORB), "mcx": (mod_mcx, MCX)}
+MODULES = {"normal": (mod_normal, NORMAL)}
 NEAR_MISS = {"score", "htf_15m", "market_bias", "no_trigger", "sl_too_wide", "chasing", "extended_vwap"}
 OHLCV = ["open", "high", "low", "close", "volume"]
 
@@ -73,26 +73,7 @@ class Engine:
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
         today = now.strftime("%Y-%m-%d")
-        if self.uni and self.uni.built_on == today:
-            # MCX master failures are isolated during universe construction so NSE
-            # signals can continue. Retry the failed segment on a bounded schedule.
-            if (self.uni.mcx_error and _on("ENABLE_MCX")
-                    and (self.mcx_retry_at is None or now >= self.mcx_retry_at)):
-                self.mcx_retry_at = now + timedelta(minutes=5)
-                try:
-                    mcx = load_mcx(now)
-                    self.uni.mcx = mcx
-                    self.uni.mcx_error = ""
-                    for key in [k for k in self.states if k[0] == "mcx"]:
-                        self.states.pop(key, None)
-                    for info in mcx:
-                        self.states[("mcx", info.symbol)] = SymbolState(info)
-                    log.info("MCX universe recovered: %d symbols", len(mcx))
-                except Exception as e:
-                    self.uni.mcx_error = str(e)[:200]
-                    self.last_error = f"MCX universe retry: {e}"
-                    log.warning("MCX universe retry failed: %s", e)
-            return
+        if self.uni and self.uni.built_on == today:\n            return
         if self.uni and now.time() < time(7, 30):
             return
         try:
@@ -179,7 +160,7 @@ class Engine:
         if key in self.prewarmed or not self.uni:
             return
         self.prewarmed.add(key)
-        mods = ("normal", "orb") if segment == "nse" else ("mcx",)
+        mods = ("normal",) if segment == "nse" else ()
         states = [(m, st) for m in mods for st in self._mod_states(m)]
         log.info("prewarm %s: %d symbols", segment, len(states))
 
@@ -265,7 +246,7 @@ class Engine:
     def cycle(self, module: str, now: datetime, force: bool = False) -> dict:
         mod, cfg = MODULES[module]
         day = now.date()
-        seg = "mcx" if module == "mcx" else "nse"
+        seg = "nse"
         d = {"module": module, "at": now.strftime("%H:%M:%S"), "symbols": 0, "loaded": 0, "signals": 0,
              "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force}
         self.diag[module] = d
@@ -297,7 +278,7 @@ class Engine:
             self._set_bias(data[S.BIAS_INDEX], now)
 
         expected = latest_eligible_bar(now)
-        taken = self.store.symbols_today(module, day) if module == "orb" else set()
+        taken = set()
         cands: list = []
         for sym, df in data.items():
             st = self.states[(module, sym)]
@@ -449,7 +430,7 @@ class Engine:
             self.ensure_universe(now)
             out = {}
             t = floor5(now).time()
-            for m, enabled in (("normal", _on("ENABLE_NORMAL")), ("orb", _on("ENABLE_ORB")), ("mcx", _on("ENABLE_MCX"))):
+            for m, enabled in (("normal", True),):
                 if only and only != m:
                     continue
                 if not enabled and not force:
@@ -487,7 +468,7 @@ class Engine:
         if ENGINE.prewarm_mcx <= t < MCX.first_signal and now.time() < time(9, 0):
             self.prewarm(now, "mcx")
         if ENGINE.heartbeat_min:
-            for m in ("normal", "orb", "mcx"):
+            for m in ("normal",):
                 d = self.diag.get(m)
                 if not d or d.get("scope") not in ("full",):
                     continue
@@ -496,7 +477,7 @@ class Engine:
                     self.last_heartbeat[m] = now
                     self._notify_silent(self.heartbeat_text(m, d))
         if ENGINE.eod_summary:
-            for tag, end in (("nse", NORMAL.session_end), ("mcx", MCX.session_end)):
+            for tag, end in (("nse", NORMAL.session_end),):
                 key = (tag, now.date())
                 if key not in self.eod_sent and t >= (datetime.combine(now.date(), end) + timedelta(minutes=20)).time():
                     if tag == "mcx" and t < time(23, 20):
@@ -517,7 +498,7 @@ class Engine:
                 f" · bias {self.bias}</b>\n<b>top rejects: {top}</b>")
 
     def eod_text(self, day: date, tag: str) -> str:
-        mods = ("normal", "orb") if tag == "nse" else ("mcx",)
+        mods = ("normal",)
         rows = [r for r in self.store.stats(day) if r["module"] in mods]
         if not rows:
             return f"📊 <b>EOD {tag.upper()}: no signals today</b>"
@@ -531,7 +512,7 @@ class Engine:
         bud = self.client.budget.usage() if hasattr(self.client, "budget") else {}
         return {
             "started": self.started.isoformat(), "store": getattr(self.store, "kind", "?"),
-            "universe": ({m: len(self.uni.by_module(m)) for m in MODULES} if self.uni else {}),
+            "universe": ({"normal": len(self.uni.normal), "stocks": sum(not x.is_index for x in self.uni.normal),\n                          "indices": sum(x.is_index for x in self.uni.normal)} if self.uni else {}),
             "dropped": self.uni.dropped if self.uni else {},
             "mcx_disabled": {s.info.symbol: s.disabled for (m, _), s in self.states.items() if m == "mcx" and s.disabled},
             "bias": self.bias, "api_budget": bud, "auth_failed": getattr(self.client, "auth_failed", False),
