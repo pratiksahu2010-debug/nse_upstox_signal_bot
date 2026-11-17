@@ -91,7 +91,7 @@ def resolve_nse(rows: Iterable[dict], today: datetime, normal_names: list,
 
     uni = Universe(built_on=today.strftime("%Y-%m-%d"), options=opts)
     dropped_stocks = []
-    dropped_indices = []
+    dropped_indices = sorted(explicit_indices - set(index_futs))
 
     def has_both_sides(name: str) -> bool:
         eligible = [o for o in opts.get(name, [])
