@@ -110,3 +110,7 @@ class NormalCfg:
 
 
 NORMAL = NormalCfg()
+
+
+OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)
+OPTION_QUOTE = _b("OPTION_QUOTE", "1")
