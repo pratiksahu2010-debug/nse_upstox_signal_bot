@@ -116,4 +116,7 @@ NORMAL = NormalCfg()
 
 
 OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)
-OPTION_QUOTE = _b("OPTION_QUOTE", "1")
+# Option LTP is display-only. Keep it off by default because some valid
+# candle-data tokens receive 401 from the optional v2 quote endpoint.
+# Set OPTION_QUOTE=1 only after verifying quote-endpoint access for the token.
+OPTION_QUOTE = _b("OPTION_QUOTE", "0")
