@@ -140,6 +140,8 @@ def _always_normal_signal(info, df, f, ctx):
 def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
+    monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
+    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t, tz=IST) + pd.Timedelta(minutes=5))
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
     uni = _test_universe(info, now)
@@ -176,7 +178,11 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
                  notify=lambda message: sent.append(message),
                  universe_builder=lambda n: uni)
     eng.ensure_universe(late_now)
-    eng.states[("normal", "TEST")].last_normal_bar = pd.Timestamp(t - timedelta(minutes=5))
+    eng.states[("normal", "TEST")].normal_state = {
+        "phase": "IDLE", "side": 0,
+        "last_bar": pd.Timestamp(t - timedelta(minutes=5), tz=IST).isoformat(),
+        "cooldown_remaining": 0, "invalidated": False,
+    }
     monkeypatch.setattr("app.engine._time.sleep", lambda seconds: None)
 
     out = eng.cycle("normal", late_now, force=True)
@@ -241,6 +247,8 @@ def test_memory_store_notification_outbox_retries_until_delivered():
 def test_engine_retries_failed_telegram_delivery_without_duplicate_signal(monkeypatch):
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
+    monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
+    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t, tz=IST) + pd.Timedelta(minutes=5))
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
     uni = _test_universe(info, now)
