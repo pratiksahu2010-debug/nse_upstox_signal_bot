@@ -48,10 +48,9 @@ class SymbolState:
     disabled: str = ""
     err: str = ""
     warm_retry_at: Optional[datetime] = None
-    # Strict Normal setup state. The first observed closed bar after startup is
-    # a baseline only; live setups require two consecutive completed 5m bars.
-    last_normal_bar: Optional[pd.Timestamp] = None
-    pending_normal_signal: Optional[Signal] = None
+    # Per-symbol lifecycle is persisted in the store so Render restarts do not reset it.
+    normal_state: dict = field(default_factory=dict)
+    normal_state_loaded: bool = False
 
 
 class Engine:
@@ -91,6 +90,16 @@ class Engine:
         self.states = {}
         for info in uni.normal:
             self.states[("normal", info.symbol)] = SymbolState(info)
+        try:
+            persisted = self.store.load_normal_states(now.date())
+            for info in uni.normal:
+                st = self.states[("normal", info.symbol)]
+                st.normal_state = persisted.get(info.symbol, {})
+                st.normal_state_loaded = info.symbol in persisted
+        except Exception:
+            log.exception("could not restore Normal setup state; startup will baseline symbols fail-closed")
+            for (module, _), st in self.states.items():
+                if module == "normal": st.normal_state = {}; st.normal_state_loaded = False
         try:
             self.store.expire_old(now.date())
         except Exception as e:
@@ -218,7 +227,7 @@ class Engine:
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
-            states = [s for s in states if s.info.symbol in open_rows or s.pending_normal_signal is not None]
+            states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
             if not states:
                 d["scope"] = "idle"
                 return d
@@ -260,83 +269,71 @@ class Engine:
                 if status != r["status"]:
                     self.store.update_outcome(r["id"], status, rr)
 
-            # Symbols with no new closed candle are not re-evaluated. On the
-            # first scan after process start, establish a baseline and suppress
-            # historical setups so a restart cannot flood Telegram.
+            # Process the lifecycle once per newly completed 5m candle.
             if module == "normal":
-                if st.last_normal_bar is None:
-                    st.last_normal_bar = f.bar_ts
-                    log.info("normal baseline %s bar=%s", sym, f.bar_ts)
+                state = dict(st.normal_state or {})
+                last_raw = state.get("last_bar")
+                if not last_raw:
+                    state = {"phase":"IDLE","side":0,"last_bar":f.bar_ts.isoformat(),"cooldown_remaining":0,"invalidated":False}
+                    try:
+                        self.store.save_normal_state(day,sym,state); st.normal_state=state
+                    except Exception:
+                        d["rejects"]["state_storage_error"] += 1
+                        log.exception("could not persist startup baseline for %s",sym)
                     continue
-                if f.bar_ts <= st.last_normal_bar:
-                    if st.pending_normal_signal is not None:
-                        next_bar = st.pending_normal_signal.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)
-                        if expected > next_bar:
-                            st.pending_normal_signal = None
-                            d["rejects"]["confirmation_missing_cancel"] += 1
+                last_bar = pd.Timestamp(last_raw)
+                if last_bar.tzinfo is None: last_bar=last_bar.tz_localize(IST)
+                if f.bar_ts <= last_bar: continue
+                phase=state.get("phase","IDLE"); side=int(state.get("side",0) or 0)
+                gap=f.bar_ts-last_bar
+                if gap != pd.Timedelta(minutes=ENGINE.candle_min):
+                    state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
+                    d["rejects"]["state_gap_reset"] += 1
+                elif phase == "IDLE":
+                    side=mod.setup_side(f)
+                    if side:
+                        state.update({"phase":"ARMED","side":side,"armed_bar":f.bar_ts.isoformat(),"cooldown_remaining":0,"invalidated":False})
+                        d["rejects"]["setup_armed"] += 1
+                    else: d["rejects"]["setup_not_armed"] += 1
+                elif phase == "ARMED":
+                    current_side=mod.setup_side(f)
+                    if current_side != side:
+                        state.update({"phase":"IDLE","side":0,"invalidated":False})
+                        d["rejects"]["armed_setup_invalidated"] += 1
+                    elif mod.rsi_triggered(f,side):
+                        try: sig,why=mod.evaluate(st.info,ind,f,Ctx(ignore_time=force))
+                        except Exception:
+                            sig,why=None,"eval_error"; log.exception("evaluate %s/%s failed",module,sym)
+                        if sig is not None:
+                            cands.append(sig)
+                            state.update({"phase":"COOLDOWN","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                            d["rejects"]["rsi_triggered"] += 1
                         else:
-                            watching += 1
-                    continue
-
-            stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
-            pending = st.pending_normal_signal if module == "normal" else None
-            if not full and pending is None:
-                continue
-
-            # A pending setup is allowed to complete after the last-entry time;
-            # it must receive exactly the immediately following closed candle.
-            if stale:
-                d["rejects"]["stale_data"] += 1
-                if pending is not None and (f.bar_ts > pending.bar_ts or expected > pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)):
-                    st.pending_normal_signal = None
-                    d["rejects"]["confirmation_stale_cancel"] += 1
-                if st.pending_normal_signal is not None:
-                    watching += 1
-                if module == "normal":
-                    st.last_normal_bar = f.bar_ts
-                continue
-
-            # Do not evaluate a Candle-1 setup outside the normal entry window.
-            # Pending setups are still evaluated once on their next candle.
-            ctx = Ctx(ignore_time=force)
-            try:
-                sig, why = mod.evaluate(st.info, ind, f, ctx)
-            except Exception as e:  # one bad symbol must never kill the cycle
-                log.exception("evaluate %s/%s failed", module, sym)
-                d["rejects"]["eval_error"] += 1
-                if pending is not None:
-                    st.pending_normal_signal = None
-                    d["rejects"]["confirmation_eval_error"] += 1
-                if module == "normal":
-                    st.last_normal_bar = f.bar_ts
-                continue
-
-            if module == "normal":
-                if pending is not None:
-                    # Candle 2 must be the immediately next 5m candle and
-                    # independently pass every unchanged Normal strategy gate.
-                    expected_confirmation = pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)
-                    if f.bar_ts != expected_confirmation:
-                        st.pending_normal_signal = None
-                        d["rejects"]["confirmation_gap_cancel"] += 1
-                    elif sig is not None and sig.side == pending.side:
-                        cands.append(sig)
-                        d["rejects"]["confirmation_passed"] += 1
-                        st.pending_normal_signal = None
+                            state.update({"phase":"IDLE","side":0,"invalidated":False})
+                            d["rejects"][why or "trigger_rejected"] += 1
+                    else: d["rejects"]["armed_waiting_rsi"] += 1
+                elif phase == "COOLDOWN":
+                    valid=mod.setup_side(f)==side
+                    invalidated=bool(state.get("invalidated",False)) or not valid
+                    remaining=max(0,int(state.get("cooldown_remaining",0))-1)
+                    if remaining==0 and invalidated:
+                        state.update({"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False})
+                        d["rejects"]["cooldown_rearmed"] += 1
                     else:
-                        st.pending_normal_signal = None
-                        d["rejects"]["confirmation_failed"] += 1
-                    # Candle 2 is terminal; never reuse it as another setup.
-                elif full and sig is not None:
-                    st.pending_normal_signal = sig
-                    d["rejects"]["setup_armed"] += 1
-                elif full and sig is None:
-                    d["rejects"][why] += 1
-                    if why in NEAR_MISS and len(d["near_miss"]) < 8:
-                        d["near_miss"].append(f"{sym}:{why}")
-                st.last_normal_bar = f.bar_ts
-                if st.pending_normal_signal is not None:
-                    watching += 1
+                        state.update({"phase":"COOLDOWN","side":side,"cooldown_remaining":remaining,"invalidated":invalidated})
+                        d["rejects"]["cooldown_locked"] += 1
+                else:
+                    state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
+                    d["rejects"]["unknown_state_reset"] += 1
+                state["last_bar"]=f.bar_ts.isoformat()
+                try:
+                    self.store.save_normal_state(day,sym,state); st.normal_state=state
+                except Exception:
+                    cands=[x for x in cands if not (x.symbol==sym and x.bar_ts==f.bar_ts)]
+                    d["rejects"]["state_storage_error"] += 1
+                    log.exception("could not persist Normal state for %s; signal suppressed",sym)
+                if state.get("phase") in ("ARMED","COOLDOWN"): watching += 1
+                continue
             elif sig:
                 cands.append(sig)
             else:

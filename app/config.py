@@ -106,7 +106,8 @@ class NormalCfg:
     sl_atr: float = _f("N_SL_ATR", 1.2)
     tp1_r: float = _f("N_TP1_R", 1.5)
     tp2_r: float = _f("N_TP2_R", 2.0)
-    cooldown_bars: int = _i("N_COOLDOWN_BARS", 3)
+    # Per-symbol lifecycle enforces the four-bar cooldown; disable legacy dispatch cooldown.
+    cooldown_bars: int = 0
     daily_cap: int = _i("N_DAILY_CAP", 1000)
     per_cycle_top: int = _i("N_PER_CYCLE_TOP", 1000)
 
