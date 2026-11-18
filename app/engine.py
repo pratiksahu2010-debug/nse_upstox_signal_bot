@@ -270,7 +270,12 @@ class Engine:
                     continue
                 if f.bar_ts <= st.last_normal_bar:
                     if st.pending_normal_signal is not None:
-                        watching += 1
+                        next_bar = st.pending_normal_signal.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)
+                        if expected > next_bar:
+                            st.pending_normal_signal = None
+                            d["rejects"]["confirmation_missing_cancel"] += 1
+                        else:
+                            watching += 1
                     continue
 
             stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
