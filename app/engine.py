@@ -262,18 +262,22 @@ class Engine:
         return d
 
     def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
+        """Persist and deliver eligible signals; fetch optional option quotes in one batch."""
         day = now.date()
         cands.sort(key=lambda s: -s.score)
         sent = 0
-        accepted = 0
         self._deliver_pending(d, now)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
+
+        # Resolve all eligible contracts first. A single batched LTP request avoids
+        # one blocking HTTP request per signal and keeps the candle scan responsive.
+        prepared = []
         for sig in cands:
-            if already + accepted >= cfg.daily_cap:
+            if already + len(prepared) >= cfg.daily_cap:
                 d["rejects"]["daily_cap"] += 1
                 continue
-            if accepted >= cfg.per_cycle_top:
+            if len(prepared) >= cfg.per_cycle_top:
                 d["rejects"]["cycle_top_n"] += 1
                 continue
             if cd:
@@ -289,6 +293,24 @@ class Engine:
             if sig.option is None:
                 d["rejects"]["option_unavailable"] += 1
                 continue
+            prepared.append(sig)
+
+        if OPTION_QUOTE and prepared:
+            keys = list(dict.fromkeys(
+                sig.option.get("_key") for sig in prepared if sig.option.get("_key")
+            ))
+            if keys:
+                try:
+                    quotes = self.client.ltp(keys)
+                except Exception as e:
+                    log.warning("batched optional option quote failed: %s", e)
+                    quotes = {}
+                for sig in prepared:
+                    key = sig.option.pop("_key", None)
+                    if key:
+                        sig.option["ltp"] = quotes.get(key)
+
+        for sig in prepared:
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
@@ -304,7 +326,6 @@ class Engine:
             if sid is None:
                 d["rejects"]["duplicate"] += 1
                 continue
-            accepted += 1
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
@@ -318,8 +339,6 @@ class Engine:
             try:
                 self.store.mark_notification(sid, ok, delivery_error)
             except Exception:
-                # If Telegram succeeded but this write failed, the outbox may retry
-                # and produce a duplicate; that is safer than silently losing an alert.
                 d["rejects"]["delivery_state_error"] += 1
                 log.exception("could not persist Telegram delivery state for signal id=%s", sid)
             if ok:
@@ -359,14 +378,10 @@ class Engine:
         rec = pick_option(self.uni, sig.info.underlying, sig.entry, sig.side, now, sig.info.is_index)
         if not rec:
             return None
-        out = {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike, "ltp": None}
-        if OPTION_QUOTE:
-            try:
-                px = self.client.ltp([rec.key])
-                out["ltp"] = px.get(rec.key) or (next(iter(px.values())) if len(px) == 1 else None)
-            except Exception:
-                pass
-        return out
+        # Keep the instrument key internal until all candidate contracts are
+        # collected and quoted in one optional batch request.
+        return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
+                "ltp": None, "_key": rec.key}
 
     # ------------------------------------------------------------------ orchestration
     def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:
