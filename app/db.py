@@ -43,6 +43,7 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER NOT NULL 
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_error TEXT;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
+CREATE TABLE IF NOT EXISTS normal_setup_state (trade_day DATE NOT NULL, symbol TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (trade_day, symbol));
 """
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
@@ -60,6 +61,7 @@ class MemoryStore:
         self.rows: list = []
         self.lock = threading.Lock()
         self._id = 0
+        self.normal_states: dict = {}
 
     def init(self):
         pass
@@ -127,6 +129,14 @@ class MemoryStore:
                     if status not in ("OPEN", "TP1"):
                         r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
 
+    def load_normal_states(self, day: date) -> dict:
+        with self.lock:
+            return {symbol: dict(state) for (trade_day, symbol), state in self.normal_states.items() if trade_day == day}
+
+    def save_normal_state(self, day: date, symbol: str, state: dict):
+        with self.lock:
+            self.normal_states[(day, symbol)] = dict(state)
+
     def stats(self, since: date) -> list:
         agg: dict = {}
         with self.lock:
@@ -187,6 +197,13 @@ class PostgresStore(MemoryStore):
     def init(self):
         self._run(SCHEMA)
         self._run("DELETE FROM signals WHERE trade_day < CURRENT_DATE - 180")
+
+    def load_normal_states(self, day: date) -> dict:
+        rows = self._run("SELECT symbol, state FROM normal_setup_state WHERE trade_day=%s", (day,), "all")
+        return {symbol: (state if isinstance(state, dict) else json.loads(state)) for symbol, state in rows}
+
+    def save_normal_state(self, day: date, symbol: str, state: dict):
+        self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
 
     def add_signal(self, s: dict) -> Optional[int]:
         row = self._run(
