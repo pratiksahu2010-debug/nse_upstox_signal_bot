@@ -241,11 +241,19 @@ class Engine:
             st = self.states[(module, sym)]
             if df is None or len(df) < 50:
                 d["rejects"]["no_data"] += 1
+                pending = st.pending_normal_signal if module == "normal" else None
+                if pending is not None and expected > pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min):
+                    st.pending_normal_signal = None
+                    d["rejects"]["confirmation_missing_cancel"] += 1
                 continue
             ind = add_indicators(df)
             f = compute_features(ind)
             if f is None:
                 d["rejects"]["warmup"] += 1
+                pending = st.pending_normal_signal if module == "normal" else None
+                if pending is not None and expected > pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min):
+                    st.pending_normal_signal = None
+                    d["rejects"]["confirmation_missing_cancel"] += 1
                 continue
             for r in open_rows.get(sym, []):
                 status, rr = simulate(r, ind, cfg.session_end)
@@ -274,7 +282,7 @@ class Engine:
             # it must receive exactly the immediately following closed candle.
             if stale:
                 d["rejects"]["stale_data"] += 1
-                if pending is not None and f.bar_ts > pending.bar_ts:
+                if pending is not None and (f.bar_ts > pending.bar_ts or expected > pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)):
                     st.pending_normal_signal = None
                     d["rejects"]["confirmation_stale_cancel"] += 1
                 if st.pending_normal_signal is not None:
