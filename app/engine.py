@@ -195,11 +195,14 @@ class Engine:
 
     # ------------------------------------------------------------------ cycle
     def cycle(self, module: str, now: datetime, force: bool = False) -> dict:
+        cycle_started = _time.monotonic()
         mod, cfg = MODULES[module]
         day = now.date()
         seg = "nse"
         d = {"module": module, "at": now.strftime("%H:%M:%S"), "symbols": 0, "loaded": 0, "signals": 0,
-             "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force}
+             "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force,
+             "fetch_seconds": 0.0, "evaluate_seconds": 0.0, "dispatch_seconds": 0.0,
+             "duration_seconds": 0.0}
         self.diag[module] = d
         if (seg, day) in self.closed_days and not force:
             d["scope"] = "market_closed_today"
@@ -218,12 +221,15 @@ class Engine:
         d["scope"] = "full" if full else "tracking"
         d["symbols"] = len(states)
 
+        fetch_started = _time.monotonic()
         data = self._load_many(module, states, now, force)
+        d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
+        evaluate_started = _time.monotonic()
         expected = latest_eligible_bar(now)
         cands: list = []
         for sym, df in data.items():
@@ -258,7 +264,18 @@ class Engine:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
+        d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
+        dispatch_started = _time.monotonic()
         d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+        d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
+        d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
+        log.info(
+            "scan %s scope=%s symbols=%d loaded=%d candidates=%d sent=%d "
+            "fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
+            module, d["scope"], d["symbols"], d["loaded"], len(cands), d["signals"],
+            d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
+            d["duration_seconds"], dict(d["rejects"].most_common(6)),
+        )
         return d
 
     def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
