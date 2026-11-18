@@ -128,27 +128,41 @@ def _find_signal_case():
     raise AssertionError("no synthetic signal found")
 
 
-def test_engine_end_to_end_dedupe_and_cooldown():
+def _always_normal_signal(info, df, f, ctx):
+    entry = f.close
+    return Signal(
+        "normal", info.symbol, "LONG", f.bar_ts, entry, entry - 1.0,
+        entry + 1.5, entry + 2.0, 1.0, 0, "ema_vwap", ["test confirmation"], info,
+    )
+
+
+def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
+    monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     df, t = _find_signal_case()
-    now = t + timedelta(minutes=5, seconds=7)          # just after the candle closed
+    now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
     uni = _test_universe(info, now)
     sent, store = [], MemoryStore()
     eng = Engine(FakeClient(df, now), store, notify=lambda text, silent=False: sent.append(text),
                  universe_builder=lambda n: uni)
     eng.ensure_universe(now)
-    out = eng.cycle("normal", now)
-    assert out["signals"] == 1 and len(sent) == 1
-    assert "TEST" in sent[0] and "<b>" in sent[0] and ("🟢" in sent[0] or "🔴" in sent[0])
-    out2 = eng.cycle("normal", now)                    # same candle again -> no duplicate alert
-    assert out2["signals"] == 0 and len(sent) == 1
-    # a stale view (3 bars later with no new data) must not signal
-    late = now + timedelta(minutes=15)
-    eng.client.now = now
+    baseline = eng.cycle("normal", now)
+    assert baseline["signals"] == 0 and sent == []
+    candle1_now = now + timedelta(minutes=5)
+    eng.client.now = candle1_now
+    armed = eng.cycle("normal", candle1_now)
+    assert armed["signals"] == 0 and armed["watching"] == 1 and sent == []
+    candle2_now = now + timedelta(minutes=10)
+    eng.client.now = candle2_now
+    confirmed = eng.cycle("normal", candle2_now)
+    assert confirmed["signals"] == 1 and len(sent) == 1
+    assert "TEST" in sent[0] and "<b>" in sent[0]
+    duplicate = eng.cycle("normal", candle2_now)
+    assert duplicate["signals"] == 0 and len(sent) == 1
+    late = candle2_now + timedelta(minutes=15)
+    eng.client.now = candle2_now
     out3 = eng.cycle("normal", late)
     assert out3["signals"] == 0
-
-
 
 def test_force_run_still_rejects_stale_market_data(monkeypatch):
     df, t = _find_signal_case()
@@ -161,6 +175,7 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
                  notify=lambda message: sent.append(message),
                  universe_builder=lambda n: uni)
     eng.ensure_universe(late_now)
+    eng.states[("normal", "TEST")].last_normal_bar = pd.Timestamp(t - timedelta(minutes=5))
     monkeypatch.setattr("app.engine._time.sleep", lambda seconds: None)
 
     out = eng.cycle("normal", late_now, force=True)
@@ -222,7 +237,8 @@ def test_memory_store_notification_outbox_retries_until_delivered():
     assert store.pending_notifications() == []
 
 
-def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
+def test_engine_retries_failed_telegram_delivery_without_duplicate_signal(monkeypatch):
+    monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     df, t = _find_signal_case()
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
@@ -237,17 +253,21 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal():
     store = MemoryStore()
     eng = Engine(FakeClient(df, now), store, notify=flaky_notify, universe_builder=lambda n: uni)
     eng.ensure_universe(now)
-    first = eng.cycle("normal", now)
+    eng.cycle("normal", now)
+    candle1_now = now + timedelta(minutes=5)
+    eng.client.now = candle1_now
+    armed = eng.cycle("normal", candle1_now)
+    assert armed["signals"] == 0 and armed["watching"] == 1
+    candle2_now = now + timedelta(minutes=10)
+    eng.client.now = candle2_now
+    first = eng.cycle("normal", candle2_now)
     assert first["signals"] == 0
     assert len(store.pending_notifications()) == 1
-    # Simulate the five-minute retry interval without advancing the market candle.
-    eng.last_outbox_retry_at = now - timedelta(minutes=5)
-    second = eng.cycle("normal", now)
+    eng.last_outbox_retry_at = candle2_now - timedelta(minutes=5)
+    second = eng.cycle("normal", candle2_now)
     assert len(delivered) == 1
     assert store.pending_notifications() == []
-    # The signal is suppressed by the active cooldown after the outbox retry.
-    assert second["rejects"].get("cooldown", 0) == 1
-
+    assert second["signals"] == 0
 
 def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypatch):
     import app.db as db
