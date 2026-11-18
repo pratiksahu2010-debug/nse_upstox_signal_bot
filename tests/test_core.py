@@ -180,7 +180,7 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
     eng.ensure_universe(late_now)
     eng.states[("normal", "TEST")].normal_state = {
         "phase": "IDLE", "side": 0,
-        "last_bar": pd.Timestamp(t - timedelta(minutes=5), tz=IST).isoformat(),
+        "last_bar": pd.Timestamp(t - timedelta(minutes=5)).tz_convert(IST).isoformat(),
         "cooldown_remaining": 0, "invalidated": False,
     }
     monkeypatch.setattr("app.engine._time.sleep", lambda seconds: None)
@@ -248,7 +248,7 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal(monkey
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
-    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t, tz=IST) + pd.Timedelta(minutes=5))
+    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t).tz_convert(IST) + pd.Timedelta(minutes=5))
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
     uni = _test_universe(info, now)
