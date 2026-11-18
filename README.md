@@ -25,6 +25,13 @@ Default levels are calculated from the signal candle close:
 
 These are defaults and can be adjusted with `N_SL_ATR`, `N_TP1_R` and `N_TP2_R`. They are reference levels, not a guarantee of execution price or outcome.
 
+## Strict two-candle confirmation
+- The first live completed 5-minute candle that passes every Normal gate arms a per-symbol watch state; it does not send Telegram.
+- Only the immediately following completed 5-minute candle can confirm that setup. It must independently pass all the same Normal gates and retain the same direction.
+- A failed, stale, missing, skipped, or opposite-direction confirmation cancels the setup. Candle 2 is terminal; the bot never waits for Candle 3 or reuses Candle 2 as a fresh setup.
+- The first completed candle observed after process startup is a baseline only. Historical setups are not replayed as live alerts after a restart.
+- The current market-data implementation polls Upstox candle endpoints on each 5-minute boundary; it is not a WebSocket subscription feed.
+
 ## Alerts and safeguards
 - Telegram displays CALL (CE) or PUT (PE), signal candle close time in IST, entry, ATR stop, targets, and the actual available option contract.
 - A signal is not sent if its CE/PE contract cannot be resolved at alert time.
