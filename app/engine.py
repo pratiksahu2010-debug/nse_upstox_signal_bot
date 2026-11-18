@@ -195,11 +195,14 @@ class Engine:
 
     # ------------------------------------------------------------------ cycle
     def cycle(self, module: str, now: datetime, force: bool = False) -> dict:
+        cycle_started = _time.monotonic()
         mod, cfg = MODULES[module]
         day = now.date()
         seg = "nse"
         d = {"module": module, "at": now.strftime("%H:%M:%S"), "symbols": 0, "loaded": 0, "signals": 0,
-             "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force}
+             "scope": "", "rejects": Counter(), "near_miss": [], "errors": [], "forced": force,
+             "fetch_seconds": 0.0, "evaluate_seconds": 0.0, "dispatch_seconds": 0.0,
+             "duration_seconds": 0.0}
         self.diag[module] = d
         if (seg, day) in self.closed_days and not force:
             d["scope"] = "market_closed_today"
@@ -218,12 +221,15 @@ class Engine:
         d["scope"] = "full" if full else "tracking"
         d["symbols"] = len(states)
 
+        fetch_started = _time.monotonic()
         data = self._load_many(module, states, now, force)
+        d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
+        evaluate_started = _time.monotonic()
         expected = latest_eligible_bar(now)
         cands: list = []
         for sym, df in data.items():
@@ -258,24 +264,33 @@ class Engine:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
+        d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
+        dispatch_started = _time.monotonic()
         d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+        d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
+        d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
+        log.info(
+            "scan %s scope=%s symbols=%d loaded=%d candidates=%d sent=%d "
+            "fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
+            module, d["scope"], d["symbols"], d["loaded"], len(cands), d["signals"],
+            d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
+            d["duration_seconds"], dict(d["rejects"].most_common(6)),
+        )
         return d
 
     def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
+        """Persist and deliver eligible signals; fetch optional option quotes in one batch."""
         day = now.date()
         cands.sort(key=lambda s: -s.score)
         sent = 0
-        accepted = 0
         self._deliver_pending(d, now)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
+
+        # Resolve all eligible contracts first. A single batched LTP request avoids
+        # one blocking HTTP request per signal and keeps the candle scan responsive.
+        prepared = []
         for sig in cands:
-            if already + accepted >= cfg.daily_cap:
-                d["rejects"]["daily_cap"] += 1
-                continue
-            if accepted >= cfg.per_cycle_top:
-                d["rejects"]["cycle_top_n"] += 1
-                continue
             if cd:
                 last = self.store.last_signal_ts(module, sig.symbol, sig.side)
                 if last is not None:
@@ -288,6 +303,31 @@ class Engine:
             sig.option = self._option_for(sig, now)
             if sig.option is None:
                 d["rejects"]["option_unavailable"] += 1
+                continue
+            prepared.append(sig)
+
+        quotes = {}
+        if OPTION_QUOTE and prepared:
+            keys = list(dict.fromkeys(
+                sig.option.get("_key") for sig in prepared if sig.option.get("_key")
+            ))
+            if keys:
+                try:
+                    quotes = self.client.ltp(keys) or {}
+                except Exception as e:
+                    log.warning("batched optional option quote failed: %s", e)
+        for sig in prepared:
+            key = sig.option.pop("_key", None)
+            if key and OPTION_QUOTE:
+                sig.option["ltp"] = quotes.get(key)
+
+        accepted = 0
+        for sig in prepared:
+            if already + accepted >= cfg.daily_cap:
+                d["rejects"]["daily_cap"] += 1
+                continue
+            if accepted >= cfg.per_cycle_top:
+                d["rejects"]["cycle_top_n"] += 1
                 continue
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
@@ -318,8 +358,6 @@ class Engine:
             try:
                 self.store.mark_notification(sid, ok, delivery_error)
             except Exception:
-                # If Telegram succeeded but this write failed, the outbox may retry
-                # and produce a duplicate; that is safer than silently losing an alert.
                 d["rejects"]["delivery_state_error"] += 1
                 log.exception("could not persist Telegram delivery state for signal id=%s", sid)
             if ok:
@@ -359,14 +397,10 @@ class Engine:
         rec = pick_option(self.uni, sig.info.underlying, sig.entry, sig.side, now, sig.info.is_index)
         if not rec:
             return None
-        out = {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike, "ltp": None}
-        if OPTION_QUOTE:
-            try:
-                px = self.client.ltp([rec.key])
-                out["ltp"] = px.get(rec.key) or (next(iter(px.values())) if len(px) == 1 else None)
-            except Exception:
-                pass
-        return out
+        # Keep the instrument key internal until all candidate contracts are
+        # collected and quoted in one optional batch request.
+        return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
+                "ltp": None, "_key": rec.key}
 
     # ------------------------------------------------------------------ orchestration
     def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:

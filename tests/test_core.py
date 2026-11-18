@@ -1,5 +1,6 @@
 import gzip, io, json, os, sys, warnings
 from datetime import datetime, time, timedelta
+from collections import Counter
 
 os.environ["AUTOSTART"] = "0"
 warnings.filterwarnings("ignore")
@@ -8,8 +9,8 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from app.common import Ctx, SymbolInfo
-from app.config import IST
+from app.common import Ctx, Signal, SymbolInfo
+from app.config import IST, NORMAL
 from app.db import MemoryStore, make_store
 from app.engine import Engine
 from app.indicators import add_indicators, compute_features, rvol_time_of_day
@@ -369,3 +370,46 @@ def test_simple_call_put_levels_are_atr_based():
     # with one tick of absolute tolerance instead of reusing the rounded SL risk.
     assert abs(abs(signal.tp1 - signal.entry) - 1.5 * raw_risk) <= info.tick
     assert abs(abs(signal.tp2 - signal.entry) - 2.0 * raw_risk) <= info.tick
+
+
+def test_dispatch_batches_optional_option_quotes_once():
+    now = datetime(2026, 11, 17, 10, 30, tzinfo=IST)
+    infos = [
+        SymbolInfo("AAA", "NSE_EQ|AAA", "normal", lot=10, underlying="AAA"),
+        SymbolInfo("BBB", "NSE_EQ|BBB", "normal", lot=10, underlying="BBB"),
+    ]
+    expiry = now + timedelta(days=10)
+    options = {}
+    signals = []
+    for i, info in enumerate(infos):
+        key = f"NSE_FO|{info.symbol}CE"
+        options[info.underlying] = [
+            OptionRec(expiry, 100.0, "CE", key, f"{info.symbol} CE", 10),
+        ]
+        signals.append(Signal(
+            "normal", info.symbol, "LONG",
+            pd.Timestamp("2026-11-17 10:20", tz=IST),
+            100.0, 98.0, 103.0, 104.0, 1.0, 0, "ema_vwap",
+            ["test"], info,
+        ))
+
+    client = FakeClient(make_history(3), now)
+    quote_calls = []
+    def batch_ltp(keys):
+        quote_calls.append(list(keys))
+        return {key: 12.5 + i for i, key in enumerate(keys)}
+    client.ltp = batch_ltp
+
+    sent = []
+    store = MemoryStore()
+    eng = Engine(client, store, notify=lambda message: sent.append(message))
+    eng.uni = Universe(normal=infos, options=options, built_on=now.strftime("%Y-%m-%d"))
+    diag = {"rejects": Counter()}
+
+    count = eng._dispatch("normal", NORMAL, signals, now, False, diag)
+
+    assert count == 2
+    assert len(quote_calls) == 1
+    assert set(quote_calls[0]) == {"NSE_FO|AAACE", "NSE_FO|BBBCE"}
+    assert len(sent) == 2
+    assert all("LTP" in message for message in sent)
