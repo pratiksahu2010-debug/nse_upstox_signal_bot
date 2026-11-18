@@ -62,3 +62,19 @@ def test_ltp_success_uses_v2_header_and_returns_price(monkeypatch):
     assert client.ltp(["NSE_FO|TEST"]) == {"NSE_FO|TEST": 123.45}
     assert client.auth_failed is False
     assert session.calls[0][1]["headers"]["Api-Version"] == "2.0"
+
+def test_optional_ltp_auth_failure_opens_circuit_breaker(monkeypatch):
+    client = UpstoxClient(token="test-token", budget=NoopBudget())
+    session = FakeSession(FakeResponse(401))
+    monkeypatch.setattr(client, "_session", lambda: session)
+
+    assert client.ltp(["NSE_FO|TEST"]) == {}
+    assert client.ltp(["NSE_FO|TEST"]) == {}
+    assert len(session.calls) == 1
+    assert client.auth_failed is False
+
+    # Installing a replacement token re-enables the optional lookup.
+    client.set_token("replacement-token")
+    assert client.ltp(["NSE_FO|TEST"]) == {}
+    assert len(session.calls) == 2
+    assert client.auth_failed is False
