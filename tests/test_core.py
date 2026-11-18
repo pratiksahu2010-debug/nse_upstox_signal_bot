@@ -362,6 +362,10 @@ def test_simple_call_put_levels_are_atr_based():
     info = SymbolInfo("TEST", "K", "normal", lot=100)
     signal, reason = mod_normal.evaluate(info, ind, features, Ctx())
     assert reason is None and signal is not None
-    assert signal.risk == pytest.approx(1.2 * features.atr, rel=0.01)
-    assert abs(signal.tp1 - signal.entry) == pytest.approx(1.5 * signal.risk, rel=0.01)
-    assert abs(signal.tp2 - signal.entry) == pytest.approx(2.0 * signal.risk, rel=0.03)
+    raw_risk = 1.2 * features.atr
+    assert signal.risk == pytest.approx(raw_risk, rel=0.01)
+    # Targets are calculated from the unrounded ATR risk, then each price is
+    # rounded independently to the instrument tick. Compare to the raw formula
+    # with one tick of absolute tolerance instead of reusing the rounded SL risk.
+    assert abs(abs(signal.tp1 - signal.entry) - 1.5 * raw_risk) <= info.tick
+    assert abs(abs(signal.tp2 - signal.entry) - 2.0 * raw_risk) <= info.tick
