@@ -130,10 +130,11 @@ def _find_signal_case():
 
 def _always_normal_signal(info, df, f, ctx):
     entry = f.close
-    return Signal(
+    sig = Signal(
         "normal", info.symbol, "LONG", f.bar_ts, entry, entry - 1.0,
         entry + 1.5, entry + 2.0, 1.0, 0, "ema_vwap", ["test confirmation"], info,
     )
+    return sig, None
 
 
 def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
