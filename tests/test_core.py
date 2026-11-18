@@ -141,7 +141,7 @@ def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
-    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t, tz=IST) + pd.Timedelta(minutes=5))
+    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda f, side: f.bar_ts > pd.Timestamp(t).tz_convert(IST) + pd.Timedelta(minutes=5))
     now = t + timedelta(minutes=5, seconds=7)
     info = SymbolInfo("TEST", "K", "normal", lot=100, underlying="TEST")
     uni = _test_universe(info, now)
