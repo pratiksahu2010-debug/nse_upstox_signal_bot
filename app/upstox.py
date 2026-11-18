@@ -80,6 +80,10 @@ class UpstoxClient:
         self.last_status = None
         self.request_count = 0
         self.failure_count = 0
+        # Optional option-LTP endpoint can reject a token that is valid for
+        # candle data. Once that happens, stop calling it until a new token is
+        # installed; this prevents a warning/request on every scan cycle.
+        self._ltp_auth_disabled = False
 
     def _session(self):
         # requests.Session is not documented as thread-safe. Each worker owns one.
@@ -101,6 +105,7 @@ class UpstoxClient:
             self.auth_status = None
             self.last_error = ""
             self.last_status = None
+            self._ltp_auth_disabled = False
 
     def diagnostics(self) -> dict:
         with self._state_lock:
@@ -258,11 +263,14 @@ class UpstoxClient:
         return self._frame((d.get("data") or {}).get("candles") or [])
 
     def ltp(self, keys: list[str]) -> dict:
-        """Best-effort LTP lookup (used only for the option premium in the alert)."""
+        """Best-effort LTP lookup; permanently pause it after optional auth failure."""
+        if not keys:
+            return {}
+        with self._state_lock:
+            if self._ltp_auth_disabled:
+                return {}
         try:
-            # LTP is a convenience field in Telegram, not a prerequisite for a
-            # signal. The v2 endpoint requires Api-Version: 2.0. Its auth failure
-            # must never latch the shared candle-data client into a dead state.
+            # LTP is display-only. Its auth failure must not affect candle data.
             d = self._get(
                 "/v2/market-quote/ltp",
                 {"instrument_key": ",".join(keys)},
@@ -285,7 +293,18 @@ class UpstoxClient:
                         continue
             return out
         except Exception as e:  # premium is optional
-            log.warning("ltp lookup failed: %s", e)
+            message = str(e)
+            if "optional endpoint auth error" in message:
+                with self._state_lock:
+                    first_failure = not self._ltp_auth_disabled
+                    self._ltp_auth_disabled = True
+                if first_failure:
+                    log.warning(
+                        "optional option-LTP endpoint rejected authentication; "
+                        "disabling further LTP lookups for this process (signals/candle data unaffected)"
+                    )
+            else:
+                log.warning("ltp lookup failed: %s", e)
             return {}
 
 
