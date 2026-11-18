@@ -123,7 +123,9 @@ class UpstoxClient:
         except (TypeError, ValueError):
             return max(0.5, min(30.0, fallback))
 
-    def _get(self, path: str, params: Optional[dict] = None, retries: int = 3) -> dict:
+    def _get(self, path: str, params: Optional[dict] = None, retries: int = 3,
+             *, latch_auth: bool = True, api_version: Optional[str] = None) -> dict:
+        """GET an Upstox endpoint. Optional endpoints may opt out of global auth latching."""
         url = BASE + path
         with self._state_lock:
             token = self._token
@@ -137,8 +139,11 @@ class UpstoxClient:
         for attempt in range(max(1, retries)):
             self.budget.acquire()
             try:
+                headers = {"Authorization": f"Bearer {token}"}
+                if api_version:
+                    headers["Api-Version"] = api_version
                 r = self._session().get(
-                    url, params=params, headers={"Authorization": f"Bearer {token}"},
+                    url, params=params, headers=headers,
                     timeout=(5, 15),
                 )
             except requests.RequestException as e:
@@ -157,11 +162,14 @@ class UpstoxClient:
 
             if r.status_code in (401, 403):
                 with self._state_lock:
-                    self.auth_failed = True
-                    self.auth_status = r.status_code
+                    if latch_auth:
+                        self.auth_failed = True
+                        self.auth_status = r.status_code
                     self.failure_count += 1
                     self.last_error = f"authentication rejected ({r.status_code})"
-                raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+                if latch_auth:
+                    raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+                raise UpstoxError(f"optional endpoint auth error {r.status_code}")
 
             if r.status_code == 429:
                 last = UpstoxError("429 rate limited")
@@ -252,7 +260,16 @@ class UpstoxClient:
     def ltp(self, keys: list[str]) -> dict:
         """Best-effort LTP lookup (used only for the option premium in the alert)."""
         try:
-            d = self._get("/v2/market-quote/ltp", {"instrument_key": ",".join(keys)}, retries=2)
+            # LTP is a convenience field in Telegram, not a prerequisite for a
+            # signal. The v2 endpoint requires Api-Version: 2.0. Its auth failure
+            # must never latch the shared candle-data client into a dead state.
+            d = self._get(
+                "/v2/market-quote/ltp",
+                {"instrument_key": ",".join(keys)},
+                retries=2,
+                latch_auth=False,
+                api_version="2.0",
+            )
             out = {}
             for k, v in (d.get("data") or {}).items():
                 if not isinstance(v, dict):
