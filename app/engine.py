@@ -48,6 +48,10 @@ class SymbolState:
     disabled: str = ""
     err: str = ""
     warm_retry_at: Optional[datetime] = None
+    # Strict Normal setup state. The first observed closed bar after startup is
+    # a baseline only; live setups require two consecutive completed 5m bars.
+    last_normal_bar: Optional[pd.Timestamp] = None
+    pending_normal_signal: Optional[Signal] = None
 
 
 class Engine:
@@ -214,7 +218,7 @@ class Engine:
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
-            states = [s for s in states if s.info.symbol in open_rows]
+            states = [s for s in states if s.info.symbol in open_rows or s.pending_normal_signal is not None]
             if not states:
                 d["scope"] = "idle"
                 return d
@@ -232,6 +236,7 @@ class Engine:
         evaluate_started = _time.monotonic()
         expected = latest_eligible_bar(now)
         cands: list = []
+        watching = 0
         for sym, df in data.items():
             st = self.states[(module, sym)]
             if df is None or len(df) < 50:
@@ -246,24 +251,86 @@ class Engine:
                 status, rr = simulate(r, ind, cfg.session_end)
                 if status != r["status"]:
                     self.store.update_outcome(r["id"], status, rr)
-            if not full:
+
+            # Symbols with no new closed candle are not re-evaluated. On the
+            # first scan after process start, establish a baseline and suppress
+            # historical setups so a restart cannot flood Telegram.
+            if module == "normal":
+                if st.last_normal_bar is None:
+                    st.last_normal_bar = f.bar_ts
+                    log.info("normal baseline %s bar=%s", sym, f.bar_ts)
+                    continue
+                if f.bar_ts <= st.last_normal_bar:
+                    if st.pending_normal_signal is not None:
+                        watching += 1
+                    continue
+
+            stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
+            pending = st.pending_normal_signal if module == "normal" else None
+            if not full and pending is None:
                 continue
-            if f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars):
+
+            # A pending setup is allowed to complete after the last-entry time;
+            # it must receive exactly the immediately following closed candle.
+            if stale:
                 d["rejects"]["stale_data"] += 1
+                if pending is not None and f.bar_ts > pending.bar_ts:
+                    st.pending_normal_signal = None
+                    d["rejects"]["confirmation_stale_cancel"] += 1
+                if st.pending_normal_signal is not None:
+                    watching += 1
+                if module == "normal":
+                    st.last_normal_bar = f.bar_ts
                 continue
+
+            # Do not evaluate a Candle-1 setup outside the normal entry window.
+            # Pending setups are still evaluated once on their next candle.
             ctx = Ctx(ignore_time=force)
             try:
                 sig, why = mod.evaluate(st.info, ind, f, ctx)
             except Exception as e:  # one bad symbol must never kill the cycle
                 log.exception("evaluate %s/%s failed", module, sym)
                 d["rejects"]["eval_error"] += 1
+                if pending is not None:
+                    st.pending_normal_signal = None
+                    d["rejects"]["confirmation_eval_error"] += 1
+                if module == "normal":
+                    st.last_normal_bar = f.bar_ts
                 continue
-            if sig:
+
+            if module == "normal":
+                if pending is not None:
+                    # Candle 2 must be the immediately next 5m candle and
+                    # independently pass every unchanged Normal strategy gate.
+                    expected_confirmation = pending.bar_ts + pd.Timedelta(minutes=ENGINE.candle_min)
+                    if f.bar_ts != expected_confirmation:
+                        st.pending_normal_signal = None
+                        d["rejects"]["confirmation_gap_cancel"] += 1
+                    elif sig is not None and sig.side == pending.side:
+                        cands.append(sig)
+                        d["rejects"]["confirmation_passed"] += 1
+                        st.pending_normal_signal = None
+                    else:
+                        st.pending_normal_signal = None
+                        d["rejects"]["confirmation_failed"] += 1
+                    # Candle 2 is terminal; never reuse it as another setup.
+                elif full and sig is not None:
+                    st.pending_normal_signal = sig
+                    d["rejects"]["setup_armed"] += 1
+                elif full and sig is None:
+                    d["rejects"][why] += 1
+                    if why in NEAR_MISS and len(d["near_miss"]) < 8:
+                        d["near_miss"].append(f"{sym}:{why}")
+                st.last_normal_bar = f.bar_ts
+                if st.pending_normal_signal is not None:
+                    watching += 1
+            elif sig:
                 cands.append(sig)
             else:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
+        d["watching"] = watching
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
         d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
@@ -271,9 +338,9 @@ class Engine:
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d candidates=%d sent=%d "
-            "fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
+            "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], len(cands), d["signals"],
-            d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
+            d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
             d["duration_seconds"], dict(d["rejects"].most_common(6)),
         )
         return d
@@ -474,7 +541,7 @@ class Engine:
         return "\n".join([
             f"💓 <b>{m.upper()} scan {d['at']}</b>",
             f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>",
-            f"<b>top rejects: {top}</b>",
+            f"<b>watching {d.get('watching', 0)} · top rejects: {top}</b>",
         ])
 
     def eod_text(self, day: date, tag: str) -> str:
