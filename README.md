@@ -10,8 +10,10 @@ A single NSE signal engine using Upstox market data, Render, PostgreSQL and Tele
 
 ## One strategy only
 Signal decisions use the latest fully closed 5-minute candle:
-- CALL: EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 18, +DI > -DI, and bullish completed 15-minute EMA9/EMA21 context.
-- PUT: EMA9 < EMA21, close < VWAP, RSI14 < 50, ADX14 >= 18, -DI > +DI, and bearish completed 15-minute EMA9/EMA21 context.
+- CALL: EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 22, +DI > -DI, and bullish completed 15-minute EMA9/EMA21 context.
+- PUT: EMA9 < EMA21, close < VWAP, RSI14 < 50, ADX14 >= 22, -DI > +DI, and bearish completed 15-minute EMA9/EMA21 context.
+
+ADX uses Wilder smoothing with a 14-period lookback. The configured minimum is hard-floored at 22: `N_ADX_MIN` may raise the threshold but cannot lower it. Exactly 22 passes the ADX gate.
 
 No ORB, Momentum Explosion, MCX, score threshold, RVOL gate, candle-quality gate, EMA-cross trigger, pullback trigger or NIFTY market-bias veto.
 
