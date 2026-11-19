@@ -356,7 +356,7 @@ class Engine:
                                 )
                             else:
                                 sig.reasons.append("15m DI context unavailable (informational only)")
-                            cands.append(sig)
+                            sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
                             # Persist TRIGGERED as its own lifecycle stage. The next
                             # completed candle advances it to COOLDOWN; this prevents a
                             # restart between scans from skipping the triggered stage.
@@ -398,7 +398,7 @@ class Engine:
                 if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
                 continue
             elif sig:
-                cands.append(sig)
+                sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
             else:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
@@ -522,6 +522,7 @@ class Engine:
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
+                               "indicator_snapshot": getattr(sig, "indicator_snapshot", {}),
                                "option": dict(sig.option or {}), "telegram_text": message}}
             try:
                 sid = self.store.add_signal(row)
@@ -536,7 +537,8 @@ class Engine:
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
-                result = self.notify(message)
+                result = (send(message, signal_id=sid) if self.notify is send
+                          else self.notify(message))
                 ok = result is not False
                 delivery_error = None if ok else "notify returned false"
             except Exception as e:
