@@ -81,3 +81,19 @@ def validate_option_liquidity(
     if age is None or age > max_quote_age_sec:
         return False, "quote_stale"
     return True, "ok"
+
+
+def stream_quote_snapshot(quote: dict):
+    """Adapt a decoded Upstox V3 full-feed quote to the common quote normalizer."""
+    if not isinstance(quote, dict):
+        return None
+    return {
+        "last_price": quote.get("ltp"),
+        "volume": quote.get("volume"),
+        "oi": quote.get("oi"),
+        "timestamp": quote.get("exchange_ts_ms"),
+        "depth": {
+            "buy": [{"price": quote.get("bid")}],
+            "sell": [{"price": quote.get("ask")}],
+        },
+    }

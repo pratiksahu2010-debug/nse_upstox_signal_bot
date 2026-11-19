@@ -48,6 +48,7 @@ REQUIRE_PERSISTENT_DB = _b("REQUIRE_PERSISTENT_DB", "1")
 ADMIN_TOKEN = _env("ADMIN_TOKEN", "").strip()            # required for /force /stats /diag; fail closed
 KEEPALIVE = _b("KEEPALIVE", "1")                         # self-ping so the free dyno stays awake
 RUN_SCHEDULER = _b("RUN_SCHEDULER", "1")
+UPSTOX_STREAM_ENABLED = _b("UPSTOX_STREAM_ENABLED", "1")
 DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do not send Telegram
 
 # Modules on/off
