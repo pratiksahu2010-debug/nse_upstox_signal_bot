@@ -1,9 +1,13 @@
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pandas as pd
+
 from app import mod_normal
-from app.engine import _triggered_to_cooldown, _trigger_state_after_persist
+from app import engine as engine_module
+from app.common import Signal, SymbolInfo
+from app.engine import Engine, SymbolState, _triggered_to_cooldown, _trigger_state_after_persist
 from app.db import MemoryStore
-from datetime import date
 
 
 def _features(**overrides):
@@ -117,3 +121,54 @@ def test_persisted_trigger_enters_existing_four_bar_cooldown_stage():
     result = _trigger_state_after_persist(triggered, persisted=True)
 
     assert result == triggered
+
+
+def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch):
+    now = datetime(2026, 11, 19, 10, 5, 10, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    bar_ts = pd.Timestamp("2026-11-19T10:00:00+05:30")
+    info = SymbolInfo("TEST", "NSE_EQ|TEST", "normal", underlying="TEST")
+    store = MemoryStore()
+    engine = Engine(client=object(), store=store, notify=lambda _message: True)
+    state = {
+        "phase": "ARMED", "side": 1,
+        "last_bar": (bar_ts - pd.Timedelta(minutes=5)).isoformat(),
+        "cooldown_remaining": 0, "invalidated": False,
+    }
+    engine.states = {("normal", "TEST"): SymbolState(info, normal_state=state)}
+    engine.uni = SimpleNamespace(ready=True)
+    bars = pd.DataFrame({"close": [100.0] * 50})
+    features = SimpleNamespace(bar_ts=bar_ts, bar_end=bar_ts + pd.Timedelta(minutes=5), close=100.0)
+    signal = Signal(
+        module="normal", symbol="TEST", side="LONG", bar_ts=bar_ts,
+        entry=100.0, sl=98.0, tp1=103.0, tp2=106.0, atr=1.0,
+        score=90, trigger="TEST", info=info,
+    )
+
+    monkeypatch.setattr(engine, "_load_many", lambda *_args: {"TEST": bars})
+    monkeypatch.setattr(engine_module, "add_indicators", lambda frame: frame)
+    monkeypatch.setattr(engine_module, "compute_features", lambda _frame: features)
+    monkeypatch.setattr(mod_normal, "setup_side", lambda _features: 1)
+    monkeypatch.setattr(mod_normal, "rsi_triggered", lambda _features, _side: True)
+    monkeypatch.setattr(mod_normal, "evaluate", lambda *_args: (signal, None))
+
+    def dispatch(_module, _cfg, candidates, _now, _force, diag):
+        assert candidates == [signal]
+        if diag["simulate_persist"]:
+            diag["_persisted_candidates"].add(("TEST", bar_ts.isoformat()))
+        return 1 if diag["simulate_persist"] else 0
+
+    monkeypatch.setattr(engine, "_dispatch", dispatch)
+
+    engine.diag["normal"] = {"simulate_persist": False}
+    engine.cycle("normal", now)
+    assert store.load_normal_states(now.date())["TEST"]["phase"] == "IDLE"
+
+    # Reset to ARMED at the preceding candle and simulate a durable signal insert.
+    armed_again = dict(state)
+    store.save_normal_state(now.date(), "TEST", armed_again)
+    engine.states[("normal", "TEST")].normal_state = armed_again
+    engine.diag["normal"] = {"simulate_persist": True}
+    engine.cycle("normal", now)
+    persisted_state = store.load_normal_states(now.date())["TEST"]
+    assert persisted_state["phase"] == "TRIGGERED"
+    assert persisted_state["trigger_bar"] == bar_ts.isoformat()
