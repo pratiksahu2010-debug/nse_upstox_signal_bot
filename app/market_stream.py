@@ -49,6 +49,13 @@ class UpstoxMarketStream:
         with self._lock:
             changed = new_keys != self._keys
             self._keys = new_keys
+            # The engine rotates option subscriptions during the session. Keep
+            # cached quote state only for currently subscribed instruments.
+            active_keys = set(new_keys)
+            self._quotes = {
+                key: quote for key, quote in self._quotes.items()
+                if key in active_keys
+            }
         if changed and self._thread is not None and self._thread.is_alive():
             self._resubscribe.set()
 
