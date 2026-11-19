@@ -1,12 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app import scheduler
 
 
 def test_scheduler_retries_boundary_when_engine_is_busy(monkeypatch):
-    now = datetime(2026, 11, 19, 10, 5, 10, tzinfo=timezone.utc)
-    # Scheduler uses IST for its clock; UTC offset is immaterial to this control-flow test.
+    now = datetime(2026, 11, 19, 10, 5, 10, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+
     class FixedDateTime:
         @classmethod
         def now(cls, tz=None):
