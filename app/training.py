@@ -92,19 +92,29 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     for candidate in candidates:
         tr = subset(train, candidate)
         va = subset(validation, candidate)
-        te = subset(test, candidate)
-        if len(tr) < min_train or len(va) < min_test or len(te) < min_test:
+        # Candidate selection sees train and validation only. The held-out test
+        # is not inspected until the winning candidate has been fixed.
+        if len(tr) < min_train or len(va) < min_test:
             continue
-        train_score, validation_score, test_score = _score(tr), _score(va), _score(te)
+        train_score, validation_score = _score(tr), _score(va)
         ranked.append((validation_score["mean_net_r"], candidate,
-                       train_score, validation_score, test_score))
+                       train_score, validation_score))
 
     if not ranked:
-        return {"status": "no_candidate_met_sample_floor", "samples": len(eligible), "proposal": None}
+        return {"status": "no_candidate_met_sample_floor",
+                "samples": len(eligible), "proposal": None}
 
     ranked.sort(key=lambda item: (
         item[0], item[1]["min_adx"], item[1]["min_rvol"]), reverse=True)
-    _, best, train_score, validation_score, test_score = ranked[0]
+    _, best, train_score, validation_score = ranked[0]
+
+    # Evaluate the chosen candidate exactly once on the untouched held-out days.
+    held_out = subset(test, best)
+    if len(held_out) < min_test:
+        return {"status": "held_out_sample_below_floor",
+                "samples": len(eligible), "held_out_samples": len(held_out),
+                "required": min_test, "proposal": None}
+    test_score = _score(held_out)
     baseline = _score(test)
 
     # A human SKIP is excluded; other human labels override auto_label in
