@@ -71,7 +71,7 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
     return "OPEN", None
 
 
-def measure_target_times(row: dict, df: pd.DataFrame, candle_min: int = 5):
+def measure_target_times(row: dict, df: pd.DataFrame):
     """Return completed 5m bars to first TP1 and TP2 touch; SL wins same-bar ties."""
     risk = abs(float(row["entry"]) - float(row["sl"]))
     if risk <= 0:
