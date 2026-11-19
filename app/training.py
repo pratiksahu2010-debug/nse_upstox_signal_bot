@@ -59,11 +59,18 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
         return {"status": "insufficient_data", "samples": len(eligible),
                 "required": min_train + 2 * min_test, "proposal": None}
 
-    n = len(eligible)
-    train_end = max(min_train, int(n * .6))
-    val_end = max(train_end + min_test, int(n * .8))
-    train, validation, test = eligible[:train_end], eligible[train_end:val_end], eligible[val_end:]
-    if len(validation) < min_test or len(test) < min_test:
+    # Split by complete trading day so a session cannot leak across partitions.
+    days = sorted({row["bar_ts"].date() for row in eligible})
+    if len(days) < MIN_DISTINCT_DAYS:
+        return {"status": "insufficient_distinct_days", "samples": len(eligible),
+                "distinct_days": len(days), "required_days": MIN_DISTINCT_DAYS, "proposal": None}
+    train_day_end = max(1, int(len(days) * .6))
+    val_day_end = max(train_day_end + 1, int(len(days) * .8))
+    train_days, validation_days, test_days = set(days[:train_day_end]), set(days[train_day_end:val_day_end]), set(days[val_day_end:])
+    train = [row for row in eligible if row["bar_ts"].date() in train_days]
+    validation = [row for row in eligible if row["bar_ts"].date() in validation_days]
+    test = [row for row in eligible if row["bar_ts"].date() in test_days]
+    if len(train) < min_train or len(validation) < min_test or len(test) < min_test:
         return {"status": "insufficient_data", "samples": n,
                 "required": min_train + 2 * min_test, "proposal": None}
 
@@ -93,7 +100,7 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
                        train_score, validation_score, test_score))
 
     if not ranked:
-        return {"status": "no_candidate_met_sample_floor", "samples": n, "proposal": None}
+        return {"status": "no_candidate_met_sample_floor", "samples": len(eligible), "proposal": None}
 
     ranked.sort(key=lambda item: (
         item[0], item[1]["min_adx"], item[1]["min_rvol"]), reverse=True)
@@ -105,13 +112,13 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     if (not baseline or test_score["mean_net_r"] <= 0
             or test_score["mean_net_r"] <= baseline["mean_net_r"]):
         return {
-            "status": "no_out_of_sample_improvement", "samples": n,
+            "status": "no_out_of_sample_improvement", "samples": len(eligible), "distinct_days": len(days),
             "baseline_test": baseline, "candidate_test": test_score, "proposal": None,
         }
 
     return {
         "status": "proposal_ready",
-        "samples": n,
+        "samples": len(eligible), "distinct_days": len(days),
         "train": train_score,
         "validation": validation_score,
         "held_out_test": test_score,
