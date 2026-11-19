@@ -9,9 +9,11 @@ def _rows(n=1000):
     rows = []
     for i in range(n):
         strong = i % 2 == 0
+        day_index, bar_index = divmod(i, 50)
         rows.append({
             "id": i + 1,
-            "bar_ts": start + timedelta(minutes=5 * i),
+            "bar_ts": start + timedelta(days=day_index, minutes=5 * bar_index),
+            "status": "SL" if not strong else "TP1_BE",
             "side": "LONG",
             "snapshot": {"adx": 27.0 if strong else 22.5, "rvol": 1.4 if strong else 0.6},
             "net_r": 0.8 if strong else -0.1,
@@ -53,3 +55,28 @@ def test_user_feedback_is_persisted_separately_and_overrides_training_label():
     assert row["snapshot"]["adx"] == 25
     assert row["net_r"] == -1.0
     assert row["first_hit"] == "SL"
+
+
+
+def test_open_and_unresolved_signals_are_not_training_samples():
+    rows = _rows(1000)
+    for row in rows[:100]:
+        row["status"] = "OPEN"
+        row["net_r"] = None
+    report = walk_forward(rows)
+    assert report["status"] == "proposal_ready"
+    assert report["samples"] == 900
+
+
+def test_human_feedback_overrides_automatic_categorical_label():
+    row = {"auto_label": "LOSS", "user_label": "GOOD"}
+    assert effective_label(row) == "GOOD"
+    row["user_label"] = "SKIP"
+    assert effective_label(row) == "SKIP"
+
+
+def test_trainer_requires_multiple_distinct_sessions():
+    rows = _rows(100)
+    report = walk_forward(rows)
+    assert report["status"] == "insufficient_distinct_days"
+    assert report["proposal"] is None
