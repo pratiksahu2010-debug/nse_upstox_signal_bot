@@ -318,7 +318,14 @@ class Engine:
                     d["rejects"]["target_time_storage_error"] += 1
                     log.exception("could not persist target times for signal id=%s", r["id"])
                 if status != r["status"]:
-                    self.store.update_outcome(r["id"], status, rr)
+                    try:
+                        self.store.update_outcome(r["id"], status, rr)
+                    except Exception:
+                        # Outcome analytics are secondary to evaluating the current
+                        # completed candle. A transient write failure must not abort
+                        # the scan and suppress otherwise-valid new signals.
+                        d["rejects"]["outcome_storage_error"] += 1
+                        log.exception("could not persist outcome for signal id=%s", r["id"])
 
             stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
             if stale:
