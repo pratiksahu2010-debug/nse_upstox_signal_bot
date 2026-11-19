@@ -91,7 +91,7 @@ class TelegramPoller:
                     params={
                         "offset": self.offset,
                         "timeout": 25,
-                        "allowed_updates": json.dumps(["message"]),
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
                     },
                     timeout=35,
                 )
@@ -120,6 +120,22 @@ class TelegramPoller:
         self.running = False
 
     def _handle_update(self, update):
+        callback = update.get("callback_query")
+        if callback:
+            message = callback.get("message") or {}
+            chat = message.get("chat") or {}
+            if str(chat.get("id", "")) != self.chat_id:
+                return
+            data = str(callback.get("data") or "")
+            try:
+                prefix, raw_id, label = data.split(":", 2)
+                if prefix != "fb" or label not in {"GOOD","BAD","LATE","FAKE","SKIP"}:
+                    raise ValueError("invalid feedback payload")
+                ok = self.store.set_feedback(int(raw_id), label)
+                self._answer_callback(callback.get("id"), "Feedback saved" if ok else "Signal not found")
+            except (ValueError, TypeError):
+                self._answer_callback(callback.get("id"), "Invalid feedback")
+            return
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         if str(chat.get("id", "")) != self.chat_id:
@@ -179,6 +195,46 @@ class TelegramPoller:
                         f"{row.get('module')}: {closed} closed · {win_rate:.1f}% wins · {avg_r:.2f} avg R{excursion}"
                     )
                 self._reply("\n".join(lines))
+        elif command == "/relabel":
+            parts=text.split()
+            if len(parts)!=3 or parts[2].upper() not in {"GOOD","BAD","LATE","FAKE","SKIP"}:
+                self._reply("Usage: /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>")
+            else:
+                ok=self.store.set_feedback(int(parts[1]),parts[2].upper())
+                self._reply("Human label saved; it overrides the automatic label for training." if ok else "Signal ID not found.")
+        elif command == "/train":
+            from .training import build_proposal
+            rows=self.store.training_rows(datetime.now(IST).date()-timedelta(days=180))
+            report=build_proposal(rows)
+            proposal=report.get("proposal")
+            if proposal:
+                set_persistent_state(self.store,"training_proposal",proposal)
+                self._reply(f"<b>Proposal {proposal['id']} ready</b>\\nTrain/validation/held-out checks passed. Use /proposals to inspect. Nothing was applied.")
+            else:
+                self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples',0)} · required {report.get('required','n/a')}. No proposal created.")
+        elif command == "/proposals":
+            proposal=get_persistent_state(self.store,"training_proposal",None)
+            if not proposal:
+                self._reply("No proposal. Run /train after enough completed, labeled outcomes.")
+            else:
+                diff=proposal.get("diff",{})
+                self._reply(f"<b>Proposal {proposal.get('id')} · {proposal.get('state','PENDING')}</b>\\n"+\\n".join(f"{k}: {v}" for k,v in diff.items())+"\\nApproval stages a reviewed proposal only; it never edits live strategy.")
+        elif command in ("/approve","/rollback"):
+            parts=text.split()
+            proposal=get_persistent_state(self.store,"training_proposal",None)
+            if not proposal or len(parts)!=2 or parts[1]!=str(proposal.get("id")):
+                self._reply(f"Usage: {command} <proposal_id> · inspect /proposals first.")
+            else:
+                proposal["state"]="APPROVED_STAGED" if command=="/approve" else "ROLLED_BACK"
+                set_persistent_state(self.store,"training_proposal",proposal)
+                self._reply("Proposal staged as approved for manual review; live strategy is unchanged." if command=="/approve" else "Proposal rolled back; live strategy is unchanged.")
+        elif command == "/export":
+            rows=self.store.training_rows(datetime.now(IST).date()-timedelta(days=30))
+            lines=["id,bar_ts,side,status,gross_r,net_r,auto_label,user_label"]
+            for row in rows[-40:]:
+                vals=[row.get("id"),row.get("bar_ts"),row.get("side"),row.get("status"),row.get("gross_r"),row.get("net_r"),row.get("auto_label"),row.get("user_label")]
+                lines.append(",".join('"' + str(v if v is not None else "").replace('"','""') + '"' for v in vals))
+            self._reply("<pre>"+ "\\n".join(lines)[:3800] +"</pre>")
         elif command == "/pause":
             self.engine.paused = True
             set_persistent_state(self.store, "paused", True)
@@ -189,6 +245,14 @@ class TelegramPoller:
             self._reply("▶️ Scanning resumed.")
         else:
             self._reply("Unknown command. Send /help.")
+
+    def _answer_callback(self, callback_id, text):
+        if not callback_id or not self.token: return
+        try:
+            requests.post(self._api("answerCallbackQuery"),
+                json={"callback_query_id":callback_id,"text":text},timeout=10)
+        except requests.RequestException:
+            log.exception("Telegram callback acknowledgement failed")
 
     def _recent(self):
         if getattr(self.store, "kind", "") == "postgres":
