@@ -5,6 +5,7 @@ Stored: every alert (dedupe via UNIQUE), cooldown/daily-cap state, and trade out
 """
 import json
 import logging
+import math
 import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -295,7 +296,8 @@ class MemoryStore:
     def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
                                    other_fees_rupees: float, slippage_rupees: float,
                                    updated_at: str) -> bool:
-        if quantity <= 0 or min(brokerage_rupees, other_fees_rupees, slippage_rupees) < 0:
+        if quantity <= 0 or not all(math.isfinite(float(v)) and float(v) >= 0
+                                   for v in (brokerage_rupees, other_fees_rupees, slippage_rupees)):
             return False
         total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
         costs = {
@@ -322,35 +324,6 @@ class MemoryStore:
     def save_normal_state(self, day: date, symbol: str, state: dict):
         with self.lock:
             self.normal_states[(day, symbol)] = dict(state)
-
-    def update_option_tracking(self, sid: int, tracking: dict):
-        self._run(
-            """UPDATE signals SET option_tracking=COALESCE(option_tracking,'{}'::jsonb) || %s::jsonb
-               WHERE id=%s""",
-            (json.dumps(tracking or {}), sid),
-        )
-        return True
-
-    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
-                                   other_fees_rupees: float, slippage_rupees: float,
-                                   updated_at: str) -> bool:
-        if quantity <= 0 or min(brokerage_rupees, other_fees_rupees, slippage_rupees) < 0:
-            return False
-        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
-        costs = {
-            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
-            "other_fees_rupees": float(other_fees_rupees),
-            "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
-            "cost_per_unit": total / int(quantity), "updated_at": updated_at,
-            "source": "MANUAL_BROKER_RECONCILIATION",
-        }
-        row = self._run(
-            """UPDATE signals SET actual_option_costs=%s::jsonb
-               WHERE id=%s AND COALESCE(option_tracking,'{}'::jsonb) ? 'instrument_key'
-               RETURNING id""",
-            (json.dumps(costs), sid), "one",
-        )
-        return bool(row)
 
     def performance_report(self, since: date) -> dict:
         with self.lock:
@@ -560,6 +533,36 @@ class PostgresStore(MemoryStore):
                WHERE id=%s""",
             (bars_to_tp1, bars_to_tp2, sid),
         )
+
+    def update_option_tracking(self, sid: int, tracking: dict):
+        self._run(
+            """UPDATE signals SET option_tracking=COALESCE(option_tracking,'{}'::jsonb) || %s::jsonb
+               WHERE id=%s""",
+            (json.dumps(tracking or {}), sid),
+        )
+        return True
+
+    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
+                                   other_fees_rupees: float, slippage_rupees: float,
+                                   updated_at: str) -> bool:
+        if quantity <= 0 or not all(math.isfinite(float(v)) and float(v) >= 0
+                                   for v in (brokerage_rupees, other_fees_rupees, slippage_rupees)):
+            return False
+        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
+        costs = {
+            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
+            "other_fees_rupees": float(other_fees_rupees),
+            "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
+            "cost_per_unit": total / int(quantity), "updated_at": updated_at,
+            "source": "MANUAL_BROKER_RECONCILIATION",
+        }
+        row = self._run(
+            """UPDATE signals SET actual_option_costs=%s::jsonb
+               WHERE id=%s AND COALESCE(option_tracking,'{}'::jsonb) ? 'instrument_key'
+               RETURNING id""",
+            (json.dumps(costs), sid), "one",
+        )
+        return bool(row)
 
     def performance_report(self, since: date) -> dict:
         rows = self._run(
