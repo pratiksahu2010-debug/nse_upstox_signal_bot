@@ -401,7 +401,8 @@ def test_simple_call_put_levels_are_atr_based():
     assert abs(abs(signal.tp2 - signal.entry) - 2.0 * raw_risk) <= info.tick
 
 
-def test_dispatch_batches_optional_option_quotes_once():
+def test_dispatch_batches_optional_option_quotes_once(monkeypatch):
+    monkeypatch.setattr("app.engine.OPTION_QUOTE", True)
     now = datetime(2026, 11, 17, 10, 30, tzinfo=IST)
     infos = [
         SymbolInfo("AAA", "NSE_EQ|AAA", "normal", lot=10, underlying="AAA"),
