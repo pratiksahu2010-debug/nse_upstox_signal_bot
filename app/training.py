@@ -68,3 +68,15 @@ def build_proposal(rows, now=None):
         report["proposal"]["id"]=now.strftime("%Y%m%d%H%M%S")
         report["proposal"]["state"]="PENDING"
     return report
+
+def shadow_result(snapshot, proposal):
+    """Evaluate a proposal against a live signal snapshot without gating or changing it."""
+    if not proposal or proposal.get("state") not in {"PENDING", "APPROVED_STAGED"}:
+        return None
+    diff = proposal.get("diff") or {}
+    try:
+        adx_ok = float(snapshot.get("adx", 0) or 0) >= float(diff["research_filters.min_adx"])
+        rvol_ok = float(snapshot.get("rvol", 0) or 0) >= float(diff["research_filters.min_rvol"])
+    except (KeyError, TypeError, ValueError):
+        return {"proposal_id": proposal.get("id"), "evaluated": False, "reason": "missing_filter_or_snapshot"}
+    return {"proposal_id": proposal.get("id"), "evaluated": True, "matched": bool(adx_ok and rvol_ok)}
