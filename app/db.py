@@ -69,6 +69,9 @@ MIGRATIONS = (
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS cost_r DOUBLE PRECISION NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS idx_signals_training ON signals (trade_day, module, status)"""),
     (5, "first_target_hit", """ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_hit TEXT"""),
+    (6, "time_to_target_metrics", """ALTER TABLE signals
+        ADD COLUMN IF NOT EXISTS bars_to_tp1 INTEGER;
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp2 INTEGER"""),
 )
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
@@ -169,7 +172,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, bars_to_tp1=None, bars_to_tp2=None, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -251,7 +254,8 @@ class MemoryStore:
                     "side":row["side"],"bars_held":row.get("bars_held",0),
                     "snapshot":details.get("indicator_snapshot",{}),"status":row.get("status"),
                     "gross_r":row.get("r_result"),"net_r":row.get("net_r",row.get("r_result")),
-                    "auto_label":row.get("auto_label"),"user_label":row.get("user_label"),"first_hit":row.get("first_hit")})
+                    "auto_label":row.get("auto_label"),"user_label":row.get("user_label"),"first_hit":row.get("first_hit"),
+                    "bars_to_tp1":row.get("bars_to_tp1"),"bars_to_tp2":row.get("bars_to_tp2")})
             return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
@@ -265,6 +269,16 @@ class MemoryStore:
                     row["time_stop_review_due"] = bool(row.get("time_stop_review_due") or time_stop_review_due)
                     return
 
+    def update_target_times(self, sid: int, bars_to_tp1: Optional[int], bars_to_tp2: Optional[int]):
+        with self.lock:
+            for row in self.rows:
+                if row["id"] == sid:
+                    if bars_to_tp1 is not None and row.get("bars_to_tp1") is None:
+                        row["bars_to_tp1"] = int(bars_to_tp1)
+                    if bars_to_tp2 is not None and row.get("bars_to_tp2") is None:
+                        row["bars_to_tp2"] = int(bars_to_tp2)
+                    return
+
     def load_normal_states(self, day: date) -> dict:
         with self.lock:
             return {symbol: dict(state) for (trade_day, symbol), state in self.normal_states.items() if trade_day == day}
@@ -272,6 +286,15 @@ class MemoryStore:
     def save_normal_state(self, day: date, symbol: str, state: dict):
         with self.lock:
             self.normal_states[(day, symbol)] = dict(state)
+
+    def update_target_times(self, sid: int, bars_to_tp1: Optional[int], bars_to_tp2: Optional[int]):
+        self._run(
+            """UPDATE signals
+               SET bars_to_tp1=COALESCE(bars_to_tp1, %s),
+                   bars_to_tp2=COALESCE(bars_to_tp2, %s)
+               WHERE id=%s""",
+            (bars_to_tp1, bars_to_tp2, sid),
+        )
 
     def performance_report(self, since: date) -> dict:
         with self.lock:
@@ -446,14 +469,15 @@ class PostgresStore(MemoryStore):
 
     def training_rows(self, since: date) -> list:
         rows=self._run("""SELECT id,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
-            status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit
+            status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit,bars_to_tp1,bars_to_tp2
             FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
         out=[]
         for row in rows:
             snap=row[5] if isinstance(row[5],dict) else json.loads(row[5] or "{}")
             out.append({"id":row[0],"bar_ts":row[1],"symbol":row[2],"side":row[3],"bars_held":row[4],
                 "snapshot":snap,"status":row[6],"gross_r":row[7],"net_r":row[8],
-                "auto_label":row[9],"user_label":row[10],"first_hit":row[11]})
+                "auto_label":row[9],"user_label":row[10],"first_hit":row[11],
+                "bars_to_tp1":row[12],"bars_to_tp2":row[13]})
         return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
