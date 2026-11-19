@@ -247,7 +247,8 @@ class MemoryStore:
             for row in self.rows:
                 if row["trade_day"] < since: continue
                 details=row.get("details") or {}
-                out.append({"id":row["id"],"bar_ts":row["bar_ts"],"side":row["side"],
+                out.append({"id":row["id"],"bar_ts":row["bar_ts"],"symbol":row.get("symbol"),
+                    "side":row["side"],"bars_held":row.get("bars_held",0),
                     "snapshot":details.get("indicator_snapshot",{}),"status":row.get("status"),
                     "gross_r":row.get("r_result"),"net_r":row.get("net_r",row.get("r_result")),
                     "auto_label":row.get("auto_label"),"user_label":row.get("user_label"),"first_hit":row.get("first_hit")})
@@ -444,14 +445,15 @@ class PostgresStore(MemoryStore):
         return bool(row)
 
     def training_rows(self, since: date) -> list:
-        rows=self._run("""SELECT id,bar_ts,side,COALESCE(details->'indicator_snapshot','{}'::jsonb),
+        rows=self._run("""SELECT id,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
             status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit
             FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
         out=[]
         for row in rows:
-            snap=row[3] if isinstance(row[3],dict) else json.loads(row[3] or "{}")
-            out.append({"id":row[0],"bar_ts":row[1],"side":row[2],"snapshot":snap,
-                "status":row[4],"gross_r":row[5],"net_r":row[6],"auto_label":row[7],"user_label":row[8],"first_hit":row[9]})
+            snap=row[5] if isinstance(row[5],dict) else json.loads(row[5] or "{}")
+            out.append({"id":row[0],"bar_ts":row[1],"symbol":row[2],"side":row[3],"bars_held":row[4],
+                "snapshot":snap,"status":row[6],"gross_r":row[7],"net_r":row[8],
+                "auto_label":row[9],"user_label":row[10],"first_hit":row[11]})
         return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
