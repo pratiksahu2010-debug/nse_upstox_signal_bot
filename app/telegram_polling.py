@@ -205,6 +205,9 @@ class TelegramPoller:
                 diff = proposal.get("diff", {})
                 lines = [f"<b>Proposal {proposal.get('id')} · {proposal.get('state', 'PENDING')}</b>"]
                 lines.extend(f"{k}: {v}" for k, v in diff.items())
+                report = proposal.get("report") or {}
+                for section in ("train", "validation", "held_out_test", "baseline_test"):
+                    if report.get(section): lines.append(f"{section}: {report[section]}")
                 lines.append("Research-only filter. Approval does not change the live strategy.")
                 self._reply("\n".join(lines))
         elif command == "/shadow":
@@ -226,7 +229,7 @@ class TelegramPoller:
             rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))[-35:]
             lines = ["id,bar_ts,side,status,gross_r,net_r,auto_label,user_label"]
             for row in rows:
-                vals = [row.get(k) for k in ("id", "bar_ts", "side", "status", "gross_r", "net_r", "auto_label", "user_label")]
+                vals = [row.get(k) for k in ("id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r", "auto_label", "user_label")]
                 lines.append(",".join('"' + str(v if v is not None else "").replace('"', '""') + '"' for v in vals))
             self._reply("<pre>" + "\n".join(lines)[:3800] + "</pre>")
         elif command == "/pause":
