@@ -19,7 +19,7 @@ import pandas as pd
 from . import mod_normal
 from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED)
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R)
 from .indicators import add_indicators, compute_features
 from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
 from .telegram import format_signal, send
@@ -520,7 +520,7 @@ class Engine:
             message = format_signal(sig)
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
-                   "score": sig.score, "trig": sig.trigger,
+                   "score": sig.score, "trig": sig.trigger, "cost_r": TRAINING_COST_R,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
                                "indicator_snapshot": getattr(sig, "indicator_snapshot", {}),
                                "option": dict(sig.option or {}), "telegram_text": message}}
