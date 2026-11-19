@@ -29,7 +29,7 @@ from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
 MODULES = {"normal": (mod_normal, NORMAL)}
-NEAR_MISS = {"htf_15m", "adx_min", "di_direction", "rsi_direction", "ema_vwap"}
+NEAR_MISS = {"adx_min", "di_direction", "rsi_direction", "ema_vwap"}
 OHLCV = ["open", "high", "low", "close", "volume"]
 
 
@@ -367,16 +367,6 @@ class Engine:
                         except Exception:
                             sig,why=None,"eval_error"; log.exception("evaluate %s/%s failed",module,sym)
                         if sig is not None:
-                            # Higher-timeframe DI is explanation-only: it is never
-                            # consulted by setup_side, the state machine or scoring.
-                            if f.htf_pdi is not None and f.htf_mdi is not None:
-                                context = "bullish" if f.htf_pdi > f.htf_mdi else "bearish" if f.htf_mdi > f.htf_pdi else "neutral"
-                                sig.reasons.append(
-                                    f"15m DI context (informational only): {context}; "
-                                    f"+DI {f.htf_pdi:.1f} / -DI {f.htf_mdi:.1f}"
-                                )
-                            else:
-                                sig.reasons.append("15m DI context unavailable (informational only)")
                             sig.indicator_snapshot = {
                                 k: (v.isoformat() if hasattr(v, "isoformat") else v)
                                 for k, v in vars(f).items()
