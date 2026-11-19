@@ -96,3 +96,21 @@ def test_memory_store_requires_option_contract_for_actual_costs():
         "details": {},
     })
     assert not store.update_actual_option_costs(sid, 50, 80.0, 40.0, 30.0, "2026-11-19T10:00:00+05:30")
+
+
+def test_memory_training_rows_include_score_trigger_and_excursions():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "ABC", "side": "LONG",
+        "bar_ts": datetime(2026, 11, 18, 10, tzinfo=timezone.utc),
+        "trade_day": date(2026, 11, 18), "entry": 100, "sl": 98,
+        "tp1": 103, "tp2": 104, "score": 87, "trig": "MOMENTUM_EXPLOSION",
+        "details": {"indicator_snapshot": {"adx": 25}},
+    })
+    store.update_excursions(sid, 2.1, 0.4, 5)
+    row = store.training_rows(date(2026, 11, 1))[0]
+    assert row["score"] == 87
+    assert row["trig"] == "MOMENTUM_EXPLOSION"
+    assert row["mfe_r"] == 2.1
+    assert row["mae_r"] == 0.4
+    assert row["bars_held"] == 5
