@@ -107,6 +107,23 @@ def stream_quote_snapshot(quote: dict):
 
 
 
+def _timestamp_epoch(value):
+    """Normalize exchange/REST quote timestamps for ordering comparisons."""
+    if value is None:
+        return None
+    try:
+        ts = float(value)
+        return ts / 1000.0 if ts > 1e11 else ts
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
 def _positive(value):
     number = _finite_number(value)
     return number if number is not None and number > 0 else None
@@ -167,7 +184,14 @@ def update_option_tracking(state: dict, metrics: dict, max_quote_age_sec: int) -
         out["tracking_status"] = "MISSING_ENTRY_QUOTE"
         return out
     timestamp = metrics.get("quote_timestamp")
-    if timestamp is not None and str(timestamp) == str(out.get("last_quote_timestamp")):
+    previous_timestamp = out.get("last_quote_timestamp")
+    if timestamp is not None and str(timestamp) == str(previous_timestamp):
+        return out
+    current_epoch = _timestamp_epoch(timestamp)
+    previous_epoch = _timestamp_epoch(previous_timestamp)
+    if current_epoch is not None and previous_epoch is not None and current_epoch < previous_epoch:
+        # WebSocket delivery can be delayed or reordered. Never roll the latest
+        # mark/sample state backwards to an older exchange quote.
         return out
     bid, ask, ltp = (_positive(metrics.get(k)) for k in ("bid", "ask", "ltp"))
     mark = bid if bid is not None else ltp
