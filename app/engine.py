@@ -74,6 +74,7 @@ class Engine:
         self.paused = False
         self.market_stream = None
         self._stream_keys = []
+        self._stream_keys_dirty = False
         self.auth_alerted_at = None
 
     # ------------------------------------------------------------------ universe
@@ -96,7 +97,12 @@ class Engine:
         # are added lazily when qualified signals resolve their option instrument.
         underlying_keys = [item.key for item in uni.normal if item.key]
         self._stream_keys = list(dict.fromkeys(underlying_keys))
-        if UPSTOX_STREAM_ENABLED and getattr(self.client, "_token", ""):
+        self._stream_keys_dirty = False
+        if not getattr(uni, "ready", True) or not UPSTOX_STREAM_ENABLED or not getattr(self.client, "_token", ""):
+            if self.market_stream is not None:
+                self.market_stream.stop()
+                self.market_stream = None
+        else:
             try:
                 if self.market_stream is None:
                     self.market_stream = UpstoxMarketStream(self.client)
@@ -286,12 +292,7 @@ class Engine:
                 status, rr = simulate(r, ind, cfg.session_end)
                 mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
                 try:
-                    # Six completed 5m bars without TP1 triggers review only;
-                    # this flag never closes a trade or sends an execution order.
-                    review_due = status == "OPEN" and bars_held >= 6
-                    self.store.update_excursions(
-                        r["id"], mfe_r, mae_r, bars_held, review_due,
-                    )
+                    self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
                 except Exception:
                     d["rejects"]["excursion_storage_error"] += 1
                     log.exception("could not persist MFE/MAE for signal id=%s", r["id"])
@@ -422,6 +423,10 @@ class Engine:
                 d["rejects"]["option_unavailable"] += 1
                 continue
             prepared.append(sig)
+
+        # Apply all lazily selected option subscriptions in one reconnect per scan,
+        # not one reconnect per candidate contract.
+        self._sync_market_stream_keys()
 
         # Optional full quote snapshots provide bid/ask, volume and OI.
         # The liquidity hard gate is OFF by default to preserve current alert eligibility.
@@ -567,9 +572,14 @@ class Engine:
                 base_set = set(base_keys)
                 option_keys = [key for key in self._stream_keys if key not in base_set][-1000:]
                 self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
-                self.market_stream.set_keys(self._stream_keys)
+                self._stream_keys_dirty = True
         return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
                 "ltp": None, "_key": rec.key}
+
+    def _sync_market_stream_keys(self):
+        if self.market_stream is not None and self._stream_keys_dirty:
+            self.market_stream.set_keys(self._stream_keys)
+            self._stream_keys_dirty = False
 
     # ------------------------------------------------------------------ orchestration
     def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:
