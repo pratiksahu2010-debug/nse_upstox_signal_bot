@@ -1,7 +1,7 @@
 """Offline, bounded research over completed signal outcomes. Never mutates live strategy."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import product
 from statistics import mean
 
@@ -19,6 +19,27 @@ def effective_label(row):
     if human in HUMAN_LABELS:
         return human
     return row.get("auto_label")
+
+
+def purge_overlapping_outcomes(rows):
+    """Keep earliest same-symbol signal when tracked outcome windows overlap."""
+    ordered = sorted(rows, key=lambda row: (row["bar_ts"], row.get("id", 0)))
+    last_end_by_symbol, kept, purged = {}, [], 0
+    for row in ordered:
+        symbol, stamp = row.get("symbol"), row["bar_ts"]
+        if not symbol:
+            kept.append(row)
+            continue
+        if symbol in last_end_by_symbol and stamp <= last_end_by_symbol[symbol]:
+            purged += 1
+            continue
+        try:
+            held = max(1, int(row.get("bars_held") or 1))
+        except (TypeError, ValueError):
+            held = 1
+        last_end_by_symbol[symbol] = stamp + timedelta(minutes=5 * held)
+        kept.append(row)
+    return kept, purged
 
 
 def _label_counts(rows):
@@ -55,15 +76,17 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
         and effective_label(r) != "SKIP"
     ]
     eligible.sort(key=lambda r: r["bar_ts"])
+    eligible, overlap_purged = purge_overlapping_outcomes(eligible)
     if len(eligible) < min_train + 2 * min_test:
-        return {"status": "insufficient_data", "samples": len(eligible),
+        return {"status": "insufficient_data", "samples": len(eligible), "overlap_purged": overlap_purged,
                 "required": min_train + 2 * min_test, "proposal": None}
 
     # Split by complete trading day so a session cannot leak across partitions.
     days = sorted({row["bar_ts"].date() for row in eligible})
     if len(days) < MIN_DISTINCT_DAYS:
         return {"status": "insufficient_distinct_days", "samples": len(eligible),
-                "distinct_days": len(days), "required_days": MIN_DISTINCT_DAYS, "proposal": None}
+                "distinct_days": len(days), "overlap_purged": overlap_purged,
+                "required_days": MIN_DISTINCT_DAYS, "proposal": None}
     train_day_end = max(1, int(len(days) * .6))
     val_day_end = max(train_day_end + 1, int(len(days) * .8))
     train_days, validation_days, test_days = set(days[:train_day_end]), set(days[train_day_end:val_day_end]), set(days[val_day_end:])
@@ -72,7 +95,8 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     test = [row for row in eligible if row["bar_ts"].date() in test_days]
     if len(train) < min_train or len(validation) < min_test or len(test) < min_test:
         return {"status": "insufficient_data", "samples": len(eligible),
-                "distinct_days": len(days), "required": min_train + 2 * min_test, "proposal": None}
+                "distinct_days": len(days), "overlap_purged": overlap_purged,
+                "required": min_train + 2 * min_test, "proposal": None}
 
     # Search a deliberately small grid; these are post-signal cohort filters,
     # not alternate entry rules and cannot alter live alerts.
@@ -102,7 +126,7 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
 
     if not ranked:
         return {"status": "no_candidate_met_sample_floor",
-                "samples": len(eligible), "proposal": None}
+                "samples": len(eligible), "overlap_purged": overlap_purged, "proposal": None}
 
     ranked.sort(key=lambda item: (
         item[0], item[1]["min_adx"], item[1]["min_rvol"]), reverse=True)
@@ -113,7 +137,7 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     if len(held_out) < min_test:
         return {"status": "held_out_sample_below_floor",
                 "samples": len(eligible), "held_out_samples": len(held_out),
-                "required": min_test, "proposal": None}
+                "overlap_purged": overlap_purged, "required": min_test, "proposal": None}
     test_score = _score(held_out)
     baseline = _score(test)
 
@@ -123,12 +147,13 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
             or test_score["mean_net_r"] <= baseline["mean_net_r"]):
         return {
             "status": "no_out_of_sample_improvement", "samples": len(eligible), "distinct_days": len(days),
-            "baseline_test": baseline, "candidate_test": test_score, "proposal": None,
+            "overlap_purged": overlap_purged, "baseline_test": baseline, "candidate_test": test_score, "proposal": None,
         }
 
     return {
         "status": "proposal_ready",
         "samples": len(eligible), "distinct_days": len(days),
+        "overlap_purged": overlap_purged,
         "train": train_score,
         "validation": validation_score,
         "held_out_test": test_score,
