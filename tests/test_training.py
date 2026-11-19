@@ -51,3 +51,4 @@ def test_user_feedback_is_persisted_separately_and_overrides_training_label():
     assert row["user_label"] == "GOOD"
     assert row["snapshot"]["adx"] == 25
     assert row["net_r"] == -1.0
+    assert row["first_hit"] == "SL"
