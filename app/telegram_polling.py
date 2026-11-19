@@ -145,7 +145,7 @@ class TelegramPoller:
                 "/status · /signals · /stats\n"
                 "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
                 "/train · /proposals · /approve <id> · /rollback <id>\n"
-                "/export · /pause · /resume\n"
+                "/export · /shadow on|off · /pause · /resume\n"
                 "Signal-only: no order placement or execution.")
         elif command == "/status":
             status = self.engine.status()
