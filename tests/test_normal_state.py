@@ -33,3 +33,15 @@ def test_normal_setup_state_survives_memory_store_reload():
     store.save_normal_state(date(2026, 11, 18), "TEST", payload)
     assert store.load_normal_states(date(2026, 11, 18)) == {"TEST": payload}
     assert store.load_normal_states(date(2026, 11, 19)) == {}
+
+
+def test_15m_di_is_informational_and_never_changes_5m_setup_eligibility():
+    # A bullish 5m CALL remains valid with bearish 15m DI.
+    assert mod_normal.setup_side(_features(htf_pdi=10.0, htf_mdi=35.0)) == 1
+    # A bearish 5m PUT remains valid with bullish 15m DI.
+    assert mod_normal.setup_side(_features(
+        ema9=99.0, ema21=100.0, close=99.0, vwap=100.0,
+        pdi=12.0, mdi=25.0, htf_pdi=40.0, htf_mdi=8.0,
+    )) == -1
+    # Missing 15m DI also cannot block either 5m setup.
+    assert mod_normal.setup_side(_features(htf_pdi=None, htf_mdi=None)) == 1

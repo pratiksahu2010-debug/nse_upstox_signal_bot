@@ -17,11 +17,13 @@ import numpy as np
 import pandas as pd
 
 from . import mod_normal
+from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import ENGINE, IST, NORMAL, OPTION_QUOTE
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED)
 from .indicators import add_indicators, compute_features
+from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
 from .telegram import format_signal, send
-from .tracker import simulate
+from .tracker import measure_excursions, simulate
 from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
@@ -71,6 +73,9 @@ class Engine:
         self.last_outbox_retry_at = None
         self.paused = False
         self.market_stream = None
+        self._stream_keys = []
+        self._stream_keys_dirty = False
+        self.auth_alerted_at = None
 
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
@@ -88,6 +93,24 @@ class Engine:
                 raise
             return
         self.uni = uni
+        # One V3 feed for the fixed underlying universe; selected option contracts
+        # are added lazily when qualified signals resolve their option instrument.
+        underlying_keys = [item.key for item in uni.normal if item.key]
+        self._stream_keys = list(dict.fromkeys(underlying_keys))
+        self._stream_keys_dirty = False
+        if not getattr(uni, "ready", True) or not UPSTOX_STREAM_ENABLED or not getattr(self.client, "_token", ""):
+            if self.market_stream is not None:
+                self.market_stream.stop()
+                self.market_stream = None
+        else:
+            try:
+                if self.market_stream is None:
+                    self.market_stream = UpstoxMarketStream(self.client)
+                    self.market_stream.start(self._stream_keys)
+                else:
+                    self.market_stream.set_keys(self._stream_keys)
+            except Exception:
+                log.exception("could not start/update Upstox V3 market stream")
         # Rebuild the complete single universe once per trading day.
         self.states = {}
         for info in uni.normal:
@@ -219,6 +242,13 @@ class Engine:
              "fetch_seconds": 0.0, "evaluate_seconds": 0.0, "dispatch_seconds": 0.0,
              "duration_seconds": 0.0}
         self.diag[module] = d
+        if self.uni is not None and not getattr(self.uni, "ready", True):
+            d["scope"] = "universe_incomplete"
+            d["symbols"] = len(getattr(self.uni, "configured_symbols", []))
+            d["loaded"] = len(self.uni.normal)
+            d["rejects"]["universe_incomplete"] = 1
+            d["errors"] = list(getattr(self.uni, "validation_errors", []))[:10]
+            return d
         if (seg, day) in self.closed_days and not force:
             d["scope"] = "market_closed_today"
             return d
@@ -260,6 +290,12 @@ class Engine:
                 continue
             for r in open_rows.get(sym, []):
                 status, rr = simulate(r, ind, cfg.session_end)
+                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
+                try:
+                    self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
+                except Exception:
+                    d["rejects"]["excursion_storage_error"] += 1
+                    log.exception("could not persist MFE/MAE for signal id=%s", r["id"])
                 if status != r["status"]:
                     self.store.update_outcome(r["id"], status, rr)
 
@@ -310,6 +346,16 @@ class Engine:
                         except Exception:
                             sig,why=None,"eval_error"; log.exception("evaluate %s/%s failed",module,sym)
                         if sig is not None:
+                            # Higher-timeframe DI is explanation-only: it is never
+                            # consulted by setup_side, the state machine or scoring.
+                            if f.htf_pdi is not None and f.htf_mdi is not None:
+                                context = "bullish" if f.htf_pdi > f.htf_mdi else "bearish" if f.htf_mdi > f.htf_pdi else "neutral"
+                                sig.reasons.append(
+                                    f"15m DI context (informational only): {context}; "
+                                    f"+DI {f.htf_pdi:.1f} / -DI {f.htf_mdi:.1f}"
+                                )
+                            else:
+                                sig.reasons.append("15m DI context unavailable (informational only)")
                             cands.append(sig)
                             state.update({"phase":"COOLDOWN","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
                             d["rejects"]["rsi_triggered"] += 1
@@ -388,19 +434,67 @@ class Engine:
                 continue
             prepared.append(sig)
 
-        quotes = {}
-        if OPTION_QUOTE and prepared:
-            keys = list(dict.fromkeys(
+        # Apply all lazily selected option subscriptions in one reconnect per scan,
+        # not one reconnect per candidate contract.
+        self._sync_market_stream_keys()
+
+        # Optional full quote snapshots provide bid/ask, volume and OI.
+        # The liquidity hard gate is OFF by default to preserve current alert eligibility.
+        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or self.market_stream is not None) and prepared:
+            option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
+            snapshots = {}
+            if self.market_stream is not None:
+                for key in option_keys:
+                    raw_snapshot = stream_quote_snapshot(self.market_stream.quote(key))
+                    if raw_snapshot:
+                        snapshots[key] = raw_snapshot
+            needs_rest = [key for key in option_keys if key not in snapshots]
+            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS):
+                try:
+                    snapshots.update(self.client.full_quotes(needs_rest) or {})
+                except Exception as exc:
+                    log.warning("optional full option quote snapshot failed: %s", type(exc).__name__)
+            retained = []
+            for sig in prepared:
+                key = sig.option.get("_key")
+                raw = snapshots.get(key)
+                if raw is None:
+                    raw = next((value for value in snapshots.values()
+                                if isinstance(value, dict) and value.get("instrument_token") == key), None)
+                if raw is None:
+                    if OPTION_LIQUIDITY_CHECKS:
+                        d["rejects"]["option_quote_missing"] += 1
+                        continue
+                    retained.append(sig)
+                    continue
+                metrics = snapshot_metrics(raw, now.timestamp())
+                sig.option.update(metrics)
+                if OPTION_LIQUIDITY_CHECKS:
+                    valid, reason = validate_option_liquidity(
+                        metrics, OPTION_MIN_VOLUME, OPTION_MIN_OI,
+                        OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC,
+                    )
+                    if not valid:
+                        d["rejects"][f"option_{reason}"] += 1
+                        continue
+                retained.append(sig)
+            prepared = retained
+
+        quotes = {}
+        if OPTION_QUOTE and prepared:
+            missing = [sig.option.get("_key") for sig in prepared
+                       if sig.option.get("_key") and not sig.option.get("ltp")]
+            keys = list(dict.fromkeys(missing))
             if keys:
                 try:
                     quotes = self.client.ltp(keys) or {}
                 except Exception as e:
-                    log.warning("batched optional option quote failed: %s", e)
+                    log.warning("batched optional option LTP failed: %s", type(e).__name__)
         for sig in prepared:
             key = sig.option.pop("_key", None)
-            if key and OPTION_QUOTE:
+            if key and OPTION_QUOTE and not sig.option.get("ltp"):
                 sig.option["ltp"] = quotes.get(key)
 
         accepted = 0
@@ -416,7 +510,7 @@ class Engine:
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
-                               "telegram_text": message}}
+                               "option": dict(sig.option or {}), "telegram_text": message}}
             try:
                 sid = self.store.add_signal(row)
             except Exception:
@@ -481,8 +575,21 @@ class Engine:
             return None
         # Keep the instrument key internal until all candidate contracts are
         # collected and quoted in one optional batch request.
+        if rec.key and self.market_stream is not None:
+            if rec.key not in self._stream_keys:
+                self._stream_keys.append(rec.key)
+                base_keys = [item.key for item in self.uni.normal if item.key]
+                base_set = set(base_keys)
+                option_keys = [key for key in self._stream_keys if key not in base_set][-1000:]
+                self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
+                self._stream_keys_dirty = True
         return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
                 "ltp": None, "_key": rec.key}
+
+    def _sync_market_stream_keys(self):
+        if self.market_stream is not None and self._stream_keys_dirty:
+            self.market_stream.set_keys(self._stream_keys)
+            self._stream_keys_dirty = False
 
     # ------------------------------------------------------------------ orchestration
     def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:
@@ -576,6 +683,11 @@ class Engine:
             "started": self.started.isoformat(),
             "store": getattr(self.store, "kind", "?"),
             "universe": ({
+                "ready": getattr(self.uni, "ready", True),
+                "validation_errors": getattr(self.uni, "validation_errors", []),
+                "configured_symbols": len(self.uni.configured_symbols),
+                "validated_symbols": len(self.uni.normal),
+                "invalid_symbols": self.uni.dropped,
                 "stocks": sum(not item.is_index for item in self.uni.normal),
                 "indices": sum(item.is_index for item in self.uni.normal),
                 "total": len(self.uni.normal),

@@ -43,7 +43,14 @@ def format_signal(sig: Signal) -> str:
     if sig.option:
         option = sig.option
         premium = f" · LTP {fmt_price(option['ltp'])}" if option.get("ltp") else ""
-        lines.append(_b(f"Option {option['tsym']} · lot {option['lot']}{premium}"))
+        depth = ""
+        if option.get("bid") and option.get("ask"):
+            depth = f" · Bid/Ask {fmt_price(option['bid'])}/{fmt_price(option['ask'])}"
+        spread = f" · Spread {option['spread_pct']:.2f}%" if option.get("spread_pct") is not None else ""
+        liquidity = ""
+        if option.get("volume") is not None or option.get("oi") is not None:
+            liquidity = f" · Vol {option.get('volume', 'n/a')} · OI {option.get('oi', 'n/a')}"
+        lines.append(_b(f"Option {option['tsym']} · lot {option['lot']}{premium}{depth}{spread}{liquidity}"))
     lines.append(_b("Conditions: " + " | ".join(sig.reasons)))
     if sig.forced:
         lines.append(_b("FORCED TEST"))

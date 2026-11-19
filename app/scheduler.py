@@ -15,6 +15,29 @@ from .engine import Engine, floor5
 log = logging.getLogger("scheduler")
 
 
+def _notify_auth_state(engine: Engine, now: datetime):
+    missing = not UPSTOX_TOKEN
+    rejected = bool(getattr(engine.client, "auth_failed", False))
+    if not (missing or rejected):
+        engine.auth_alerted_at = None
+        return
+    last = getattr(engine, "auth_alerted_at", None)
+    if last is not None and now - last < timedelta(minutes=5):
+        return
+    reason = "UPSTOX_ACCESS_TOKEN is missing" if missing else "Upstox rejected UPSTOX_ACCESS_TOKEN"
+    message = (
+        f"<b>⚠️ Upstox authentication problem</b>\n{reason}. "
+        "Update the Render secret and restart the service. Scanner data may be unavailable; "
+        "no broker orders are placed."
+    )
+    try:
+        engine.notify(message, silent=False)
+    except Exception:
+        log.exception("could not send Upstox authentication alert")
+    engine.auth_alerted_at = now
+    log.error("Upstox authentication problem: %s", reason)
+
+
 def _next_due(now: datetime) -> datetime:
     return floor5(now) + timedelta(minutes=ENGINE.candle_min, seconds=ENGINE.fetch_delay_sec)
 
@@ -24,22 +47,11 @@ def loop(engine: Engine, stop: threading.Event):
     last_run = None
     while not stop.is_set():
         now = datetime.now(IST)
+        _notify_auth_state(engine, now)
         try:
             engine.housekeeping(now)
         except Exception:
             log.exception("housekeeping failed")
-        # Start the V3 live feed only after the validated instrument universe exists.
-        # Closed 5m REST candles remain authoritative for strategy decisions.
-        if engine.uni and UPSTOX_TOKEN:
-            try:
-                from .market_stream import UpstoxMarketStream
-                if engine.market_stream is None:
-                    engine.market_stream = UpstoxMarketStream(engine.client)
-                    engine.market_stream.start([item.key for item in engine.uni.normal])
-                else:
-                    engine.market_stream.set_keys([item.key for item in engine.uni.normal])
-            except Exception:
-                log.exception("could not start/update Upstox market feed")
         # candle that just closed and is past the fetch delay?
         bar_close = floor5(now)
         due = bar_close + timedelta(seconds=ENGINE.fetch_delay_sec)

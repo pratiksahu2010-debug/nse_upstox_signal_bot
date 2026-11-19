@@ -8,8 +8,8 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 - Gunicorn with Uvicorn worker; exactly one worker because the scanner is in-process.
 - Upstox REST remains the source of completed 5-minute OHLCV candles and instrument master data.
 - Upstox Market Data Feed V3 WebSocket provides live quote/feed-health observations. Live ticks do not create signals.
-- Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias.
-- Telegram Bot API getUpdates long polling; no webhook.
+- Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias. The database bootstrap is tracked through an idempotent schema_migrations version table.
+- Telegram Bot API getUpdates long polling; no webhook. Missing or rejected Upstox credentials trigger throttled Telegram alerts; after replacing a Render secret, restart the service to reconnect with the new token.
 
 ## Strategy — preserved current implementation
 
@@ -30,13 +30,13 @@ Default underlying reference levels:
 - TP1: 1.5R.
 - TP2: 2.0R.
 
-The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. The state machine is implemented in app/engine.py and app/mod_normal.py.
+Completed 15-minute +DI/-DI/ADX values are calculated from completed 15-minute bars and attached to signal explanations as informational context only; they do not alter the current 5-minute strategy eligibility. The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
 
 ## Universe and option selection — current behaviour
 
-The current resolver uses candidate/reserve lists in app/symbols.py, validates cash EQ, futures and CE/PE availability against the Upstox instrument master, and discovers supported index derivatives. It selects up to 100 eligible stock underlyings plus supported indices. It is not yet the exactly-150 static universe in the master prompt.
+The bot uses an exactly 150-entry static universe in app/symbols.py: 144 individual-security underlyings and six explicitly named NSE index underlyings. The equity list is pinned from the NSE official derivatives-underlying list checked on 19 Nov 2026. No runtime discovery, symbol rotation or automatic replacement is performed. Every configured entry is checked against the Upstox instrument master; unavailable entries are reported in /symbols and /status and are not silently replaced. The configured count and duplicate check are enforced at startup.
 
-The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The current selector does not yet enforce live bid/ask spread, option volume, open-interest or quote-freshness thresholds. The new WebSocket cache currently subscribes to underlying instruments; option-contract liquidity checks are not yet wired into signal dispatch.
+The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The optional full-quote snapshot can attach bid/ask, spread, volume, OI and quote age to alerts. OPTION_LIQUIDITY_CHECKS=1 enables a fail-closed validation gate; it is disabled by default until the real Analytics Token has been verified. The Upstox V3 WebSocket feed is started for validated underlying instruments and selected option contracts are added lazily to its bounded subscription set. Fresh V3 option quotes are used when present; optional REST full quotes are a fallback controlled by OPTION_MARKET_SNAPSHOT / OPTION_LIQUIDITY_CHECKS.
 
 ## Telegram commands
 
@@ -49,7 +49,7 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /pause
 - /resume
 
-Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. No command can execute a trade.
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
 
 ## API
 
@@ -57,7 +57,7 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
-- GET /stats?days=30 — admin-authenticated performance summary.
+- GET /stats?days=30 — admin-authenticated performance summary, including average MFE/MAE when available.
 - GET /symbols — currently resolved universe.
 - GET /config — safe, non-secret runtime configuration.
 - POST /pause and POST /resume — admin-authenticated pause controls.
@@ -80,6 +80,7 @@ Runtime controls:
 - TZ: Asia/Kolkata
 - AUTOSTART: 1
 - RUN_SCHEDULER: 1
+- UPSTOX_STREAM_ENABLED: 1 (Upstox V3 underlying/selected-option feed)
 - REQUIRE_PERSISTENT_DB: 1
 - KEEPALIVE: 1
 - N_ADX_MIN: 22 (hard floor)
@@ -90,6 +91,12 @@ Runtime controls:
 - STALE_MAX_BARS: 1
 - WORKERS: 6
 - OPTION_QUOTE: 0
+- OPTION_MARKET_SNAPSHOT: 0 (attach full option quote data)
+- OPTION_LIQUIDITY_CHECKS: 0 (opt-in fail-closed option liquidity gate)
+- OPTION_MIN_VOLUME: 100
+- OPTION_MIN_OI: 500
+- OPTION_MAX_SPREAD_PCT: 3.0
+- OPTION_MAX_QUOTE_AGE_SEC: 20
 - DRY_RUN: 0
 
 Strategy parameters remain frozen unless explicitly approved.
@@ -114,15 +121,14 @@ Keep one worker. Multiple workers would create duplicate in-process schedulers a
 
 ## Tests and known gaps
 
-GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state and protobuf quote decoding. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
+GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state, protobuf quote decoding, optional option-liquidity checks and no-look-ahead MFE/MAE tracking. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
 
-Still not complete against the full master prompt:
-1. Exactly 150 fixed static underlyings and startup count validation.
-2. Full option-chain integration and contract-level spread, volume, OI and quote-freshness validation.
-3. Subscribing to selected option contracts and wiring quote cache into alerts.
-4. Dedicated schema migration system and expanded telemetry/configuration/feedback persistence.
-5. MFE/MAE, time-stop and expanded performance analytics.
-6. No-look-ahead walk-forward backtesting.
-7. The master prompt's 15-minute DI informational-only requirement conflicts with the current strategy lock because the existing 5-minute DI direction is a hard gate. No strategy change has been made.
+Remaining master-prompt work and live-verification gaps:
+1. The exact 150-symbol static list and startup validation are implemented. It contains 144 NSE individual-security underlyings plus six explicitly allowlisted NSE index underlyings. Startup fails closed if the configured list is not exactly 150 unique entries or if all 150 cannot be validated against the Upstox instrument master; unavailable symbols are reported, never silently replaced.
+2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate is opt-in and must be verified with the user's live Analytics Token before enabling.
+3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
+4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2, option-premium outcome tracking, user feedback persistence and expanded provider/configuration event history remain incomplete.
+5. No-look-ahead walk-forward/out-of-sample backtesting and transaction-cost modelling for option simulations are not yet implemented.
+6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. Separately, completed 15-minute +DI/-DI/ADX is now calculated and displayed as informational-only context; it never changes signal eligibility.
 
-No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed.
+No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.

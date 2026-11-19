@@ -48,6 +48,7 @@ REQUIRE_PERSISTENT_DB = _b("REQUIRE_PERSISTENT_DB", "1")
 ADMIN_TOKEN = _env("ADMIN_TOKEN", "").strip()            # required for /force /stats /diag; fail closed
 KEEPALIVE = _b("KEEPALIVE", "1")                         # self-ping so the free dyno stays awake
 RUN_SCHEDULER = _b("RUN_SCHEDULER", "1")
+UPSTOX_STREAM_ENABLED = _b("UPSTOX_STREAM_ENABLED", "1")
 DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do not send Telegram
 
 # Modules on/off
@@ -121,3 +122,11 @@ OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)
 # candle-data tokens receive 401 from the optional v2 quote endpoint.
 # Set OPTION_QUOTE=1 only after verifying quote-endpoint access for the token.
 OPTION_QUOTE = _b("OPTION_QUOTE", "0")
+# Optional full option quote snapshot. Liquidity checks are opt-in because they
+# can suppress alerts when the broker quote endpoint is unavailable for a token.
+OPTION_MARKET_SNAPSHOT = _b("OPTION_MARKET_SNAPSHOT", "0")
+OPTION_LIQUIDITY_CHECKS = _b("OPTION_LIQUIDITY_CHECKS", "0")
+OPTION_MIN_VOLUME = _i("OPTION_MIN_VOLUME", 100)
+OPTION_MIN_OI = _i("OPTION_MIN_OI", 500)
+OPTION_MAX_SPREAD_PCT = _f("OPTION_MAX_SPREAD_PCT", 3.0)
+OPTION_MAX_QUOTE_AGE_SEC = _i("OPTION_MAX_QUOTE_AGE_SEC", 20)

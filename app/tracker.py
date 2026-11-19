@@ -69,3 +69,72 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
     if stage == "TP1":
         return "TP1", 0.5 * r1
     return "OPEN", None
+
+
+def measure_excursions(
+    row: dict,
+    df: pd.DataFrame,
+    session_end: Optional[time] = None,
+    candle_min: int = 5,
+):
+    """Return (MFE_R, MAE_R, completed_bars_held, last_bar_ts) after entry.
+
+    The signal candle is excluded. Replay stops at the first bar that closes the trade
+    under the same conservative SL/TP1/BE/TP2/EOD ordering used by simulate(), so
+    post-exit bars are never included in excursion metrics.
+    """
+    risk = abs(float(row["entry"]) - float(row["sl"]))
+    if risk <= 0:
+        return 0.0, 0.0, 0, None
+
+    after = df[df.index > _ts(row["bar_ts"])]
+    if after.empty:
+        return 0.0, 0.0, 0, None
+
+    side = 1 if row["side"] == "LONG" else -1
+    entry = float(row["entry"])
+    sl, tp1, tp2 = float(row["sl"]), float(row["tp1"]), float(row["tp2"])
+    stage = "OPEN"
+    exit_ts = None
+    for ts, bar in after.iterrows():
+        low, high, close = float(bar["low"]), float(bar["high"]), float(bar["close"])
+        bar_end = (ts + pd.Timedelta(minutes=candle_min)).time()
+        if stage == "OPEN":
+            hit_sl = low <= sl if side > 0 else high >= sl
+            hit_tp1 = high >= tp1 if side > 0 else low <= tp1
+            if hit_sl:
+                exit_ts = ts
+                break
+            if hit_tp1:
+                stage = "TP1"
+                hit_be = low <= entry if side > 0 else high >= entry
+                hit_tp2 = high >= tp2 if side > 0 else low <= tp2
+                if hit_be or hit_tp2 or (session_end is not None and bar_end >= session_end):
+                    exit_ts = ts
+                    break
+            elif session_end is not None and bar_end >= session_end:
+                exit_ts = ts
+                break
+        else:
+            hit_be = low <= entry if side > 0 else high >= entry
+            hit_tp2 = high >= tp2 if side > 0 else low <= tp2
+            if hit_be or hit_tp2 or (session_end is not None and bar_end >= session_end):
+                exit_ts = ts
+                break
+
+    if exit_ts is not None:
+        after = after.loc[:exit_ts]
+    if after.empty:
+        return 0.0, 0.0, 0, None
+
+    if side > 0:
+        favourable = (after["high"].astype(float) - entry) / risk
+        adverse = (entry - after["low"].astype(float)) / risk
+    else:
+        favourable = (entry - after["low"].astype(float)) / risk
+        adverse = (after["high"].astype(float) - entry) / risk
+
+    mfe_r = max(0.0, float(favourable.max()))
+    mae_r = max(0.0, float(adverse.max()))
+    last_bar = after.index[-1].to_pydatetime()
+    return mfe_r, mae_r, int(len(after)), last_bar

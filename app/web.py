@@ -109,16 +109,16 @@ def _recent_signals(limit: int = 20):
     if getattr(store, "kind", "") == "postgres":
         rows = store._run(
             """SELECT id, module, symbol, side, bar_ts, entry, sl, tp1, tp2,
-                      score, trig, status, r_result, details
+                      score, trig, status, r_result, mfe_r, mae_r, bars_held, details
                FROM signals ORDER BY id DESC LIMIT %s""",
             (limit,), "all")
         keys = ("id", "module", "symbol", "side", "bar_ts", "entry", "sl", "tp1",
-                "tp2", "score", "trigger", "status", "r_result", "details")
+                "tp2", "score", "trigger", "status", "r_result", "mfe_r", "mae_r", "bars_held", "details")
         return [dict(zip(keys, row)) for row in rows]
     rows = sorted(getattr(store, "rows", []), key=lambda row: row.get("id", 0), reverse=True)
     return [{key: row.get(key) for key in (
         "id", "module", "symbol", "side", "bar_ts", "entry", "sl", "tp1",
-        "tp2", "score", "trig", "status", "r_result", "details")} for row in rows[:limit]]
+        "tp2", "score", "trig", "status", "r_result", "mfe_r", "mae_r", "bars_held", "details")} for row in rows[:limit]]
 
 
 def _safe_config():
@@ -138,7 +138,14 @@ def _safe_config():
         "sl_atr": config.NORMAL.sl_atr,
         "tp1_r": config.NORMAL.tp1_r,
         "tp2_r": config.NORMAL.tp2_r,
+        "option_market_snapshot": config.OPTION_MARKET_SNAPSHOT,
+        "option_liquidity_checks": config.OPTION_LIQUIDITY_CHECKS,
+        "option_min_volume": config.OPTION_MIN_VOLUME,
+        "option_min_oi": config.OPTION_MIN_OI,
+        "option_max_spread_pct": config.OPTION_MAX_SPREAD_PCT,
+        "option_max_quote_age_sec": config.OPTION_MAX_QUOTE_AGE_SEC,
         "scheduler_enabled": config.RUN_SCHEDULER,
+        "upstox_stream_enabled": config.UPSTOX_STREAM_ENABLED,
         "signal_only": True,
         "orders_enabled": False,
     }
@@ -213,7 +220,7 @@ def signals(request: Request, limit: int = 20):
 
 
 @app.get("/stats")
-def stats(request: Request, days: int = 30):
+def stats(request: Request, days: int = 30, detailed: bool = False):
     candidate, error = _require_engine()
     if error:
         return error
@@ -221,6 +228,8 @@ def stats(request: Request, days: int = 30):
         return JSONResponse(status_code=401, content={"error": "unauthorized"})
     days = max(1, min(365, days))
     since = (datetime.now(IST) - timedelta(days=days)).date()
+    if detailed:
+        return jsonable_encoder(candidate.store.performance_report(since))
     rows = candidate.store.stats(since)
     for row in rows:
         row["win_rate_pct"] = round(100 * row["wins"] / row["closed"], 1) if row["closed"] else None
@@ -234,11 +243,19 @@ def symbols():
     if engine is None or engine.uni is None:
         return {"ready": False, "configured_symbols": 0, "validated_symbols": 0, "active_symbols": []}
     items = engine.uni.normal
+    configured = list(engine.uni.configured_symbols)
+    active = {item.symbol for item in items}
+    duplicates = sorted({symbol for symbol in configured if configured.count(symbol) > 1})
+    missing = sorted(set(configured) - active)
     return {
-        "ready": True,
-        "configured_symbols": len(items),
+        "ready": bool(getattr(engine.uni, "ready", False)) and len(configured) == 150 and len(items) == 150 and not duplicates and not missing,
+        "configured_symbols": len(configured),
+        "configured_symbol_list": configured,
         "validated_symbols": len(items),
+        "missing_symbols": missing,
         "invalid_symbols": engine.uni.dropped,
+        "duplicate_symbols": duplicates,
+        "validation_errors": getattr(engine.uni, "validation_errors", []),
         "active_symbols": [{"symbol": item.symbol, "instrument_key": item.key, "is_index": item.is_index} for item in items],
     }
 

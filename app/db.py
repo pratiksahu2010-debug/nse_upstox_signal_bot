@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS signals (
     details     JSONB,
     status      TEXT NOT NULL DEFAULT 'OPEN',
     r_result    DOUBLE PRECISION,
+    mfe_r       DOUBLE PRECISION,
+    mae_r       DOUBLE PRECISION,
+    bars_held   INTEGER NOT NULL DEFAULT 0,
+    time_stop_review_due BOOLEAN NOT NULL DEFAULT FALSE,
     closed_at   TIMESTAMPTZ,
     delivery_status TEXT NOT NULL DEFAULT 'PENDING',
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
@@ -42,9 +46,23 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAU
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_error TEXT;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_held INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
 CREATE TABLE IF NOT EXISTS normal_setup_state (trade_day DATE NOT NULL, symbol TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (trade_day, symbol));
 """
+
+MIGRATIONS = (
+    (1, "baseline", SCHEMA),
+    (2, "telegram_bot_state", """CREATE TABLE IF NOT EXISTS bot_state (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )"""),
+    (3, "time_stop_review_flag", """ALTER TABLE signals
+        ADD COLUMN IF NOT EXISTS time_stop_review_due BOOLEAN NOT NULL DEFAULT FALSE"""),
+)
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
 
@@ -52,6 +70,78 @@ COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score,
 def _row_to_dict(r) -> dict:
     keys = COLS.replace(" ", "").split(",")
     return dict(zip(keys, r))
+
+
+def _performance_report(rows: list) -> dict:
+    """Build detailed outcome analytics from persisted, completed signal records."""
+    closed = [
+        row for row in rows
+        if row.get("status") not in ("OPEN", "TP1", "EXPIRED") and row.get("r_result") is not None
+    ]
+
+    def outcome_stats(items):
+        done = [
+            row for row in items
+            if row.get("status") not in ("OPEN", "TP1", "EXPIRED") and row.get("r_result") is not None
+        ]
+        wins = sum(float(row["r_result"]) > 0 for row in done)
+        sum_r = sum(float(row["r_result"]) for row in done)
+        mfe = [float(row["mfe_r"]) for row in items if row.get("mfe_r") is not None]
+        mae = [float(row["mae_r"]) for row in items if row.get("mae_r") is not None]
+        return {
+            "signals": len(items),
+            "closed": len(done),
+            "wins": wins,
+            "losses": sum(float(row["r_result"]) < 0 for row in done),
+            "win_rate_pct": round(100 * wins / len(done), 1) if done else None,
+            "sum_r": round(sum_r, 3),
+            "avg_r": round(sum_r / len(done), 3) if done else None,
+            "avg_mfe_r": round(sum(mfe) / len(mfe), 3) if mfe else None,
+            "avg_mae_r": round(sum(mae) / len(mae), 3) if mae else None,
+        }
+
+    def grouped(key_fn):
+        groups = {}
+        for row in rows:
+            key = key_fn(row)
+            groups.setdefault(str(key if key not in (None, "") else "unknown"), []).append(row)
+        return {key: outcome_stats(items) for key, items in sorted(groups.items())}
+
+    ordered = sorted(
+        closed,
+        key=lambda row: row.get("closed_at") or row.get("bar_ts"),
+    )
+    equity = peak = max_drawdown = 0.0
+    for row in ordered:
+        equity += float(row["r_result"])
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+
+    total = outcome_stats(rows)
+    tp1_status = {"TP1", "TP1_BE", "TP2"}
+    total.update({
+        "total_signals": len(rows),
+        "call_signals": sum(row.get("side") == "LONG" for row in rows),
+        "put_signals": sum(row.get("side") == "SHORT" for row in rows),
+        "tp1_hits": sum(row.get("status") in tp1_status for row in rows),
+        "tp2_hits": sum(row.get("status") == "TP2" for row in rows),
+        "stop_hits": sum(row.get("status") == "SL" for row in rows),
+        "time_stop_review_due": sum(bool(row.get("time_stop_review_due")) for row in rows),
+        "max_drawdown_r": round(max_drawdown, 3),
+    })
+
+    def hour_bucket(row):
+        stamp = row.get("bar_ts")
+        return f"{stamp.hour:02d}:00-{stamp.hour:02d}:59" if stamp is not None else "unknown"
+
+    return {
+        "summary": total,
+        "by_direction": grouped(lambda row: "CALL" if row.get("side") == "LONG" else "PUT" if row.get("side") == "SHORT" else row.get("side")),
+        "by_symbol": grouped(lambda row: row.get("symbol")),
+        "by_setup": grouped(lambda row: row.get("trig")),
+        "by_time_of_day": grouped(hour_bucket),
+        "by_score": grouped(lambda row: row.get("score")),
+    }
 
 
 class MemoryStore:
@@ -72,7 +162,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -129,6 +219,17 @@ class MemoryStore:
                     if status not in ("OPEN", "TP1"):
                         r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
 
+    def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
+                          time_stop_review_due: bool = False):
+        with self.lock:
+            for row in self.rows:
+                if row["id"] == sid:
+                    row["mfe_r"] = max(float(row.get("mfe_r") or 0.0), float(mfe_r))
+                    row["mae_r"] = max(float(row.get("mae_r") or 0.0), float(mae_r))
+                    row["bars_held"] = max(int(row.get("bars_held") or 0), int(bars_held))
+                    row["time_stop_review_due"] = bool(row.get("time_stop_review_due") or time_stop_review_due)
+                    return
+
     def load_normal_states(self, day: date) -> dict:
         with self.lock:
             return {symbol: dict(state) for (trade_day, symbol), state in self.normal_states.items() if trade_day == day}
@@ -137,19 +238,39 @@ class MemoryStore:
         with self.lock:
             self.normal_states[(day, symbol)] = dict(state)
 
+    def performance_report(self, since: date) -> dict:
+        with self.lock:
+            rows = [dict(row) for row in self.rows if row["trade_day"] >= since]
+        return _performance_report(rows)
+
     def stats(self, since: date) -> list:
         agg: dict = {}
         with self.lock:
             for r in self.rows:
                 if r["trade_day"] < since:
                     continue
-                a = agg.setdefault(r["module"], {"module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0})
+                a = agg.setdefault(r["module"], {
+                    "module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0,
+                    "_mfe_sum": 0.0, "_mae_sum": 0.0, "_excursion_count": 0,
+                })
                 a["n"] += 1
+                if r.get("mfe_r") is not None and r.get("mae_r") is not None:
+                    a["_mfe_sum"] += float(r["mfe_r"])
+                    a["_mae_sum"] += float(r["mae_r"])
+                    a["_excursion_count"] += 1
                 if r["status"] not in ("OPEN", "TP1", "EXPIRED") and r["r_result"] is not None:
                     a["closed"] += 1
                     a["sum_r"] += r["r_result"]
                     a["wins"] += 1 if r["r_result"] > 0 else 0
-        return list(agg.values())
+        result = []
+        for row in agg.values():
+            count = row.pop("_excursion_count")
+            mfe_sum = row.pop("_mfe_sum")
+            mae_sum = row.pop("_mae_sum")
+            row["avg_mfe_r"] = round(mfe_sum / count, 3) if count else None
+            row["avg_mae_r"] = round(mae_sum / count, 3) if count else None
+            result.append(row)
+        return result
 
 
 class PostgresStore(MemoryStore):
@@ -195,7 +316,23 @@ class PostgresStore(MemoryStore):
         self.pool.closeall()
 
     def init(self):
-        self._run(SCHEMA)
+        self._run(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+               )"""
+        )
+        applied_rows = self._run("SELECT version FROM schema_migrations", fetch="all")
+        applied = {int(row[0]) for row in applied_rows}
+        for version, name, sql in MIGRATIONS:
+            if version in applied:
+                continue
+            self._run(sql)
+            self._run(
+                "INSERT INTO schema_migrations (version, name) VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",
+                (version, name),
+            )
         self._run("DELETE FROM signals WHERE trade_day < CURRENT_DATE - 180")
 
     def load_normal_states(self, day: date) -> dict:
@@ -264,15 +401,51 @@ class PostgresStore(MemoryStore):
                   "closed_at=CASE WHEN %s THEN now() ELSE closed_at END WHERE id=%s",
                   (status, r_result, closed, sid))
 
+    def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
+                          time_stop_review_due: bool = False):
+        self._run(
+            """UPDATE signals
+               SET mfe_r=GREATEST(COALESCE(mfe_r, 0), %s),
+                   mae_r=GREATEST(COALESCE(mae_r, 0), %s),
+                   bars_held=GREATEST(COALESCE(bars_held, 0), %s),
+                   time_stop_review_due=(time_stop_review_due OR %s)
+               WHERE id=%s""",
+            (float(mfe_r), float(mae_r), int(bars_held), bool(time_stop_review_due), sid),
+        )
+
+    def performance_report(self, since: date) -> dict:
+        rows = self._run(
+            """SELECT module, symbol, side, bar_ts, trade_day, score, trig, status,
+                      r_result, mfe_r, mae_r, bars_held, time_stop_review_due, closed_at
+               FROM signals WHERE trade_day >= %s ORDER BY bar_ts, id""",
+            (since,), "all",
+        )
+        keys = (
+            "module", "symbol", "side", "bar_ts", "trade_day", "score", "trig",
+            "status", "r_result", "mfe_r", "mae_r", "bars_held",
+            "time_stop_review_due", "closed_at",
+        )
+        return _performance_report([dict(zip(keys, row)) for row in rows])
+
     def stats(self, since: date) -> list:
         rows = self._run(
             """SELECT module, count(*) AS n,
                       count(*) FILTER (WHERE r_result IS NOT NULL AND status NOT IN ('OPEN','TP1','EXPIRED')) AS closed,
                       count(*) FILTER (WHERE r_result > 0 AND status NOT IN ('OPEN','TP1','EXPIRED')) AS wins,
-                      COALESCE(sum(r_result) FILTER (WHERE status NOT IN ('OPEN','TP1','EXPIRED')), 0) AS sum_r
+                      COALESCE(sum(r_result) FILTER (WHERE status NOT IN ('OPEN','TP1','EXPIRED')), 0) AS sum_r,
+                      AVG(mfe_r) AS avg_mfe_r,
+                      AVG(mae_r) AS avg_mae_r
                FROM signals WHERE trade_day >= %s GROUP BY module ORDER BY module""",
             (since,), "all")
-        return [{"module": r[0], "n": r[1], "closed": r[2], "wins": r[3], "sum_r": float(r[4])} for r in rows]
+        return [
+            {
+                "module": r[0], "n": r[1], "closed": r[2], "wins": r[3],
+                "sum_r": float(r[4]),
+                "avg_mfe_r": round(float(r[5]), 3) if r[5] is not None else None,
+                "avg_mae_r": round(float(r[6]), 3) if r[6] is not None else None,
+            }
+            for r in rows
+        ]
 
 
 def make_store(dsn: str):
