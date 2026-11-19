@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from app.training import walk_forward, effective_label
+from app.training import walk_forward, effective_label, purge_overlapping_outcomes
 from app.db import MemoryStore
 
 
@@ -80,3 +80,31 @@ def test_trainer_requires_multiple_distinct_sessions():
     report = walk_forward(rows)
     assert report["status"] == "insufficient_distinct_days"
     assert report["proposal"] is None
+
+
+def test_overlapping_same_symbol_outcome_windows_are_purged():
+    start = datetime(2026, 11, 2, 9, 15, tzinfo=timezone.utc)
+    rows = [
+        {"id": 1, "symbol": "ABC", "bar_ts": start, "bars_held": 3},
+        {"id": 2, "symbol": "ABC", "bar_ts": start + timedelta(minutes=10), "bars_held": 2},
+        {"id": 3, "symbol": "XYZ", "bar_ts": start + timedelta(minutes=10), "bars_held": 1},
+        {"id": 4, "symbol": "ABC", "bar_ts": start + timedelta(minutes=25), "bars_held": 1},
+    ]
+    kept, purged = purge_overlapping_outcomes(rows)
+    assert [row["id"] for row in kept] == [1, 3, 4]
+    assert purged == 1
+
+
+def test_memory_training_rows_include_symbol_and_holding_duration():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "ABC", "side": "LONG",
+        "bar_ts": datetime(2026, 11, 18, 10, tzinfo=timezone.utc),
+        "trade_day": date(2026, 11, 18), "entry": 100, "sl": 98,
+        "tp1": 103, "tp2": 104, "score": 0, "trig": "rsi",
+        "details": {"indicator_snapshot": {"adx": 25, "rvol": 1.3}},
+    })
+    store.update_excursions(sid, 1.5, 0.4, 3)
+    row = store.training_rows(date(2026, 11, 1))[0]
+    assert row["symbol"] == "ABC"
+    assert row["bars_held"] == 3
