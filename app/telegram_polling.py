@@ -1,8 +1,9 @@
-"""Telegram long-polling command handler. No webhook is registered or used."""
+"""Telegram long-polling command handler with feedback and offline training controls."""
+import csv
+import io
 import json
 import logging
 import threading
-import time
 from datetime import datetime, timedelta
 
 import requests
@@ -21,13 +22,9 @@ def _memory_state(store):
 
 def _ensure_state_table(store):
     if getattr(store, "kind", "") == "postgres":
-        store._run(
-            """CREATE TABLE IF NOT EXISTS bot_state (
-                   key TEXT PRIMARY KEY,
-                   value JSONB NOT NULL,
-                   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-               )"""
-        )
+        store._run("""CREATE TABLE IF NOT EXISTS bot_state (
+            key TEXT PRIMARY KEY, value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
 
 
 def get_persistent_state(store, key, default=None):
@@ -44,11 +41,9 @@ def get_persistent_state(store, key, default=None):
 def set_persistent_state(store, key, value):
     _ensure_state_table(store)
     if getattr(store, "kind", "") == "postgres":
-        store._run(
-            """INSERT INTO bot_state (key, value, updated_at) VALUES (%s, %s::jsonb, now())
-               ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()""",
-            (key, json.dumps(value)),
-        )
+        store._run("""INSERT INTO bot_state (key,value,updated_at) VALUES (%s,%s::jsonb,now())
+            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()""",
+            (key, json.dumps(value)))
     else:
         _memory_state(store)[key] = value
 
@@ -57,8 +52,7 @@ class TelegramPoller:
     """Single-process Telegram getUpdates consumer with persistent update offset."""
 
     def __init__(self, engine, store, token=None, chat_id=None):
-        self.engine = engine
-        self.store = store
+        self.engine, self.store = engine, store
         self.token = token if token is not None else TELEGRAM_TOKEN
         self.chat_id = str(chat_id if chat_id is not None else TELEGRAM_CHAT_ID)
         self.stop_event = threading.Event()
@@ -83,20 +77,15 @@ class TelegramPoller:
         return f"https://api.telegram.org/bot{self.token}/{method}"
 
     def _loop(self):
+        import time
         delay = 1.0
         while not self.stop_event.is_set():
             try:
-                response = requests.get(
-                    self._api("getUpdates"),
-                    params={
-                        "offset": self.offset,
-                        "timeout": 25,
-                        "allowed_updates": json.dumps(["message", "callback_query"]),
-                    },
-                    timeout=35,
-                )
+                response = requests.get(self._api("getUpdates"), params={
+                    "offset": self.offset, "timeout": 25,
+                    "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=35)
                 if response.status_code in (401, 403):
-                    log.error("Telegram polling authentication rejected (%s); check bot token", response.status_code)
+                    log.error("Telegram polling authentication rejected (%s)", response.status_code)
                     self.stop_event.wait(60)
                     continue
                 response.raise_for_status()
@@ -109,33 +98,37 @@ class TelegramPoller:
                     self.offset = max(self.offset, update_id + 1)
                     set_persistent_state(self.store, "telegram_update_offset", self.offset)
                 delay = 1.0
-            except (requests.RequestException, ValueError, RuntimeError, TypeError):
-                log.exception("Telegram polling failed; retrying with bounded backoff")
-                self.stop_event.wait(delay)
-                delay = min(30.0, delay * 2)
             except Exception:
-                log.exception("unexpected Telegram polling error")
+                log.exception("Telegram polling failed; retrying with bounded backoff")
                 self.stop_event.wait(delay)
                 delay = min(30.0, delay * 2)
         self.running = False
 
+    def _answer_callback(self, callback_id, text):
+        if not callback_id or not self.token:
+            return
+        try:
+            requests.post(self._api("answerCallbackQuery"),
+                json={"callback_query_id": callback_id, "text": text}, timeout=10)
+        except requests.RequestException:
+            log.exception("Telegram callback acknowledgement failed")
+
     def _handle_update(self, update):
         callback = update.get("callback_query")
         if callback:
-            message = callback.get("message") or {}
-            chat = message.get("chat") or {}
+            chat = (callback.get("message") or {}).get("chat") or {}
             if str(chat.get("id", "")) != self.chat_id:
                 return
-            data = str(callback.get("data") or "")
             try:
-                prefix, raw_id, label = data.split(":", 2)
-                if prefix != "fb" or label not in {"GOOD","BAD","LATE","FAKE","SKIP"}:
-                    raise ValueError("invalid feedback payload")
+                prefix, raw_id, label = str(callback.get("data") or "").split(":", 2)
+                if prefix != "fb" or label not in {"GOOD", "BAD", "LATE", "FAKE", "SKIP"}:
+                    raise ValueError("invalid feedback")
                 ok = self.store.set_feedback(int(raw_id), label)
                 self._answer_callback(callback.get("id"), "Feedback saved" if ok else "Signal not found")
             except (ValueError, TypeError):
                 self._answer_callback(callback.get("id"), "Invalid feedback")
             return
+
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         if str(chat.get("id", "")) != self.chat_id:
@@ -143,17 +136,17 @@ class TelegramPoller:
         text = str(message.get("text") or "").strip()
         if not text.startswith("/"):
             return
-        command = text.split()[0].split("@", 1)[0].lower()
+        parts = text.split()
+        command = parts[0].split("@", 1)[0].lower()
+
         if command in ("/start", "/help"):
             self._reply(
                 "<b>Normal NSE F&amp;O Signal Bot</b>\n"
-                "/status — service and feed health\n"
-                "/signals — latest signal records\n"
-                "/stats — last 30 days\n"
-                "/pause — pause new signal scanning\n"
-                "/resume — resume scanning\n"
-                "Signal-only: no order placement or execution."
-            )
+                "/status · /signals · /stats\n"
+                "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
+                "/train · /proposals · /approve <id> · /rollback <id>\n"
+                "/export · /pause · /resume\n"
+                "Signal-only: no order placement or execution.")
         elif command == "/status":
             status = self.engine.status()
             upstox = self.engine.client.diagnostics() if hasattr(self.engine.client, "diagnostics") else {}
@@ -161,22 +154,15 @@ class TelegramPoller:
             feed_ok = bool(feed and feed.diagnostics().get("connected"))
             self._reply(
                 f"<b>Bot:</b> {'PAUSED' if getattr(self.engine, 'paused', False) else 'RUNNING'}\n"
-                f"<b>Symbols loaded:</b> {status.get('symbols', status.get('universe_size', 'n/a'))}\n"
+                f"<b>Symbols:</b> {status.get('symbols', status.get('universe_size', 'n/a'))}\n"
                 f"<b>Upstox auth failed:</b> {upstox.get('auth_failed', 'n/a')}\n"
-                f"<b>Market feed:</b> {'connected' if feed_ok else 'not connected'}"
-            )
+                f"<b>Market feed:</b> {'connected' if feed_ok else 'not connected'}")
         elif command == "/signals":
             rows = self._recent()
-            if not rows:
-                self._reply("No signal records are available.")
-            else:
-                lines = ["<b>Recent signals</b>"]
-                for row in rows[:8]:
-                    lines.append(
-                        f"{row.get('symbol')} · {row.get('side')} · "
-                        f"entry {row.get('entry')} · SL {row.get('sl')} · {row.get('status')}"
-                    )
-                self._reply("\n".join(lines))
+            lines = ["<b>Recent signals</b>"] + [
+                f"{r.get('symbol')} · {r.get('side')} · entry {r.get('entry')} · SL {r.get('sl')} · {r.get('status')}"
+                for r in rows[:8]]
+            self._reply("\n".join(lines) if rows else "No signal records are available.")
         elif command == "/stats":
             rows = self.store.stats(datetime.now(IST).date() - timedelta(days=30))
             if not rows:
@@ -184,57 +170,58 @@ class TelegramPoller:
             else:
                 lines = ["<b>Last 30 days</b>"]
                 for row in rows:
-                    closed = row.get("closed", 0)
-                    wins = row.get("wins", 0)
-                    win_rate = 100.0 * wins / closed if closed else 0.0
+                    closed, wins = row.get("closed", 0), row.get("wins", 0)
+                    wr = 100.0 * wins / closed if closed else 0.0
                     avg_r = row.get("sum_r", 0.0) / closed if closed else 0.0
-                    mfe = row.get("avg_mfe_r")
-                    mae = row.get("avg_mae_r")
+                    mfe, mae = row.get("avg_mfe_r"), row.get("avg_mae_r")
                     excursion = f" · MFE {mfe:.2f}R / MAE {mae:.2f}R" if mfe is not None and mae is not None else ""
-                    lines.append(
-                        f"{row.get('module')}: {closed} closed · {win_rate:.1f}% wins · {avg_r:.2f} avg R{excursion}"
-                    )
+                    lines.append(f"{row.get('module')}: {closed} closed · {wr:.1f}% wins · {avg_r:.2f} avg R{excursion}")
                 self._reply("\n".join(lines))
         elif command == "/relabel":
-            parts=text.split()
-            if len(parts)!=3 or parts[2].upper() not in {"GOOD","BAD","LATE","FAKE","SKIP"}:
+            if len(parts) != 3 or parts[2].upper() not in {"GOOD", "BAD", "LATE", "FAKE", "SKIP"}:
                 self._reply("Usage: /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>")
             else:
-                ok=self.store.set_feedback(int(parts[1]),parts[2].upper())
-                self._reply("Human label saved; it overrides the automatic label for training." if ok else "Signal ID not found.")
+                try:
+                    ok = self.store.set_feedback(int(parts[1]), parts[2].upper())
+                except ValueError:
+                    ok = False
+                self._reply("Human label saved; it takes precedence over the automatic label." if ok else "Signal ID not found.")
         elif command == "/train":
             from .training import build_proposal
-            rows=self.store.training_rows(datetime.now(IST).date()-timedelta(days=180))
-            report=build_proposal(rows)
-            proposal=report.get("proposal")
+            rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=180))
+            report = build_proposal(rows)
+            proposal = report.get("proposal")
             if proposal:
-                set_persistent_state(self.store,"training_proposal",proposal)
-                self._reply(f"<b>Proposal {proposal['id']} ready</b>\\nTrain/validation/held-out checks passed. Use /proposals to inspect. Nothing was applied.")
+                proposal["report"] = {k: report.get(k) for k in ("samples", "train", "validation", "held_out_test", "baseline_test")}
+                set_persistent_state(self.store, "training_proposal", proposal)
+                self._reply(f"<b>Proposal {proposal['id']} created.</b>\nUse /proposals to inspect. Nothing was applied.")
             else:
-                self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples',0)} · required {report.get('required','n/a')}. No proposal created.")
+                self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples', 0)} · required {report.get('required', 'n/a')}. No proposal.")
         elif command == "/proposals":
-            proposal=get_persistent_state(self.store,"training_proposal",None)
+            proposal = get_persistent_state(self.store, "training_proposal", None)
             if not proposal:
-                self._reply("No proposal. Run /train after enough completed, labeled outcomes.")
+                self._reply("No proposal. Run /train after enough completed outcomes.")
             else:
-                diff=proposal.get("diff",{})
-                self._reply(f"<b>Proposal {proposal.get('id')} · {proposal.get('state','PENDING')}</b>\\n"+\\n".join(f"{k}: {v}" for k,v in diff.items())+"\\nApproval stages a reviewed proposal only; it never edits live strategy.")
-        elif command in ("/approve","/rollback"):
-            parts=text.split()
-            proposal=get_persistent_state(self.store,"training_proposal",None)
-            if not proposal or len(parts)!=2 or parts[1]!=str(proposal.get("id")):
+                diff = proposal.get("diff", {})
+                lines = [f"<b>Proposal {proposal.get('id')} · {proposal.get('state', 'PENDING')}</b>"]
+                lines.extend(f"{k}: {v}" for k, v in diff.items())
+                lines.append("Research-only filter. Approval does not change the live strategy.")
+                self._reply("\n".join(lines))
+        elif command in ("/approve", "/rollback"):
+            proposal = get_persistent_state(self.store, "training_proposal", None)
+            if not proposal or len(parts) != 2 or parts[1] != str(proposal.get("id")):
                 self._reply(f"Usage: {command} <proposal_id> · inspect /proposals first.")
             else:
-                proposal["state"]="APPROVED_STAGED" if command=="/approve" else "ROLLED_BACK"
-                set_persistent_state(self.store,"training_proposal",proposal)
-                self._reply("Proposal staged as approved for manual review; live strategy is unchanged." if command=="/approve" else "Proposal rolled back; live strategy is unchanged.")
+                proposal["state"] = "APPROVED_STAGED" if command == "/approve" else "ROLLED_BACK"
+                set_persistent_state(self.store, "training_proposal", proposal)
+                self._reply("Approved proposal staged for manual review; live strategy unchanged." if command == "/approve" else "Proposal rolled back; live strategy unchanged.")
         elif command == "/export":
-            rows=self.store.training_rows(datetime.now(IST).date()-timedelta(days=30))
-            lines=["id,bar_ts,side,status,gross_r,net_r,auto_label,user_label"]
-            for row in rows[-40:]:
-                vals=[row.get("id"),row.get("bar_ts"),row.get("side"),row.get("status"),row.get("gross_r"),row.get("net_r"),row.get("auto_label"),row.get("user_label")]
-                lines.append(",".join('"' + str(v if v is not None else "").replace('"','""') + '"' for v in vals))
-            self._reply("<pre>"+ "\\n".join(lines)[:3800] +"</pre>")
+            rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))[-35:]
+            lines = ["id,bar_ts,side,status,gross_r,net_r,auto_label,user_label"]
+            for row in rows:
+                vals = [row.get(k) for k in ("id", "bar_ts", "side", "status", "gross_r", "net_r", "auto_label", "user_label")]
+                lines.append(",".join('"' + str(v if v is not None else "").replace('"', '""') + '"' for v in vals))
+            self._reply("<pre>" + "\n".join(lines)[:3800] + "</pre>")
         elif command == "/pause":
             self.engine.paused = True
             set_persistent_state(self.store, "paused", True)
@@ -246,24 +233,10 @@ class TelegramPoller:
         else:
             self._reply("Unknown command. Send /help.")
 
-    def _answer_callback(self, callback_id, text):
-        if not callback_id or not self.token: return
-        try:
-            requests.post(self._api("answerCallbackQuery"),
-                json={"callback_query_id":callback_id,"text":text},timeout=10)
-        except requests.RequestException:
-            log.exception("Telegram callback acknowledgement failed")
-
     def _recent(self):
         if getattr(self.store, "kind", "") == "postgres":
-            rows = self.store._run(
-                "SELECT symbol, side, entry, sl, status FROM signals ORDER BY id DESC LIMIT 8",
-                fetch="all",
-            )
-            return [
-                {"symbol": row[0], "side": row[1], "entry": row[2], "sl": row[3], "status": row[4]}
-                for row in rows
-            ]
+            rows = self.store._run("SELECT symbol, side, entry, sl, status FROM signals ORDER BY id DESC LIMIT 8", fetch="all")
+            return [{"symbol": r[0], "side": r[1], "entry": r[2], "sl": r[3], "status": r[4]} for r in rows]
         rows = sorted(getattr(self.store, "rows", []), key=lambda row: row.get("id", 0), reverse=True)
         return rows[:8]
 
