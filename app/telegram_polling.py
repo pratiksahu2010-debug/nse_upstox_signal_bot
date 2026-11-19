@@ -166,7 +166,7 @@ class TelegramPoller:
                 "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
                 "/train · /proposals · /approve <id> · /rollback <id>\n"
                 "/export · /shadow on|off · /pause · /resume\n"
-                "/actualcost <signal_id> <quantity> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>\n"
+                "/actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>\n"
                 "Signal-only: no order placement or execution.")
         elif command == "/status":
             status = self.engine.status()
@@ -280,7 +280,7 @@ class TelegramPoller:
                 self._reply("CSV export failed. Check Telegram connectivity and bot permissions.")
         elif command == "/actualcost":
             if len(parts) != 6:
-                self._reply("Usage: /actualcost <signal_id> <quantity> <brokerage_rupees> <other_fees_rupees> <slippage_rupees> — enter values from your broker record.")
+                self._reply("Usage: /actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees> — enter values from your broker record.")
             else:
                 try:
                     signal_id = int(parts[1])
