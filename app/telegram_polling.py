@@ -166,7 +166,7 @@ class TelegramPoller:
                 "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
                 "/train · /proposals · /approve <id> · /rollback <id>\n"
                 "/export · /shadow on|off · /pause · /resume\n"
-                "/actualcost <signal_id> <quantity> <fees_rupees> <slippage_rupees>\n"
+                "/actualcost <signal_id> <quantity> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>\n"
                 "Signal-only: no order placement or execution.")
         elif command == "/status":
             status = self.engine.status()
@@ -279,24 +279,26 @@ class TelegramPoller:
                 log.exception("Telegram CSV export failed")
                 self._reply("CSV export failed. Check Telegram connectivity and bot permissions.")
         elif command == "/actualcost":
-            if len(parts) != 5:
-                self._reply("Usage: /actualcost <signal_id> <quantity> <fees_rupees> <slippage_rupees> — enter values from your broker record.")
+            if len(parts) != 6:
+                self._reply("Usage: /actualcost <signal_id> <quantity> <brokerage_rupees> <other_fees_rupees> <slippage_rupees> — enter values from your broker record.")
             else:
                 try:
                     signal_id = int(parts[1])
                     quantity = int(parts[2])
-                    fees = float(parts[3])
-                    slippage = float(parts[4])
-                    if quantity <= 0 or fees < 0 or slippage < 0:
-                        raise ValueError("costs and quantity must be non-negative; quantity must be positive")
+                    brokerage = float(parts[3])
+                    other_fees = float(parts[4])
+                    slippage = float(parts[5])
+                    if quantity <= 0 or min(brokerage, other_fees, slippage) < 0:
+                        raise ValueError("costs must be non-negative; quantity must be positive")
                     ok = self.store.update_actual_option_costs(
-                        signal_id, quantity, fees, slippage, datetime.now(IST).isoformat()
+                        signal_id, quantity, brokerage, other_fees, slippage,
+                        datetime.now(IST).isoformat()
                     )
                 except (ValueError, TypeError):
                     ok = False
                 self._reply(
-                    "Actual option costs saved from the supplied broker record. Fees and slippage are stored separately."
-                    if ok else "Could not save costs. Check signal ID, quantity and non-negative rupee amounts."
+                    "Actual brokerage, other fees and slippage saved separately from your broker reconciliation."
+                    if ok else "Could not save costs. Check the option signal ID, quantity and non-negative rupee amounts."
                 )
         elif command == "/pause":
             self.engine.paused = True
