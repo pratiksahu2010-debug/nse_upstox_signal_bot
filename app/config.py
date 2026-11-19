@@ -131,3 +131,8 @@ OPTION_MIN_VOLUME = _i("OPTION_MIN_VOLUME", 100)
 OPTION_MIN_OI = _i("OPTION_MIN_OI", 500)
 OPTION_MAX_SPREAD_PCT = _f("OPTION_MAX_SPREAD_PCT", 3.0)
 OPTION_MAX_QUOTE_AGE_SEC = _i("OPTION_MAX_QUOTE_AGE_SEC", 20)
+# Descriptive option-premium tracking only; it never gates or changes signals.
+OPTION_PREMIUM_TRACKING = _b("OPTION_PREMIUM_TRACKING", "1")
+# User-configured estimates; both default to zero and are never called actual charges.
+OPTION_EST_ROUND_TRIP_FEE_PCT = max(0.0, _f("OPTION_EST_ROUND_TRIP_FEE_PCT", 0.0))
+OPTION_EST_SLIPPAGE_BPS_PER_SIDE = max(0.0, _f("OPTION_EST_SLIPPAGE_BPS_PER_SIDE", 0.0))
