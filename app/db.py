@@ -306,6 +306,9 @@ class MemoryStore:
         with self.lock:
             for row in self.rows:
                 if row["id"] == sid:
+                    tracking = row.get("option_tracking") or {}
+                    if not tracking.get("instrument_key"):
+                        return False
                     row["actual_option_costs"] = costs
                     return True
         return False
@@ -337,11 +340,13 @@ class MemoryStore:
             "cost_per_unit": total / int(quantity), "updated_at": updated_at,
             "source": "MANUAL_BROKER_RECORD",
         }
-        self._run(
-            """UPDATE signals SET actual_option_costs=%s::jsonb WHERE id=%s""",
-            (json.dumps(costs), sid),
+        row = self._run(
+            """UPDATE signals SET actual_option_costs=%s::jsonb
+               WHERE id=%s AND COALESCE(option_tracking,'{}'::jsonb) ? 'instrument_key'
+               RETURNING id""",
+            (json.dumps(costs), sid), "one",
         )
-        return True
+        return bool(row)
 
     def performance_report(self, since: date) -> dict:
         with self.lock:
