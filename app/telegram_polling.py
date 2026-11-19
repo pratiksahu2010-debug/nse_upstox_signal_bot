@@ -13,6 +13,25 @@ from .telegram import send
 
 log = logging.getLogger("telegram.polling")
 
+EXPORT_FIELDS = [
+    "id", "module", "symbol", "bar_ts", "side", "status", "first_hit",
+    "gross_r", "net_r", "bars_to_tp1", "bars_to_tp2", "option_tracking",
+    "actual_option_costs", "auto_label", "user_label", "snapshot",
+]
+
+
+def build_training_export_csv(rows):
+    """Serialize training outcomes with the module and underlying symbol identity."""
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=EXPORT_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        export_row = dict(row)
+        for field in ("snapshot", "option_tracking", "actual_option_costs"):
+            export_row[field] = json.dumps(row.get(field) or {}, separators=(",", ":"))
+        writer.writerow(export_row)
+    return output.getvalue()
+
 
 def _memory_state(store):
     if not hasattr(store, "_bot_state"):
@@ -252,23 +271,12 @@ class TelegramPoller:
                 self._reply("Approved proposal staged for manual review; live strategy unchanged." if command == "/approve" else "Proposal rolled back; live strategy unchanged.")
         elif command == "/export":
             rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))
-            output = io.StringIO()
-            fields = ["id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r",
-                      "bars_to_tp1", "bars_to_tp2", "option_tracking", "actual_option_costs",
-                      "auto_label", "user_label", "snapshot"]
-            writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            for row in rows:
-                export_row = dict(row)
-                export_row["snapshot"] = json.dumps(row.get("snapshot") or {}, separators=(",", ":"))
-                export_row["option_tracking"] = json.dumps(row.get("option_tracking") or {}, separators=(",", ":"))
-                export_row["actual_option_costs"] = json.dumps(row.get("actual_option_costs") or {}, separators=(",", ":"))
-                writer.writerow(export_row)
+            csv_content = build_training_export_csv(rows)
             try:
                 response = requests.post(
                     self._api("sendDocument"),
                     data={"chat_id": self.chat_id, "caption": "Last 30 days of signal outcomes"},
-                    files={"document": ("signal_outcomes.csv", output.getvalue().encode("utf-8"), "text/csv")},
+                    files={"document": ("signal_outcomes.csv", csv_content.encode("utf-8"), "text/csv")},
                     timeout=30,
                 )
                 response.raise_for_status()
