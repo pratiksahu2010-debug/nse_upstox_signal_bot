@@ -287,15 +287,6 @@ class MemoryStore:
         with self.lock:
             self.normal_states[(day, symbol)] = dict(state)
 
-    def update_target_times(self, sid: int, bars_to_tp1: Optional[int], bars_to_tp2: Optional[int]):
-        self._run(
-            """UPDATE signals
-               SET bars_to_tp1=COALESCE(bars_to_tp1, %s),
-                   bars_to_tp2=COALESCE(bars_to_tp2, %s)
-               WHERE id=%s""",
-            (bars_to_tp1, bars_to_tp2, sid),
-        )
-
     def performance_report(self, since: date) -> dict:
         with self.lock:
             rows = [dict(row) for row in self.rows if row["trade_day"] >= since]
@@ -490,6 +481,15 @@ class PostgresStore(MemoryStore):
                    time_stop_review_due=(time_stop_review_due OR %s)
                WHERE id=%s""",
             (float(mfe_r), float(mae_r), int(bars_held), bool(time_stop_review_due), sid),
+        )
+
+    def update_target_times(self, sid: int, bars_to_tp1: Optional[int], bars_to_tp2: Optional[int]):
+        self._run(
+            """UPDATE signals
+               SET bars_to_tp1=COALESCE(bars_to_tp1, %s),
+                   bars_to_tp2=COALESCE(bars_to_tp2, %s)
+               WHERE id=%s""",
+            (bars_to_tp1, bars_to_tp2, sid),
         )
 
     def performance_report(self, since: date) -> dict:
