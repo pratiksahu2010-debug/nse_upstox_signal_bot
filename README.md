@@ -30,7 +30,7 @@ Default underlying reference levels:
 - TP1: 1.5R.
 - TP2: 2.0R.
 
-The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
+Completed 15-minute +DI/-DI/ADX values are calculated from completed 15-minute bars and attached to signal explanations as informational context only; they do not alter the current 5-minute strategy eligibility. The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
 
 ## Universe and option selection — current behaviour
 

@@ -113,6 +113,25 @@ def htf_trend(df: pd.DataFrame, minutes: int = 15) -> str:
     return "neutral"
 
 
+def htf_di_context(df: pd.DataFrame, minutes: int = 15):
+    """Return (+DI, -DI, ADX) from completed 15m OHLCV bars only."""
+    rule = f"{minutes}min"
+    agg = df.resample(rule, closed="left", label="left").agg({
+        "open": "first", "high": "max", "low": "min",
+        "close": "last", "volume": "sum",
+    })
+    count = df["close"].resample(rule, closed="left", label="left").count()
+    agg = agg[count == minutes // 5]
+    if len(agg) < IND.adx_n + 1:
+        return None, None, None
+    htf = add_indicators(agg)
+    row = htf.iloc[-1]
+    values = (row["pdi"], row["mdi"], row["adx"])
+    if any(pd.isna(value) for value in values):
+        return None, None, None
+    return tuple(float(value) for value in values)
+
+
 def cross_info(df: pd.DataFrame, lookback: int = 20):
     """(crossings in last `lookback` bars, bars since latest EMA9/21 cross or None)."""
     d = (df["ema9"] - df["ema21"]).to_numpy()[-(lookback + 1):]
@@ -165,6 +184,7 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
     rng = float(r.high - r.low)
     body = abs(float(r.close - r.open))
     n_cross, age = cross_info(df)
+    htf_pdi, htf_mdi, htf_adx = htf_di_context(df)
     ts = df.index[-1]
     return Features(
         bar_ts=ts,
@@ -185,4 +205,5 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
         body_frac=(body / rng) if rng > 0 else 0.0,
         close_pos=((float(r.close - r.low)) / rng) if rng > 0 else 0.5,
         range_atr=rng / float(r.atr),
+        htf_pdi=htf_pdi, htf_mdi=htf_mdi, htf_adx=htf_adx,
     )
