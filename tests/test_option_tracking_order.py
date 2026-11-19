@@ -17,7 +17,7 @@ def test_option_tracking_ignores_older_exchange_quote_after_newer_rest_entry():
         {
             "bid": 9.0, "ask": 9.2, "ltp": 9.1,
             "quote_age_sec": 1.0,
-            "quote_timestamp": 1795062601000,
+            "quote_timestamp": 1795062599000,
         },
         max_quote_age_sec=10,
     )
