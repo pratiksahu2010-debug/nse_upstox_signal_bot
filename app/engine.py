@@ -19,9 +19,10 @@ import pandas as pd
 from . import mod_normal
 from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R)
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
-from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
+from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_snapshot,
+                     initial_option_tracking, update_option_tracking)
 from .telegram import format_signal, send
 from .tracker import measure_excursions, measure_target_times, simulate
 from .universe import Universe, build_universe, pick_option
@@ -258,6 +259,8 @@ class Engine:
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
+        if OPTION_PREMIUM_TRACKING and open_rows:
+            self._track_option_quotes(open_rows, now, d)
         if not full:
             states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
             if not states:
@@ -454,7 +457,7 @@ class Engine:
 
         # Optional full quote snapshots provide bid/ask, volume and OI.
         # The liquidity hard gate is OFF by default to preserve current alert eligibility.
-        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or self.market_stream is not None) and prepared:
+        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING or self.market_stream is not None) and prepared:
             option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
@@ -465,7 +468,7 @@ class Engine:
                     if raw_snapshot:
                         snapshots[key] = raw_snapshot
             needs_rest = [key for key in option_keys if key not in snapshots]
-            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS):
+            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING):
                 try:
                     snapshots.update(self.client.full_quotes(needs_rest) or {})
                 except Exception as exc:
@@ -508,8 +511,16 @@ class Engine:
                     log.warning("batched optional option LTP failed: %s", type(e).__name__)
         for sig in prepared:
             key = sig.option.pop("_key", None)
+            sig.option["instrument_key"] = key
             if key and OPTION_QUOTE and not sig.option.get("ltp"):
                 sig.option["ltp"] = quotes.get(key)
+            if OPTION_PREMIUM_TRACKING:
+                sig.option_tracking = initial_option_tracking(
+                    key, sig.option, OPTION_MAX_QUOTE_AGE_SEC,
+                    OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE,
+                )
+            else:
+                sig.option_tracking = {"instrument_key": key, "tracking_status": "DISABLED"}
 
         accepted = 0
         for sig in prepared:
@@ -532,7 +543,8 @@ class Engine:
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger, "cost_r": TRAINING_COST_R,
-                   "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
+                   "option_tracking": dict(getattr(sig, "option_tracking", {}) or {}),
+                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
                                "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
                                "option": dict(sig.option or {}), "telegram_text": message}}
             try:
@@ -592,6 +604,61 @@ class Engine:
                     log.exception("could not persist Telegram retry failure")
                 d["rejects"]["telegram_retry_failed"] += 1
                 log.exception("Telegram retry failed for signal id=%s", item["id"])
+
+    def _track_option_quotes(self, open_rows: dict, now: datetime, diag: dict):
+        """Track fresh option quotes for persisted open signals; never gate signals."""
+        rows = [row for items in open_rows.values() for row in items]
+        keyed = []
+        for row in rows:
+            tracking = row.get("option_tracking") or {}
+            if isinstance(tracking, str):
+                try:
+                    import json
+                    tracking = json.loads(tracking)
+                except Exception:
+                    tracking = {}
+            key = tracking.get("instrument_key")
+            if key:
+                keyed.append((row, key, tracking))
+                if self.market_stream is not None and key not in self._stream_keys:
+                    self._stream_keys.append(key)
+                    base_keys = [item.key for item in self.uni.normal if item.key] if self.uni else []
+                    base_set = set(base_keys)
+                    option_keys = [item for item in self._stream_keys if item not in base_set][-1000:]
+                    self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
+                    self._stream_keys_dirty = True
+        if not keyed:
+            return
+        self._sync_market_stream_keys()
+        snapshots = {}
+        if self.market_stream is not None:
+            for _row, key, _tracking in keyed:
+                raw = stream_quote_snapshot(self.market_stream.quote(key))
+                if raw:
+                    snapshots[key] = raw
+        feed_connected = bool(self.market_stream and self.market_stream.diagnostics().get("connected"))
+        if not feed_connected:
+            try:
+                missing = [key for _row, key, _tracking in keyed if key not in snapshots]
+                if missing:
+                    snapshots.update(self.client.full_quotes(missing) or {})
+            except Exception as exc:
+                log.debug("optional option tracking quote fallback unavailable: %s", type(exc).__name__)
+        for row, key, old in keyed:
+            raw = snapshots.get(key)
+            if raw is None:
+                raw = next((value for value in snapshots.values()
+                            if isinstance(value, dict) and value.get("instrument_token") == key), None)
+            if raw is None:
+                continue
+            metrics = snapshot_metrics(raw, now.timestamp())
+            updated = update_option_tracking(old, metrics, OPTION_MAX_QUOTE_AGE_SEC)
+            if updated != old:
+                try:
+                    self.store.update_option_tracking(row["id"], updated)
+                except Exception:
+                    diag["rejects"]["option_tracking_storage_error"] += 1
+                    log.exception("could not persist option premium metrics for signal id=%s", row["id"])
 
     def _option_for(self, sig: Signal, now: datetime) -> Optional[dict]:
         if not self.uni or not sig.info:
