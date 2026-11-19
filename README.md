@@ -17,7 +17,7 @@ There is one active strategy module: Normal NSE F&O. The existing strategy logic
 
 CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 19, +DI > -DI, followed by RSI14 crossing upward through 52.
 
-PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 22, -DI > +DI, followed by RSI14 crossing downward through 42.
+PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 19, -DI > +DI, followed by RSI14 crossing downward through 42.
 
 ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 19 and may be raised with the environment variable. The strategy uses completed 5-minute candles only; no higher-timeframe context is calculated.
 
