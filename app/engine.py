@@ -286,7 +286,12 @@ class Engine:
                 status, rr = simulate(r, ind, cfg.session_end)
                 mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
                 try:
-                    self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
+                    # Six completed 5m bars without TP1 triggers review only;
+                    # this flag never closes a trade or sends an execution order.
+                    review_due = status == "OPEN" and bars_held >= 6
+                    self.store.update_excursions(
+                        r["id"], mfe_r, mae_r, bars_held, review_due,
+                    )
                 except Exception:
                     d["rejects"]["excursion_storage_error"] += 1
                     log.exception("could not persist MFE/MAE for signal id=%s", r["id"])

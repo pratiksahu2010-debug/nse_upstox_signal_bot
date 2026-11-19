@@ -140,3 +140,15 @@ def test_stats_exposes_average_mfe_and_mae_for_module():
     assert row["avg_mfe_r"] == 1.5
     assert row["avg_mae_r"] == 0.5
     assert row["closed"] == 1
+
+
+def test_memory_store_persists_time_stop_review_flag():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "TEST", "side": "LONG",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST).to_pydatetime(),
+        "trade_day": date(2026, 11, 17), "entry": 100.0, "sl": 98.0,
+        "tp1": 103.0, "tp2": 105.0, "score": 0, "trig": "test",
+    })
+    store.update_excursions(sid, 0.2, 0.4, 6, True)
+    assert store.rows[0]["time_stop_review_due"] is True
