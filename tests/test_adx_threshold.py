@@ -3,8 +3,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from app import mod_normal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [
-        ("18", "22.0"),  # an old Render value must not weaken the hard floor
-        ("22", "22.0"),
+        ("18", "19.0"),  # stale Render values below the new floor are clamped
+        ("19", "19.0"),
         ("25", "25.0"),  # raising the threshold remains supported
     ],
 )
@@ -37,7 +40,7 @@ def test_normal_adx_minimum_is_hard_floored(configured, expected):
     assert result.stdout.strip() == f"14 {expected}"
 
 
-def test_normal_adx_minimum_defaults_to_22():
+def test_normal_adx_minimum_defaults_to_19():
     env = os.environ.copy()
     env.pop("N_ADX_MIN", None)
     result = subprocess.run(
@@ -53,4 +56,24 @@ def test_normal_adx_minimum_defaults_to_22():
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "14 22.0"
+    assert result.stdout.strip() == "14 19.0"
+
+
+def test_normal_setup_side_accepts_adx_19_and_rejects_below(monkeypatch):
+    monkeypatch.setattr(mod_normal, "C", SimpleNamespace(adx_min=19.0))
+    common = {
+        "adx": 19.0,
+        "ema9": 2.0,
+        "ema21": 1.0,
+        "close": 2.0,
+        "vwap": 1.0,
+        "pdi": 30.0,
+        "mdi": 20.0,
+    }
+    assert mod_normal.setup_side(SimpleNamespace(**common)) == 1
+
+    short = dict(common, ema9=1.0, ema21=2.0, close=1.0, vwap=2.0, pdi=20.0, mdi=30.0)
+    assert mod_normal.setup_side(SimpleNamespace(**short)) == -1
+
+    below = dict(common, adx=18.99)
+    assert mod_normal.setup_side(SimpleNamespace(**below)) == 0

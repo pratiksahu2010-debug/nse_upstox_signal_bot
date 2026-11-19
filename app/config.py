@@ -103,9 +103,9 @@ class NormalCfg:
     first_signal: time = _t("N_FIRST_SIGNAL", "09:20")
     last_entry: time = _t("N_LAST_ENTRY", "15:00")
     session_end: time = _t("N_SESSION_END", "15:15")
-    # 22 is a hard floor: a stale Render env value of 18 cannot weaken the gate.
-    # Operators may raise N_ADX_MIN above 22, but not lower it.
-    adx_min: float = max(22.0, _f("N_ADX_MIN", 22))
+    # 19 is the approved hard floor: stale Render values below 19 cannot weaken the gate.
+    # Operators may still raise N_ADX_MIN above 19.
+    adx_min: float = max(19.0, _f("N_ADX_MIN", 19))
     sl_atr: float = _f("N_SL_ATR", 1.2)
     tp1_r: float = _f("N_TP1_R", 1.5)
     tp2_r: float = _f("N_TP2_R", 2.0)
