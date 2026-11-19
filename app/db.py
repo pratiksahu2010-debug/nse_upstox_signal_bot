@@ -292,16 +292,18 @@ class MemoryStore:
                     return True
         return False
 
-    def update_actual_option_costs(self, sid: int, quantity: int, fees_rupees: float,
-                                   slippage_rupees: float, updated_at: str) -> bool:
-        if quantity <= 0 or fees_rupees < 0 or slippage_rupees < 0:
+    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
+                                   other_fees_rupees: float, slippage_rupees: float,
+                                   updated_at: str) -> bool:
+        if quantity <= 0 or min(brokerage_rupees, other_fees_rupees, slippage_rupees) < 0:
             return False
-        total = float(fees_rupees) + float(slippage_rupees)
+        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
         costs = {
-            "quantity": int(quantity), "fees_rupees": float(fees_rupees),
+            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
+            "other_fees_rupees": float(other_fees_rupees),
             "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
             "cost_per_unit": total / int(quantity), "updated_at": updated_at,
-            "source": "MANUAL_BROKER_RECORD",
+            "source": "MANUAL_BROKER_RECONCILIATION",
         }
         with self.lock:
             for row in self.rows:
@@ -329,16 +331,18 @@ class MemoryStore:
         )
         return True
 
-    def update_actual_option_costs(self, sid: int, quantity: int, fees_rupees: float,
-                                   slippage_rupees: float, updated_at: str) -> bool:
-        if quantity <= 0 or fees_rupees < 0 or slippage_rupees < 0:
+    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
+                                   other_fees_rupees: float, slippage_rupees: float,
+                                   updated_at: str) -> bool:
+        if quantity <= 0 or min(brokerage_rupees, other_fees_rupees, slippage_rupees) < 0:
             return False
-        total = float(fees_rupees) + float(slippage_rupees)
+        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
         costs = {
-            "quantity": int(quantity), "fees_rupees": float(fees_rupees),
+            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
+            "other_fees_rupees": float(other_fees_rupees),
             "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
             "cost_per_unit": total / int(quantity), "updated_at": updated_at,
-            "source": "MANUAL_BROKER_RECORD",
+            "source": "MANUAL_BROKER_RECONCILIATION",
         }
         row = self._run(
             """UPDATE signals SET actual_option_costs=%s::jsonb
