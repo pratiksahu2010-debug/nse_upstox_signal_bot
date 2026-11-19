@@ -555,7 +555,7 @@ class PostgresStore(MemoryStore):
             FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
         out=[]
         for row in rows:
-            snap=row[6] if isinstance(row[6],dict) else json.loads(row[6] or "{}")
+            snap=row[10] if isinstance(row[10],dict) else json.loads(row[10] or "{}")
             out.append({"id":row[0],"module":row[1],"bar_ts":row[2],"symbol":row[3],"side":row[4],
                 "score":row[5],"trig":row[6],"bars_held":row[7],"mfe_r":row[8],"mae_r":row[9],
                 "snapshot":snap,"status":row[11],"gross_r":row[12],"net_r":row[13],
