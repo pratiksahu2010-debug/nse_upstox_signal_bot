@@ -46,10 +46,17 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /status
 - /signals
 - /stats
+- /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>
+- /train — bounded offline walk-forward research
+- /proposals — inspect the pending proposal and held-out metrics
+- /approve <proposal_id> — stage approval; does not edit live settings
+- /rollback <proposal_id> — mark a proposal rolled back
+- /shadow on|off — log proposal matches on future alerts without gating them
+- /export — recent signal/outcome CSV text
 - /pause
 - /resume
 
-Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset, pause state, feedback labels and proposal state are stored persistently. Each new signal alert includes Good / Bad / Late / Fake / Skip inline feedback buttons. Human feedback is stored separately and takes precedence over the automatic outcome label for training. Indicator snapshots are persisted with each signal. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
 
 ## API
 
@@ -98,6 +105,7 @@ Runtime controls:
 - OPTION_MAX_SPREAD_PCT: 3.0
 - OPTION_MAX_QUOTE_AGE_SEC: 20
 - DRY_RUN: 0
+- TRAINING_COST_R: 0.0 (configured round-trip cost in underlying R units; set from your measured fees/slippage before treating net-R as cost-adjusted)
 
 Strategy parameters remain frozen unless explicitly approved.
 
@@ -127,8 +135,8 @@ Remaining master-prompt work and live-verification gaps:
 1. The exact 150-symbol static list and startup validation are implemented. It contains 144 NSE individual-security underlyings plus six explicitly allowlisted NSE index underlyings. Startup fails closed if the configured list is not exactly 150 unique entries or if all 150 cannot be validated against the Upstox instrument master; unavailable symbols are reported, never silently replaced.
 2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate is opt-in and must be verified with the user's live Analytics Token before enabling.
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
-4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2, option-premium outcome tracking, user feedback persistence and expanded provider/configuration event history remain incomplete.
-5. No-look-ahead walk-forward/out-of-sample backtesting and transaction-cost modelling for option simulations are not yet implemented.
+4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2 and option-premium outcome tracking remain incomplete. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
+5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
 6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. Separately, completed 15-minute +DI/-DI/ADX is now calculated and displayed as informational-only context; it never changes signal eligibility.
 
 No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
