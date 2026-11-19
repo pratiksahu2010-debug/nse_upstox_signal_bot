@@ -22,7 +22,7 @@ def effective_label(row):
 
 
 def purge_overlapping_outcomes(rows):
-    """Keep earliest same-symbol signal when tracked outcome windows overlap."""
+    """Keep earliest same-symbol signal when tracked 5m outcome windows overlap; include the signal candle."""
     ordered = sorted(rows, key=lambda row: (row["bar_ts"], row.get("id", 0)))
     last_end_by_symbol, kept, purged = {}, [], 0
     for row in ordered:
@@ -34,7 +34,7 @@ def purge_overlapping_outcomes(rows):
             purged += 1
             continue
         try:
-            held = max(1, int(row.get("bars_held") or 1))
+            held = max(0, int(row.get("bars_held") or 0)) + 1
         except (TypeError, ValueError):
             held = 1
         last_end_by_symbol[symbol] = stamp + timedelta(minutes=5 * held)
