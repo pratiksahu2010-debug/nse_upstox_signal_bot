@@ -57,3 +57,19 @@ def test_option_tracking_updates_adverse_excursion():
     updated = update_option_tracking(state, _quote(7.9, 8.1, 8.0, timestamp="2000"), 20)
     assert round(updated["mae_pct"], 2) == -21.0
     assert updated["mfe_pct"] == 0.0
+
+
+
+def test_snapshot_metrics_parses_iso_timestamp_for_freshness():
+    from datetime import datetime, timezone
+
+    from app.options import snapshot_metrics
+
+    stamp = "2026-11-19T10:00:00+05:30"
+    now = datetime.fromisoformat(stamp).timestamp() + 3
+    metrics = snapshot_metrics({
+        "last_price": 10.0,
+        "timestamp": stamp,
+        "depth": {"buy": [{"price": 9.9}], "sell": [{"price": 10.1}]},
+    }, now)
+    assert metrics["quote_age_sec"] == 3.0
