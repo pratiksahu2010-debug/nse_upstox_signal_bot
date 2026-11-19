@@ -207,6 +207,13 @@ class TelegramPoller:
                 lines.extend(f"{k}: {v}" for k, v in diff.items())
                 lines.append("Research-only filter. Approval does not change the live strategy.")
                 self._reply("\n".join(lines))
+        elif command == "/shadow":
+            if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
+                self._reply("Usage: /shadow on|off")
+            else:
+                enabled = parts[1].lower() == "on"
+                set_persistent_state(self.store, "training_shadow_mode", enabled)
+                self._reply("Shadow evaluation enabled; proposed filters are logged only and cannot block alerts." if enabled else "Shadow evaluation disabled.")
         elif command in ("/approve", "/rollback"):
             proposal = get_persistent_state(self.store, "training_proposal", None)
             if not proposal or len(parts) != 2 or parts[1] != str(proposal.get("id")):
