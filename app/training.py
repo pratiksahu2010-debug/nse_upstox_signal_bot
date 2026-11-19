@@ -71,8 +71,8 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     validation = [row for row in eligible if row["bar_ts"].date() in validation_days]
     test = [row for row in eligible if row["bar_ts"].date() in test_days]
     if len(train) < min_train or len(validation) < min_test or len(test) < min_test:
-        return {"status": "insufficient_data", "samples": n,
-                "required": min_train + 2 * min_test, "proposal": None}
+        return {"status": "insufficient_data", "samples": len(eligible),
+                "distinct_days": len(days), "required": min_train + 2 * min_test, "proposal": None}
 
     # Search a deliberately small grid; these are post-signal cohort filters,
     # not alternate entry rules and cannot alter live alerts.
