@@ -52,6 +52,15 @@ CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHE
 CREATE TABLE IF NOT EXISTS normal_setup_state (trade_day DATE NOT NULL, symbol TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (trade_day, symbol));
 """
 
+MIGRATIONS = (
+    (1, "baseline", SCHEMA),
+    (2, "telegram_bot_state", """CREATE TABLE IF NOT EXISTS bot_state (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )"""),
+)
+
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
 
 
@@ -210,7 +219,23 @@ class PostgresStore(MemoryStore):
         self.pool.closeall()
 
     def init(self):
-        self._run(SCHEMA)
+        self._run(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+               )"""
+        )
+        applied_rows = self._run("SELECT version FROM schema_migrations", fetch="all")
+        applied = {int(row[0]) for row in applied_rows}
+        for version, name, sql in MIGRATIONS:
+            if version in applied:
+                continue
+            self._run(sql)
+            self._run(
+                "INSERT INTO schema_migrations (version, name) VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",
+                (version, name),
+            )
         self._run("DELETE FROM signals WHERE trade_day < CURRENT_DATE - 180")
 
     def load_normal_states(self, day: date) -> dict:
