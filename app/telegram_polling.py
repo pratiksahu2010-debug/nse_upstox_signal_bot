@@ -226,12 +226,30 @@ class TelegramPoller:
                 set_persistent_state(self.store, "training_proposal", proposal)
                 self._reply("Approved proposal staged for manual review; live strategy unchanged." if command == "/approve" else "Proposal rolled back; live strategy unchanged.")
         elif command == "/export":
-            rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))[-35:]
-            lines = ["id,bar_ts,side,status,gross_r,net_r,auto_label,user_label"]
+            rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))
+            output = io.StringIO()
+            fields = ["id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r",
+                      "auto_label", "user_label", "snapshot"]
+            writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
             for row in rows:
-                vals = [row.get(k) for k in ("id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r", "auto_label", "user_label")]
-                lines.append(",".join('"' + str(v if v is not None else "").replace('"', '""') + '"' for v in vals))
-            self._reply("<pre>" + "\n".join(lines)[:3800] + "</pre>")
+                export_row = dict(row)
+                export_row["snapshot"] = json.dumps(row.get("snapshot") or {}, separators=(",", ":"))
+                writer.writerow(export_row)
+            try:
+                response = requests.post(
+                    self._api("sendDocument"),
+                    data={"chat_id": self.chat_id, "caption": "Last 30 days of signal outcomes"},
+                    files={"document": ("signal_outcomes.csv", output.getvalue().encode("utf-8"), "text/csv")},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not payload.get("ok"):
+                    raise RuntimeError("Telegram sendDocument returned ok=false")
+            except Exception:
+                log.exception("Telegram CSV export failed")
+                self._reply("CSV export failed. Check Telegram connectivity and bot permissions.")
         elif command == "/pause":
             self.engine.paused = True
             set_persistent_state(self.store, "paused", True)
