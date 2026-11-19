@@ -52,17 +52,28 @@ def _label_counts(rows):
 
 
 def _score(rows):
-    # Realized net R remains the objective. Subjective labels are reported separately
-    # and override auto_label for categorical reporting; they never fabricate P&L.
+    # Realized net R is the objective; subjective labels are reported separately.
     values = [float(r["net_r"]) for r in rows if r.get("net_r") is not None]
     if not values:
         return None
-    wins = sum(v > 0 for v in values)
+    wins = [value for value in values if value > 0]
+    losses = [value for value in values if value < 0]
+    equity = peak = max_drawdown = 0.0
+    for value in values:
+        equity += value
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
     return {
         "n": len(values),
-        "win_rate_pct": round(100 * wins / len(values), 1),
+        "win_rate_pct": round(100 * len(wins) / len(values), 1),
         "mean_net_r": round(mean(values), 4),
         "sum_net_r": round(sum(values), 4),
+        "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss else None,
+        "avg_win_r": round(mean(wins), 4) if wins else None,
+        "avg_loss_r": round(mean(losses), 4) if losses else None,
+        "max_drawdown_r": round(max_drawdown, 4),
         "effective_labels": _label_counts(rows),
     }
 
