@@ -6,6 +6,7 @@ has been verified for the configured Upstox Analytics Token.
 """
 import math
 import time
+from datetime import datetime, timezone
 
 
 def _finite_number(value):
@@ -36,11 +37,17 @@ def snapshot_metrics(raw: dict, now_epoch: float = None) -> dict:
     timestamp = raw.get("timestamp") or raw.get("last_trade_time")
     quote_age_sec = None
     try:
-        ts = float(timestamp)
-        if ts > 1e11:
-            ts /= 1000.0
+        try:
+            ts = float(timestamp)
+            if ts > 1e11:
+                ts /= 1000.0
+        except (TypeError, ValueError):
+            parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            ts = parsed.timestamp()
         quote_age_sec = max(0.0, (now_epoch if now_epoch is not None else time.time()) - ts)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
 
     return {
