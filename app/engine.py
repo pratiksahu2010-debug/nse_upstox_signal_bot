@@ -259,8 +259,6 @@ class Engine:
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
-        if OPTION_PREMIUM_TRACKING and open_rows:
-            self._track_option_quotes(open_rows, now, d)
         if not full:
             states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
             if not states:
@@ -413,6 +411,13 @@ class Engine:
         dispatch_started = _time.monotonic()
         d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
+        # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
+        if OPTION_PREMIUM_TRACKING and open_rows:
+            try:
+                self._track_option_quotes(open_rows, now, d)
+            except Exception:
+                d["rejects"]["option_tracking_error"] += 1
+                log.exception("option premium tracking failed; live signals remain unaffected")
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d candidates=%d sent=%d "
@@ -468,7 +473,7 @@ class Engine:
                     if raw_snapshot:
                         snapshots[key] = raw_snapshot
             needs_rest = [key for key in option_keys if key not in snapshots]
-            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING):
+            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS):
                 try:
                     snapshots.update(self.client.full_quotes(needs_rest) or {})
                 except Exception as exc:
@@ -636,14 +641,6 @@ class Engine:
                 raw = stream_quote_snapshot(self.market_stream.quote(key))
                 if raw:
                     snapshots[key] = raw
-        feed_connected = bool(self.market_stream and self.market_stream.diagnostics().get("connected"))
-        if not feed_connected:
-            try:
-                missing = [key for _row, key, _tracking in keyed if key not in snapshots]
-                if missing:
-                    snapshots.update(self.client.full_quotes(missing) or {})
-            except Exception as exc:
-                log.debug("optional option tracking quote fallback unavailable: %s", type(exc).__name__)
         for row, key, old in keyed:
             raw = snapshots.get(key)
             if raw is None:
