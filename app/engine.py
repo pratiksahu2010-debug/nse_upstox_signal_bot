@@ -518,11 +518,20 @@ class Engine:
                 d["rejects"]["cycle_top_n"] += 1
                 continue
             message = format_signal(sig)
+            shadow = None
+            try:
+                from .telegram_polling import get_persistent_state
+                if get_persistent_state(self.store, "training_shadow_mode", False):
+                    from .training import shadow_result
+                    proposal = get_persistent_state(self.store, "training_proposal", None)
+                    shadow = shadow_result(getattr(sig, "indicator_snapshot", {}), proposal)
+            except Exception:
+                log.exception("shadow evaluation failed; live signal remains unaffected")
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger, "cost_r": TRAINING_COST_R,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
-                               "indicator_snapshot": getattr(sig, "indicator_snapshot", {}),
+                               "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
                                "option": dict(sig.option or {}), "telegram_text": message}}
             try:
                 sid = self.store.add_signal(row)
@@ -568,7 +577,8 @@ class Engine:
             return
         for item in pending:
             try:
-                result = self.notify(item["text"])
+                result = (send(item["text"], signal_id=item["id"]) if self.notify is send
+                          else self.notify(item["text"]))
                 ok = result is not False
                 self.store.mark_notification(item["id"], ok, None if ok else "notify returned false")
                 if not ok:
