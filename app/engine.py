@@ -689,7 +689,16 @@ class Engine:
                 try:
                     rest_snapshots = full_quotes(rest_keys) or {}
                     if isinstance(rest_snapshots, dict):
-                        snapshots.update(rest_snapshots)
+                        for key in rest_keys:
+                            rest_raw = rest_snapshots.get(key)
+                            if rest_raw is None:
+                                rest_raw = next((value for value in rest_snapshots.values()
+                                                 if isinstance(value, dict)
+                                                 and value.get("instrument_token") == key), None)
+                            if rest_raw is not None:
+                                # Replace a stale direct-key stream quote even
+                                # when the REST response is keyed by token.
+                                snapshots[key] = rest_raw
                 except Exception as exc:
                     log.warning("optional option-tracking REST fallback failed: %s", type(exc).__name__)
 
