@@ -56,7 +56,7 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /pause
 - /resume
 
-Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset, pause state, feedback labels and proposal state are stored persistently. Each new signal alert includes Good / Bad / Late / Fake / Skip inline feedback buttons. Human feedback is stored separately and takes precedence over the automatic outcome label for training. Indicator snapshots are persisted with each signal. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset, pause state, feedback labels and proposal state are stored persistently. Each new signal alert includes Good / Bad / Late / Fake / Skip inline feedback buttons. Human feedback is stored separately and takes precedence over the automatic categorical label in training reports; measured net R remains the performance objective and is never fabricated from subjective feedback. SKIP labels are excluded from training. Only completed outcomes are eligible, and train/validation/held-out partitions are split by complete trading days with a five-day minimum. Indicator snapshots are persisted with each signal. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
 
 ## API
 
