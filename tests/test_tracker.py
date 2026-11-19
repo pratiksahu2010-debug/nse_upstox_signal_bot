@@ -82,3 +82,15 @@ def test_memory_store_rejects_invalid_actual_cost_inputs():
     store = MemoryStore()
     assert not store.update_actual_option_costs(1, 0, 10.0, 2.0, "2026-11-19T10:00:00+05:30")
     assert not store.update_actual_option_costs(1, 10, -1.0, 2.0, "2026-11-19T10:00:00+05:30")
+
+
+def test_memory_store_requires_option_contract_for_actual_costs():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "ABC", "side": "LONG",
+        "bar_ts": datetime(2026, 11, 18, 10, tzinfo=timezone.utc),
+        "trade_day": date(2026, 11, 18), "entry": 100, "sl": 98,
+        "tp1": 103, "tp2": 104, "score": 0, "trig": "rsi",
+        "details": {},
+    })
+    assert not store.update_actual_option_costs(sid, 50, 120.0, 30.0, "2026-11-19T10:00:00+05:30")
