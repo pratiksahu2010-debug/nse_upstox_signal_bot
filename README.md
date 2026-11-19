@@ -123,13 +123,12 @@ Keep one worker. Multiple workers would create duplicate in-process schedulers a
 
 GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state, protobuf quote decoding, optional option-liquidity checks and no-look-ahead MFE/MAE tracking. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
 
-Still not complete against the full master prompt:
-1. Exactly 150 fixed static underlyings and startup count validation.
-2. Wiring the option-chain endpoint into contract selection and validating the optional liquidity gate with the real Analytics Token; the full-quote REST gate is implemented but opt-in.
-3. Subscribing selected option contracts to the WebSocket option-chain mode and using that stream as a quote source.
-4. Expanded telemetry/configuration/feedback persistence beyond the current signals, setup-state, migration and command-state tables.
-5. Time-stop and expanded performance analytics; MFE/MAE tracking is implemented.
-6. No-look-ahead walk-forward backtesting.
-7. The master prompt's 15-minute DI informational-only requirement conflicts with the current strategy lock because the existing 5-minute DI direction is a hard gate. No strategy change has been made.
+Remaining master-prompt work and live-verification gaps:
+1. The exact 150-symbol static list and startup validation are implemented. It contains 144 NSE individual-security underlyings plus six explicitly allowlisted NSE index underlyings. Startup fails closed if the configured list is not exactly 150 unique entries or if all 150 cannot be validated against the Upstox instrument master; unavailable symbols are reported, never silently replaced.
+2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate is opt-in and must be verified with the user's live Analytics Token before enabling.
+3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
+4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2, option-premium outcome tracking, user feedback persistence and expanded provider/configuration event history remain incomplete.
+5. No-look-ahead walk-forward/out-of-sample backtesting and transaction-cost modelling for option simulations are not yet implemented.
+6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. Separately, completed 15-minute +DI/-DI/ADX is now calculated and displayed as informational-only context; it never changes signal eligibility.
 
-No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed.
+No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
