@@ -36,3 +36,27 @@ def test_training_export_includes_module_and_underlying_symbol():
     assert row["snapshot"] == '{"adx":25.0}'
     assert row["option_tracking"] == '{"instrument_key":"NSE_FO|RELIANCE"}'
     assert row["actual_option_costs"] == '{"total_cost_rupees":12.5}'
+
+
+def test_postgres_training_rows_keep_module_and_symbol_columns_aligned():
+    from datetime import date, datetime, timezone
+
+    from app.db import PostgresStore
+
+    store = PostgresStore.__new__(PostgresStore)
+    store._run = lambda sql, params, fetch: [(
+        42, "normal", datetime(2026, 11, 19, 10, 15, tzinfo=timezone.utc),
+        "RELIANCE", "LONG", 3, {"adx": 25.0}, "TP2", 2.0, 1.9,
+        "WIN", "GOOD", "TP1", 1, 3,
+        {"instrument_key": "NSE_FO|RELIANCE"},
+        {"total_cost_rupees": 12.5},
+    )]
+
+    row = store.training_rows(date(2026, 11, 1))[0]
+
+    assert row["module"] == "normal"
+    assert row["symbol"] == "RELIANCE"
+    assert row["side"] == "LONG"
+    assert row["snapshot"] == {"adx": 25.0}
+    assert row["option_tracking"]["instrument_key"] == "NSE_FO|RELIANCE"
+    assert row["actual_option_costs"]["total_cost_rupees"] == 12.5
