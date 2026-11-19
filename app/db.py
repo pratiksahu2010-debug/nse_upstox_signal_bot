@@ -254,7 +254,7 @@ class MemoryStore:
             for row in self.rows:
                 if row["trade_day"] < since: continue
                 details=row.get("details") or {}
-                out.append({"id":row["id"],"bar_ts":row["bar_ts"],"symbol":row.get("symbol"),
+                out.append({"id":row["id"],"module":row.get("module"),"bar_ts":row["bar_ts"],"symbol":row.get("symbol"),
                     "side":row["side"],"bars_held":row.get("bars_held",0),
                     "snapshot":details.get("indicator_snapshot",{}),"status":row.get("status"),
                     "gross_r":row.get("r_result"),"net_r":row.get("net_r",row.get("r_result")),
@@ -498,19 +498,19 @@ class PostgresStore(MemoryStore):
         return bool(row)
 
     def training_rows(self, since: date) -> list:
-        rows=self._run("""SELECT id,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
+        rows=self._run("""SELECT id,module,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
             status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit,bars_to_tp1,bars_to_tp2,
             COALESCE(option_tracking,'{}'::jsonb),COALESCE(actual_option_costs,'{}'::jsonb)
             FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
         out=[]
         for row in rows:
-            snap=row[5] if isinstance(row[5],dict) else json.loads(row[5] or "{}")
-            out.append({"id":row[0],"bar_ts":row[1],"symbol":row[2],"side":row[3],"bars_held":row[4],
-                "snapshot":snap,"status":row[6],"gross_r":row[7],"net_r":row[8],
-                "auto_label":row[9],"user_label":row[10],"first_hit":row[11],
-                "bars_to_tp1":row[12],"bars_to_tp2":row[13],
-                "option_tracking":row[14] if isinstance(row[14],dict) else json.loads(row[14] or "{}"),
-                "actual_option_costs":row[15] if isinstance(row[15],dict) else json.loads(row[15] or "{}")})
+            snap=row[6] if isinstance(row[6],dict) else json.loads(row[6] or "{}")
+            out.append({"id":row[0],"module":row[1],"bar_ts":row[2],"symbol":row[3],"side":row[4],"bars_held":row[5],
+                "snapshot":snap,"status":row[7],"gross_r":row[8],"net_r":row[9],
+                "auto_label":row[10],"user_label":row[11],"first_hit":row[12],
+                "bars_to_tp1":row[13],"bars_to_tp2":row[14],
+                "option_tracking":row[15] if isinstance(row[15],dict) else json.loads(row[15] or "{}"),
+                "actual_option_costs":row[16] if isinstance(row[16],dict) else json.loads(row[16] or "{}")})
         return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,

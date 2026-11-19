@@ -9,3 +9,54 @@ def test_polling_cursor_and_pause_state_persist_in_memory_store():
     set_persistent_state(store, "paused", True)
     assert get_persistent_state(store, "telegram_update_offset", 0) == 123
     assert get_persistent_state(store, "paused", False) is True
+
+
+def test_training_export_includes_module_and_underlying_symbol():
+    import csv
+    import io
+
+    from app.telegram_polling import build_training_export_csv
+
+    content = build_training_export_csv([{
+        "id": 42,
+        "module": "normal",
+        "symbol": "RELIANCE",
+        "bar_ts": "2026-11-19T10:15:00+05:30",
+        "side": "LONG",
+        "status": "TP2",
+        "snapshot": {"adx": 25.0},
+        "option_tracking": {"instrument_key": "NSE_FO|RELIANCE"},
+        "actual_option_costs": {"total_cost_rupees": 12.5},
+    }])
+    row = next(csv.DictReader(io.StringIO(content)))
+
+    assert row["module"] == "normal"
+    assert row["symbol"] == "RELIANCE"
+    assert row["side"] == "LONG"
+    assert row["snapshot"] == '{"adx":25.0}'
+    assert row["option_tracking"] == '{"instrument_key":"NSE_FO|RELIANCE"}'
+    assert row["actual_option_costs"] == '{"total_cost_rupees":12.5}'
+
+
+def test_postgres_training_rows_keep_module_and_symbol_columns_aligned():
+    from datetime import date, datetime, timezone
+
+    from app.db import PostgresStore
+
+    store = PostgresStore.__new__(PostgresStore)
+    store._run = lambda sql, params, fetch: [(
+        42, "normal", datetime(2026, 11, 19, 10, 15, tzinfo=timezone.utc),
+        "RELIANCE", "LONG", 3, {"adx": 25.0}, "TP2", 2.0, 1.9,
+        "WIN", "GOOD", "TP1", 1, 3,
+        {"instrument_key": "NSE_FO|RELIANCE"},
+        {"total_cost_rupees": 12.5},
+    )]
+
+    row = store.training_rows(date(2026, 11, 1))[0]
+
+    assert row["module"] == "normal"
+    assert row["symbol"] == "RELIANCE"
+    assert row["side"] == "LONG"
+    assert row["snapshot"] == {"adx": 25.0}
+    assert row["option_tracking"]["instrument_key"] == "NSE_FO|RELIANCE"
+    assert row["actual_option_costs"]["total_cost_rupees"] == 12.5
