@@ -49,10 +49,19 @@ def test_mfe_mae_uses_inverse_direction_for_short_trade():
         "tp1": 97.0,
         "tp2": 96.0,
     }
-    mfe, mae, bars, _ = measure_excursions(row, _bars())
+    index = pd.DatetimeIndex([
+        pd.Timestamp("2026-11-17 10:20", tz=IST),
+        pd.Timestamp("2026-11-17 10:25", tz=IST),
+        pd.Timestamp("2026-11-17 10:30", tz=IST),
+    ])
+    short_bars = pd.DataFrame(
+        {"high": [150.0, 101.5, 100.5], "low": [50.0, 99.5, 97.0], "close": [100.0, 100.0, 98.0]},
+        index=index,
+    )
+    mfe, mae, bars, _ = measure_excursions(row, short_bars)
 
     assert mfe == 1.5
-    assert mae == 1.5
+    assert mae == 0.75
     assert bars == 2
 
 
