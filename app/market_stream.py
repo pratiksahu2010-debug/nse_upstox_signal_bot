@@ -23,6 +23,7 @@ class UpstoxMarketStream:
         self.client = client
         self._keys = []
         self._stop = threading.Event()
+        self._resubscribe = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
         self._quotes = {}
@@ -44,8 +45,12 @@ class UpstoxMarketStream:
         self._thread.start()
 
     def set_keys(self, instrument_keys):
+        new_keys = sorted(set(key for key in instrument_keys if key))
         with self._lock:
-            self._keys = sorted(set(key for key in instrument_keys if key))
+            changed = new_keys != self._keys
+            self._keys = new_keys
+        if changed and self._thread is not None and self._thread.is_alive():
+            self._resubscribe.set()
 
     def stop(self):
         self._stop.set()
@@ -94,6 +99,10 @@ class UpstoxMarketStream:
                     await ws.send(json.dumps(request).encode("utf-8"))
                     delay = 1.0
                     while not self._stop.is_set():
+                        if self._resubscribe.is_set():
+                            self._resubscribe.clear()
+                            await ws.close()
+                            break
                         try:
                             payload = await asyncio.wait_for(ws.recv(), timeout=1.0)
                         except asyncio.TimeoutError:

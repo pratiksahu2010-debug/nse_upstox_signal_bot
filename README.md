@@ -1,47 +1,128 @@
-# NSE Midcap + Index CALL/PUT Signal Bot
+# Normal NSE F&O CALL/PUT Signal Bot
 
-A single NSE signal engine using Upstox market data, Render, PostgreSQL and Telegram. **Signals only**: it never places orders.
+Signal-only NSE F&O application. It does not place, modify or execute broker orders.
 
-## Universe
-- One midcap-oriented candidate pool in `app/symbols.py`; the resolver selects up to 100 eligible stocks from it.
-- Each stock is accepted only when the daily Upstox master contains its NSE cash EQ, futures, and both CE and PE option contracts on a usable common expiry.
-- All NSE index underlyings with `underlying_type=INDEX` futures and both CE/PE options are discovered dynamically from the same daily master. There is no fixed five-index limit.
-- The status endpoint reports resolved stock count, index count and dropped symbols. The bot never silently substitutes a large-cap stock for an invalid candidate.
+## Runtime
 
-## One strategy only
-Signal decisions use the latest fully closed 5-minute candle:
-- CALL: EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 22, +DI > -DI, and bullish completed 15-minute EMA9/EMA21 context.
-- PUT: EMA9 < EMA21, close < VWAP, RSI14 < 50, ADX14 >= 22, -DI > +DI, and bearish completed 15-minute EMA9/EMA21 context.
+- Python 3.11 and FastAPI.
+- Gunicorn with Uvicorn worker; exactly one worker because the scanner is in-process.
+- Upstox REST remains the source of completed 5-minute OHLCV candles and instrument master data.
+- Upstox Market Data Feed V3 WebSocket provides live quote/feed-health observations. Live ticks do not create signals.
+- Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias.
+- Telegram Bot API getUpdates long polling; no webhook.
 
-ADX uses Wilder smoothing with a 14-period lookback. The configured minimum is hard-floored at 22: `N_ADX_MIN` may raise the threshold but cannot lower it. Exactly 22 passes the ADX gate.
+## Strategy — preserved current implementation
 
-No ORB, Momentum Explosion, MCX, score threshold, RVOL gate, candle-quality gate, EMA-cross trigger, pullback trigger or NIFTY market-bias veto.
+There is one active strategy module: Normal NSE F&O. The existing strategy code in app/mod_normal.py has been kept unchanged.
 
-## Stop and targets
-Default levels are calculated from the signal candle close:
-- Stop loss: 1.2 × 5-minute ATR(14)
-- Target 1: 1.5R
-- Target 2: 2.0R
+CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 22, +DI > -DI, followed by RSI14 crossing upward through 52.
 
-These are defaults and can be adjusted with `N_SL_ATR`, `N_TP1_R` and `N_TP2_R`. They are reference levels, not a guarantee of execution price or outcome.
+PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 22, -DI > +DI, followed by RSI14 crossing downward through 42.
 
-## Strict two-candle confirmation
-- The first live completed 5-minute candle that passes every Normal gate arms a per-symbol watch state; it does not send Telegram.
-- Only the immediately following completed 5-minute candle can confirm that setup. It must independently pass all the same Normal gates and retain the same direction.
-- A failed, stale, missing, skipped, or opposite-direction confirmation cancels the setup. Candle 2 is terminal; the bot never waits for Candle 3 or reuses Candle 2 as a fresh setup.
-- The first completed candle observed after process startup is a baseline only. Historical setups are not replayed as live alerts after a restart.
-- The current market-data implementation polls Upstox candle endpoints on each 5-minute boundary; it is not a WebSocket subscription feed.
+ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 22 and may only be raised. The 15-minute EMA trend feature is calculated but is not an active setup gate in app/mod_normal.py.
 
-## Alerts and safeguards
-- Telegram displays CALL (CE) or PUT (PE), signal candle close time in IST, entry, ATR stop, targets, and the actual available option contract.
-- A signal is not sent if its CE/PE contract cannot be resolved at alert time.
-- Closed-candle processing, stale-data rejection, duplicate protection, a short same-direction cooldown, persistent signal tracking and Telegram outbox retries remain enabled.
-- Manual execution only. No broker order API is called.
+The master prompt includes proposed strategy changes: 15-minute DI informational-only, a fixed 150-symbol list, score gate and different targets. They are not silently applied because the existing strategy was explicitly locked. The current 5-minute DI gate, RSI-cross trigger, universe resolver and ATR target parameters remain unchanged.
 
-## Render setup
-Set `UPSTOX_ACCESS_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DATABASE_URL` and `ADMIN_TOKEN`. Keep one Gunicorn worker because the scheduler runs inside the process. Health endpoint: `/health`. Admin endpoints `/status`, `/diag`, `/stats`, `/force?module=all` require the bearer admin token.
+## Risk and state
 
-## Local tests
-`pip install -r requirements.txt pytest && AUTOSTART=0 python -m pytest -q`
+Default underlying reference levels:
+- Stop loss: 1.2 × 5-minute ATR(14).
+- TP1: 1.5R.
+- TP2: 2.0R.
 
-No threshold guarantees profitable trades. Validate signals on historical and live paper data before considering real-money execution.
+The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. The state machine is implemented in app/engine.py and app/mod_normal.py.
+
+## Universe and option selection — current behaviour
+
+The current resolver uses candidate/reserve lists in app/symbols.py, validates cash EQ, futures and CE/PE availability against the Upstox instrument master, and discovers supported index derivatives. It selects up to 100 eligible stock underlyings plus supported indices. It is not yet the exactly-150 static universe in the master prompt.
+
+The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The current selector does not yet enforce live bid/ask spread, option volume, open-interest or quote-freshness thresholds. The new WebSocket cache currently subscribes to underlying instruments; option-contract liquidity checks are not yet wired into signal dispatch.
+
+## Telegram commands
+
+Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only responds to the configured chat ID.
+
+- /start and /help
+- /status
+- /signals
+- /stats
+- /pause
+- /resume
+
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. No command can execute a trade.
+
+## API
+
+- GET / and GET /health — immediate public liveness.
+- GET /status — admin-authenticated scanner, Upstox, database and feed status.
+- GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
+- GET /signals?limit=20 — admin-authenticated recent signals.
+- GET /stats?days=30 — admin-authenticated performance summary.
+- GET /symbols — currently resolved universe.
+- GET /config — safe, non-secret runtime configuration.
+- POST /pause and POST /resume — admin-authenticated pause controls.
+- GET /force?module=normal — admin-authenticated forced evaluation.
+- GET /test-telegram — admin-authenticated Telegram test.
+
+Use Authorization: Bearer ADMIN_TOKEN. The legacy query-token form remains for compatibility but should not be used. Credentials are not returned by /config.
+
+## Environment
+
+Required production secrets:
+- UPSTOX_ACCESS_TOKEN
+- NEON_DATABASE_URL (use the SSL-enabled Neon connection string)
+- TELEGRAM_BOT_TOKEN
+- TELEGRAM_CHAT_ID
+- ADMIN_TOKEN
+
+Runtime controls:
+- PYTHON_VERSION: 3.11.9 in Render
+- TZ: Asia/Kolkata
+- AUTOSTART: 1
+- RUN_SCHEDULER: 1
+- REQUIRE_PERSISTENT_DB: 1
+- KEEPALIVE: 1
+- N_ADX_MIN: 22 (hard floor)
+- N_SL_ATR: 1.2
+- N_TP1_R: 1.5
+- N_TP2_R: 2.0
+- FETCH_DELAY_SEC: 6
+- STALE_MAX_BARS: 1
+- WORKERS: 6
+- OPTION_QUOTE: 0
+- DRY_RUN: 0
+
+Strategy parameters remain frozen unless explicitly approved.
+
+## Local setup
+
+1. Use Python 3.11.
+2. Install dependencies with pip install -r requirements.txt.
+3. Copy .env.example to .env and configure the secrets.
+4. Run tests with AUTOSTART=0 python -m pytest -q.
+5. Run locally with uvicorn app.web:app --host 0.0.0.0 --port 8000 and a configured database/secrets.
+
+## Render
+
+The Blueprint defines one web service and does not provision Render Postgres. Set NEON_DATABASE_URL, UPSTOX_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID and ADMIN_TOKEN in Render.
+
+Start command:
+
+    gunicorn app.web:app --worker-class uvicorn_worker.UvicornWorker --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
+
+Keep one worker. Multiple workers would create duplicate in-process schedulers and Telegram pollers. /health is the Render liveness check. Initialization fails closed if REQUIRE_PERSISTENT_DB=1 and Neon is not configured.
+
+## Tests and known gaps
+
+GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state and protobuf quote decoding. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
+
+Still not complete against the full master prompt:
+1. Exactly 150 fixed static underlyings and startup count validation.
+2. Full option-chain integration and contract-level spread, volume, OI and quote-freshness validation.
+3. Subscribing to selected option contracts and wiring quote cache into alerts.
+4. Dedicated schema migration system and expanded telemetry/configuration/feedback persistence.
+5. MFE/MAE, time-stop and expanded performance analytics.
+6. No-look-ahead walk-forward backtesting.
+7. The master prompt's 15-minute DI informational-only requirement conflicts with the current strategy lock because the existing 5-minute DI direction is a hard gate. No strategy change has been made.
+
+No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed.
