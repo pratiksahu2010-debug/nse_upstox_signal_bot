@@ -29,6 +29,8 @@ def test_mfe_mae_excludes_signal_candle_for_long_trade():
         "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST),
         "entry": 100.0,
         "sl": 98.0,
+        "tp1": 103.0,
+        "tp2": 104.0,
     }
     mfe, mae, bars, last_bar = measure_excursions(row, _bars())
 
@@ -44,6 +46,8 @@ def test_mfe_mae_uses_inverse_direction_for_short_trade():
         "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST),
         "entry": 100.0,
         "sl": 102.0,
+        "tp1": 97.0,
+        "tp2": 96.0,
     }
     mfe, mae, bars, _ = measure_excursions(row, _bars())
 
