@@ -15,12 +15,14 @@ from app.db import PostgresStore
 def test_postgres_migrations_and_signal_lifecycle_round_trip():
     store = PostgresStore(os.environ["TEST_DATABASE_URL"])
     signal_id = None
+    initialized = False
     today = date.today()
     stamp = datetime.now(timezone.utc)
     symbol = "CI_POSTGRES_INTEGRATION"
 
     try:
         store.init()
+        initialized = True
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
         versions = store._run("SELECT version FROM schema_migrations ORDER BY version", fetch="all")
@@ -81,10 +83,11 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )
         assert excursion == (1.2, 0.4, 3, True)
     finally:
-        if signal_id is not None:
-            store._run("DELETE FROM signals WHERE id=%s", (signal_id,))
-        store._run(
-            "DELETE FROM normal_setup_state WHERE trade_day=%s AND symbol=%s",
-            (today, symbol),
-        )
+        if initialized:
+            if signal_id is not None:
+                store._run("DELETE FROM signals WHERE id=%s", (signal_id,))
+            store._run(
+                "DELETE FROM normal_setup_state WHERE trade_day=%s AND symbol=%s",
+                (today, symbol),
+            )
         store.close()
