@@ -180,6 +180,36 @@ def health():
     return {"ok": True, "time": datetime.now(IST).isoformat(timespec="seconds"), "initialized": _started}
 
 
+@app.get("/ready")
+def readiness():
+    """Readiness probe: distinguish a live process from an initialized, usable service."""
+    if not _started or engine is None or store is None:
+        return JSONResponse(
+            status_code=503,
+            content={"ready": False, "reason": "application_not_initialized"},
+        )
+    persistent = getattr(store, "kind", "") == "postgres"
+    if config.REQUIRE_PERSISTENT_DB and not persistent:
+        return JSONResponse(
+            status_code=503,
+            content={"ready": False, "reason": "persistent_database_required"},
+        )
+    if persistent:
+        try:
+            store._run("SELECT 1", fetch="one")
+        except Exception:
+            log.exception("readiness database check failed")
+            return JSONResponse(
+                status_code=503,
+                content={"ready": False, "reason": "database_unavailable"},
+            )
+    return {
+        "ready": True,
+        "initialized": True,
+        "database": {"kind": getattr(store, "kind", "unknown"), "persistent": persistent},
+    }
+
+
 @app.get("/status")
 def status(request: Request):
     candidate, error = _require_engine()
