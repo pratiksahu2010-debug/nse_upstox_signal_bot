@@ -72,6 +72,7 @@ class Engine:
         self.last_outbox_retry_at = None
         self.paused = False
         self.market_stream = None
+        self.auth_alerted_at = None
 
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):

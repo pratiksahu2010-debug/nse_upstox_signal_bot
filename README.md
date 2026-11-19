@@ -9,7 +9,7 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 - Upstox REST remains the source of completed 5-minute OHLCV candles and instrument master data.
 - Upstox Market Data Feed V3 WebSocket provides live quote/feed-health observations. Live ticks do not create signals.
 - Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias. The database bootstrap is tracked through an idempotent schema_migrations version table.
-- Telegram Bot API getUpdates long polling; no webhook.
+- Telegram Bot API getUpdates long polling; no webhook. Missing or rejected Upstox credentials trigger throttled Telegram alerts; after replacing a Render secret, restart the service to reconnect with the new token.
 
 ## Strategy — preserved current implementation
 

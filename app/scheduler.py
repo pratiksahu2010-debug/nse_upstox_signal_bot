@@ -15,6 +15,29 @@ from .engine import Engine, floor5
 log = logging.getLogger("scheduler")
 
 
+def _notify_auth_state(engine: Engine, now: datetime):
+    missing = not UPSTOX_TOKEN
+    rejected = bool(getattr(engine.client, "auth_failed", False))
+    if not (missing or rejected):
+        engine.auth_alerted_at = None
+        return
+    last = getattr(engine, "auth_alerted_at", None)
+    if last is not None and now - last < timedelta(minutes=5):
+        return
+    reason = "UPSTOX_ACCESS_TOKEN is missing" if missing else "Upstox rejected UPSTOX_ACCESS_TOKEN"
+    message = (
+        f"<b>⚠️ Upstox authentication problem</b>\n{reason}. "
+        "Update the Render secret and restart the service. Scanner data may be unavailable; "
+        "no broker orders are placed."
+    )
+    try:
+        engine.notify(message, silent=False)
+    except Exception:
+        log.exception("could not send Upstox authentication alert")
+    engine.auth_alerted_at = now
+    log.error("Upstox authentication problem: %s", reason)
+
+
 def _next_due(now: datetime) -> datetime:
     return floor5(now) + timedelta(minutes=ENGINE.candle_min, seconds=ENGINE.fetch_delay_sec)
 
@@ -24,6 +47,7 @@ def loop(engine: Engine, stop: threading.Event):
     last_run = None
     while not stop.is_set():
         now = datetime.now(IST)
+        _notify_auth_state(engine, now)
         try:
             engine.housekeeping(now)
         except Exception:
