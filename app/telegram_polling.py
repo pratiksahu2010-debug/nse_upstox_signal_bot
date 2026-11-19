@@ -14,8 +14,8 @@ from .telegram import send
 log = logging.getLogger("telegram.polling")
 
 EXPORT_FIELDS = [
-    "id", "module", "symbol", "bar_ts", "side", "status", "first_hit",
-    "gross_r", "net_r", "bars_to_tp1", "bars_to_tp2", "option_tracking",
+    "id", "module", "symbol", "bar_ts", "side", "score", "trig", "status", "first_hit",
+    "gross_r", "net_r", "mfe_r", "mae_r", "bars_held", "bars_to_tp1", "bars_to_tp2", "option_tracking",
     "actual_option_costs", "auto_label", "user_label", "snapshot",
 ]
 
