@@ -492,7 +492,11 @@ class Engine:
                     if raw_snapshot:
                         snapshots[key] = raw_snapshot
             needs_rest = [key for key in option_keys if key not in snapshots]
-            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS):
+            # Premium tracking needs a signal-time entry reference. A newly added
+            # WebSocket subscription may not have produced its first tick yet, so
+            # use the same batched optional REST snapshot as a best-effort fallback.
+            # Failure remains non-blocking unless the separate liquidity gate is enabled.
+            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING):
                 try:
                     snapshots.update(self.client.full_quotes(needs_rest) or {})
                 except Exception as exc:
