@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 import pandas as pd
 
@@ -147,3 +147,14 @@ def test_excursions_keep_full_ranges_before_terminal_bar_only():
     assert mfe == 1.0
     assert mae == 1.0
     assert bars == 2
+
+
+
+def test_eod_terminal_bar_uses_close_not_unordered_high_low():
+    df = _frame([[100, 110, 97, 101, 1000]])
+    mfe, mae, bars, _ = measure_excursions(
+        _signal(), df, session_end=time(9, 25)
+    )
+    assert mfe == 0.5
+    assert mae == 0.0
+    assert bars == 1
