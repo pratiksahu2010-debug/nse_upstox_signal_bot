@@ -50,6 +50,7 @@ KEEPALIVE = _b("KEEPALIVE", "1")                         # self-ping so the free
 RUN_SCHEDULER = _b("RUN_SCHEDULER", "1")
 UPSTOX_STREAM_ENABLED = _b("UPSTOX_STREAM_ENABLED", "1")
 DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do not send Telegram
+TRAINING_COST_R = max(0.0, _f("TRAINING_COST_R", 0.0))  # configured round-trip cost expressed in underlying R
 
 # Modules on/off
 ENABLE_NORMAL = _b("ENABLE_NORMAL", "1")

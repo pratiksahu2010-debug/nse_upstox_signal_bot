@@ -23,16 +23,18 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
         params for sql, params, _ in calls
         if sql.startswith("INSERT INTO schema_migrations")
     ]
-    assert applied == [(1, "baseline"), (2, "telegram_bot_state"), (3, "time_stop_review_flag")]
+    assert applied == [(1, "baseline"), (2, "telegram_bot_state"), (3, "time_stop_review_flag"), (4, "training_feedback_labels"), (5, "first_target_hit")]
     assert any(sql == MIGRATIONS[0][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[1][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[2][2] for sql, _, _ in calls)
+    assert any(sql == MIGRATIONS[3][2] for sql, _, _ in calls)
+    assert any(sql == MIGRATIONS[4][2] for sql, _, _ in calls)
     assert calls[-1][0].startswith("DELETE FROM signals")
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
-    store, calls = _fake_store((1, 2, 3))
+    store, calls = _fake_store((1, 2, 3, 4, 5))
     store.init()
 
-    assert not any(sql in (MIGRATIONS[0][2], MIGRATIONS[1][2], MIGRATIONS[2][2]) for sql, _, _ in calls)
+    assert not any(sql in (MIGRATIONS[0][2], MIGRATIONS[1][2], MIGRATIONS[2][2], MIGRATIONS[3][2], MIGRATIONS[4][2]) for sql, _, _ in calls)
     assert calls[-1][0].startswith("DELETE FROM signals")
