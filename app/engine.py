@@ -664,11 +664,37 @@ class Engine:
                 raw = stream_quote_snapshot(self.market_stream.quote(key))
                 if raw:
                     snapshots[key] = raw
-        for row, key, old in keyed:
+
+        # A disconnected/stale WebSocket must not silently stop premium
+        # excursion tracking. Batch only contracts whose stream quote is
+        # missing or older than the same freshness limit used by the tracker.
+        def quote_for(key):
             raw = snapshots.get(key)
             if raw is None:
                 raw = next((value for value in snapshots.values()
                             if isinstance(value, dict) and value.get("instrument_token") == key), None)
+            return raw
+
+        rest_keys = []
+        for _row, key, _tracking in keyed:
+            raw = quote_for(key)
+            metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
+            age = metrics.get("quote_age_sec")
+            if age is None or age > OPTION_MAX_QUOTE_AGE_SEC:
+                if key not in rest_keys:
+                    rest_keys.append(key)
+        if rest_keys:
+            full_quotes = getattr(self.client, "full_quotes", None)
+            if callable(full_quotes):
+                try:
+                    rest_snapshots = full_quotes(rest_keys) or {}
+                    if isinstance(rest_snapshots, dict):
+                        snapshots.update(rest_snapshots)
+                except Exception as exc:
+                    log.warning("optional option-tracking REST fallback failed: %s", type(exc).__name__)
+
+        for row, key, old in keyed:
+            raw = quote_for(key)
             if raw is None:
                 continue
             metrics = snapshot_metrics(raw, now.timestamp())
