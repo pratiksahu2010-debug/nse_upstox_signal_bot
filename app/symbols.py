@@ -1,27 +1,185 @@
-"""Candidate NSE midcap F&O stock universe.
+"""Fixed, approved NSE F&O universe.
 
-Candidates are validated against the daily Upstox instrument master. Production only
-selects stocks with cash EQ, FUT, CE and PE contracts. All index derivatives are
-separately discovered from the master using underlying_type=INDEX.
+The 144 equity symbols are the first 144 individual-security underlyings on the
+NSE official derivatives-underlying list checked 2026-11-19. Six index underlyings
+are separately enumerated below. This is a static list: no runtime discovery,
+rotation, or replacement is permitted.
+
+Source: NSE India, List of Underlyings and Information.
 """
+FIXED_STOCK_SYMBOLS = [
+    "360ONE",
+    "ABB",
+    "APLAPOLLO",
+    "AUBANK",
+    "ADANIENSOL",
+    "ADANIENT",
+    "ADANIGREEN",
+    "ADANIPORTS",
+    "ADANIPOWER",
+    "ABCAPITAL",
+    "ALKEM",
+    "AMBER",
+    "ANANDRATHI",
+    "AMBUJACEM",
+    "ANGELONE",
+    "APOLLOHOSP",
+    "ASHOKLEY",
+    "ASIANPAINT",
+    "ASTRAL",
+    "ATHERENERG",
+    "AUROPHARMA",
+    "DMART",
+    "AXISBANK",
+    "BSE",
+    "BAJAJ-AUTO",
+    "BAJFINANCE",
+    "BAJAJFINSV",
+    "BANDHANBNK",
+    "BANKBARODA",
+    "BANKINDIA",
+    "MAHABANK",
+    "BDL",
+    "BEL",
+    "BHARATFORG",
+    "BHEL",
+    "BPCL",
+    "BHARTIARTL",
+    "BIOCON",
+    "BLUESTARCO",
+    "BOSCHLTD",
+    "BRITANNIA",
+    "CGPOWER",
+    "CANBK",
+    "CDSL",
+    "CHOLAFIN",
+    "CIPLA",
+    "CUB",
+    "COALINDIA",
+    "COCHINSHIP",
+    "COFORGE",
+    "COLPAL",
+    "CAMS",
+    "CONCOR",
+    "COROMANDEL",
+    "CROMPTON",
+    "CUMMINSIND",
+    "DLF",
+    "DABUR",
+    "DATAPATTNS",
+    "DELHIVERY",
+    "DIVISLAB",
+    "DIXON",
+    "DRREDDY",
+    "ETERNAL",
+    "EICHERMOT",
+    "FORCEMOT",
+    "NYKAA",
+    "FORTIS",
+    "GAIL",
+    "GVT&D",
+    "GMRAIRPORT",
+    "GLENMARK",
+    "GODFRYPHLP",
+    "GODREJCP",
+    "GODREJPROP",
+    "GRASIM",
+    "HCLTECH",
+    "HDFCAMC",
+    "HDFCBANK",
+    "HDFCLIFE",
+    "HAVELLS",
+    "HEROMOTOCO",
+    "HINDALCO",
+    "HAL",
+    "HINDPETRO",
+    "HINDUNILVR",
+    "HINDZINC",
+    "POWERINDIA",
+    "HYUNDAI",
+    "ICICIBANK",
+    "ICICILIFE",
+    "ICICIGI",
+    "IDFCFIRSTB",
+    "ITC",
+    "INDIANB",
+    "IEX",
+    "IOC",
+    "IRFC",
+    "IREDA",
+    "INDUSTOWER",
+    "INDUSINDBK",
+    "NAUKRI",
+    "INFY",
+    "INOXWIND",
+    "INDIGO",
+    "JINDALSTEL",
+    "JSWENERGY",
+    "JSWSTEEL",
+    "JIOFIN",
+    "JUBLFOOD",
+    "KEI",
+    "KPITTECH",
+    "KALYANKJIL",
+    "KARURVYSYA",
+    "KAYNES",
+    "KFINTECH",
+    "KOTAKBANK",
+    "LTF",
+    "LICHSGFIN",
+    "LTM",
+    "LT",
+    "LAURUSLABS",
+    "LICI",
+    "LODHA",
+    "LUPIN",
+    "M&M",
+    "MANAPPURAM",
+    "MANKIND",
+    "MARICO",
+    "MARUTI",
+    "MFSL",
+    "MAXHEALTH",
+    "MAZDOCK",
+    "MOTILALOFS",
+    "MPHASIS",
+    "MCX",
+    "MUTHOOTFIN",
+    "NBCC",
+    "NHPC",
+    "NMDC",
+    "NTPC",
+    "NATIONALUM",
+    "NAVINFLUOR",
+    "NESTLEIND",
+]
 
-MIDCAP_FNO_CANDIDATES = [
-    "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "AUROPHARMA", "BANDHANBNK", "BANKINDIA", "BHEL", "BIOCON",
-    "BOSCHLTD", "CHOLAFIN", "COFORGE", "COLPAL", "CONCOR", "CUMMINSIND", "DABUR", "DIXON", "FEDERALBNK",
-    "GLENMARK", "GODREJCP", "GODREJPROP", "HAVELLS", "HINDPETRO", "IDEA", "IDFCFIRSTB", "IGL", "INDHOTEL",
-    "IRFC", "JINDALSTEL", "JUBLFOOD", "LICHSGFIN", "LUPIN", "MANAPPURAM", "MARICO", "MAXHEALTH", "MFSL",
-    "MPHASIS", "MUTHOOTFIN", "NATIONALUM", "NAUKRI", "NMDC", "OBEROIRLTY", "OFSS", "PAGEIND", "PERSISTENT",
-    "PETRONET", "PIDILITIND", "PIIND", "POLYCAB", "SAIL", "SBICARD", "SHREECEM", "SIEMENS", "SRF", "SUNTV",
-    "SYNGENE", "TATACHEM", "TATACOMM", "TATAELXSI", "TORNTPHARM", "UNIONBANK", "UPL", "VOLTAS", "YESBANK",
-    "ZYDUSLIFE", "ABB", "ASHOKLEY", "ASTRAL", "BALKRISIND", "BHARATFORG", "CGPOWER", "CROMPTON", "DALBHARAT",
-    "EXIDEIND", "JSWENERGY", "KPITTECH", "LAURUSLABS", "MOTHERSON", "NHPC", "OIL", "PEL", "PHOENIXLTD",
-    "PNBHOUSING", "PRESTIGE", "RBLBANK", "SOLARINDS", "SONACOMS", "TIINDIA", "TORNTPOWER", "UNOMINDA",
-    "VBL", "AUBANK", "ALKEM", "ANGELONE", "APLAPOLLO", "ABCAPITAL", "ADANIENSOL", "BDL", "BSE", "CDSL",
-    "CAMS", "HUDCO", "IEX", "KALYANKJIL", "KEI", "LODHA",
+FIXED_INDEX_SYMBOLS = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "NIFTYFPI",
+    "MIDCPNIFTY",
+    "NIFTYNXT50",
 ]
-MIDCAP_FNO_RESERVE = [
-    "MCX", "MAZDOCK", "NBCC", "RVNL", "SUPREMEIND", "TATATECH", "HFCL", "IREDA", "LTF", "POLICYBZR",
-    "NYKAA", "OBEROIRLTY", "PATANJALI", "INOXWIND", "DELHIVERY", "GMRAIRPORT", "SWIGGY", "ETERNAL",
-    "MANKIND", "PAYTM", "WAAREEENER", "BLUESTARCO", "COCHINSHIP", "FORTIS", "GRANULES", "ICICIGI",
-    "ICICIPRULI", "LICI", "TITAGARH", "NCC",
-]
+
+FIXED_FNO_SYMBOLS = FIXED_STOCK_SYMBOLS + FIXED_INDEX_SYMBOLS
+EXPECTED_UNIVERSE_SIZE = 150
+
+
+def validate_fixed_universe():
+    duplicates = sorted({symbol for symbol in FIXED_FNO_SYMBOLS if FIXED_FNO_SYMBOLS.count(symbol) > 1})
+    if len(FIXED_FNO_SYMBOLS) != EXPECTED_UNIVERSE_SIZE or duplicates:
+        raise RuntimeError(
+            f"fixed F&O universe invalid: configured={len(FIXED_FNO_SYMBOLS)}, "
+            f"expected={EXPECTED_UNIVERSE_SIZE}, duplicates={duplicates}"
+        )
+    return True
+
+
+validate_fixed_universe()
+
+# Backwards-compatible names for existing test helpers; production uses only
+# FIXED_STOCK_SYMBOLS and FIXED_INDEX_SYMBOLS and never consumes reserve lists.
+MIDCAP_FNO_CANDIDATES = FIXED_STOCK_SYMBOLS
+MIDCAP_FNO_RESERVE = []

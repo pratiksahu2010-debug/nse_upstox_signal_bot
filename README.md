@@ -34,7 +34,7 @@ The first completed candle observed after startup is a baseline. A qualifying se
 
 ## Universe and option selection — current behaviour
 
-The current resolver uses candidate/reserve lists in app/symbols.py, validates cash EQ, futures and CE/PE availability against the Upstox instrument master, and discovers supported index derivatives. It selects up to 100 eligible stock underlyings plus supported indices. It is not yet the exactly-150 static universe in the master prompt.
+The bot uses an exactly 150-entry static universe in app/symbols.py: 144 individual-security underlyings and six explicitly named NSE index underlyings. The equity list is pinned from the NSE official derivatives-underlying list checked on 19 Nov 2026. No runtime discovery, symbol rotation or automatic replacement is performed. Every configured entry is checked against the Upstox instrument master; unavailable entries are reported in /symbols and /status and are not silently replaced. The configured count and duplicate check are enforced at startup.
 
 The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The optional full-quote snapshot can attach bid/ask, spread, volume, OI and quote age to alerts. OPTION_LIQUIDITY_CHECKS=1 enables a fail-closed validation gate; it is disabled by default until the real Analytics Token has been verified. The WebSocket cache currently subscribes to underlying instruments; selected option contracts are not yet subscribed through the WebSocket option-chain mode.
 

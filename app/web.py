@@ -240,11 +240,14 @@ def symbols():
     if engine is None or engine.uni is None:
         return {"ready": False, "configured_symbols": 0, "validated_symbols": 0, "active_symbols": []}
     items = engine.uni.normal
+    configured = list(engine.uni.configured_symbols)
     return {
-        "ready": True,
-        "configured_symbols": len(items),
+        "ready": len(configured) == 150,
+        "configured_symbols": len(configured),
+        "configured_symbol_list": configured,
         "validated_symbols": len(items),
         "invalid_symbols": engine.uni.dropped,
+        "duplicate_symbols": [],
         "active_symbols": [{"symbol": item.symbol, "instrument_key": item.key, "is_index": item.is_index} for item in items],
     }
 

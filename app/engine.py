@@ -621,6 +621,9 @@ class Engine:
             "started": self.started.isoformat(),
             "store": getattr(self.store, "kind", "?"),
             "universe": ({
+                "configured_symbols": len(self.uni.configured_symbols),
+                "validated_symbols": len(self.uni.normal),
+                "invalid_symbols": self.uni.dropped,
                 "stocks": sum(not item.is_index for item in self.uni.normal),
                 "indices": sum(item.is_index for item in self.uni.normal),
                 "total": len(self.uni.normal),
