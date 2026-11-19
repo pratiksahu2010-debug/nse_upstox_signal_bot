@@ -30,13 +30,13 @@ Default underlying reference levels:
 - TP1: 1.5R.
 - TP2: 2.0R.
 
-The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. The state machine is implemented in app/engine.py and app/mod_normal.py.
+The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
 
 ## Universe and option selection — current behaviour
 
 The current resolver uses candidate/reserve lists in app/symbols.py, validates cash EQ, futures and CE/PE availability against the Upstox instrument master, and discovers supported index derivatives. It selects up to 100 eligible stock underlyings plus supported indices. It is not yet the exactly-150 static universe in the master prompt.
 
-The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The current selector does not yet enforce live bid/ask spread, option volume, open-interest or quote-freshness thresholds. The new WebSocket cache currently subscribes to underlying instruments; option-contract liquidity checks are not yet wired into signal dispatch.
+The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The optional full-quote snapshot can attach bid/ask, spread, volume, OI and quote age to alerts. OPTION_LIQUIDITY_CHECKS=1 enables a fail-closed validation gate; it is disabled by default until the real Analytics Token has been verified. The WebSocket cache currently subscribes to underlying instruments; selected option contracts are not yet subscribed through the WebSocket option-chain mode.
 
 ## Telegram commands
 
@@ -120,14 +120,14 @@ Keep one worker. Multiple workers would create duplicate in-process schedulers a
 
 ## Tests and known gaps
 
-GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state and protobuf quote decoding. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
+GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, state-machine, ADX, database, Upstox reliability, alert outbox and tracking behaviour, plus FastAPI routes, Telegram polling state, protobuf quote decoding, optional option-liquidity checks and no-look-ahead MFE/MAE tracking. Do not treat the bot as live-ready until CI passes and paper/live-data smoke tests verify Upstox authorization, WebSocket connection, Neon persistence and Telegram polling with real credentials.
 
 Still not complete against the full master prompt:
 1. Exactly 150 fixed static underlyings and startup count validation.
 2. Wiring the option-chain endpoint into contract selection and validating the optional liquidity gate with the real Analytics Token; the full-quote REST gate is implemented but opt-in.
 3. Subscribing selected option contracts to the WebSocket option-chain mode and using that stream as a quote source.
 4. Dedicated schema migration system and expanded telemetry/configuration/feedback persistence.
-5. MFE/MAE, time-stop and expanded performance analytics.
+5. Time-stop and expanded performance analytics; MFE/MAE tracking is implemented.
 6. No-look-ahead walk-forward backtesting.
 7. The master prompt's 15-minute DI informational-only requirement conflicts with the current strategy lock because the existing 5-minute DI direction is a hard gate. No strategy change has been made.
 

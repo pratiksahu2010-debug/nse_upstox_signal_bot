@@ -69,3 +69,30 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
     if stage == "TP1":
         return "TP1", 0.5 * r1
     return "OPEN", None
+
+
+def measure_excursions(row: dict, df: pd.DataFrame):
+    """Return (MFE_R, MAE_R, completed_bars_held, last_bar_ts) after the entry candle.
+
+    Uses only completed rows supplied by the engine and excludes the signal candle itself,
+    preventing pre-entry highs/lows from being counted as trade excursion.
+    """
+    risk = abs(float(row["entry"]) - float(row["sl"]))
+    if risk <= 0:
+        return 0.0, 0.0, 0, None
+    after = df[df.index > _ts(row["bar_ts"])]
+    if after.empty:
+        return 0.0, 0.0, 0, None
+
+    entry = float(row["entry"])
+    if row["side"] == "LONG":
+        favourable = (after["high"].astype(float) - entry) / risk
+        adverse = (entry - after["low"].astype(float)) / risk
+    else:
+        favourable = (entry - after["low"].astype(float)) / risk
+        adverse = (after["high"].astype(float) - entry) / risk
+
+    mfe_r = max(0.0, float(favourable.max()))
+    mae_r = max(0.0, float(adverse.max()))
+    last_bar = after.index[-1].to_pydatetime()
+    return mfe_r, mae_r, int(len(after)), last_bar

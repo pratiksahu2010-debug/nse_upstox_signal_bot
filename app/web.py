@@ -109,16 +109,16 @@ def _recent_signals(limit: int = 20):
     if getattr(store, "kind", "") == "postgres":
         rows = store._run(
             """SELECT id, module, symbol, side, bar_ts, entry, sl, tp1, tp2,
-                      score, trig, status, r_result, details
+                      score, trig, status, r_result, mfe_r, mae_r, bars_held, details
                FROM signals ORDER BY id DESC LIMIT %s""",
             (limit,), "all")
         keys = ("id", "module", "symbol", "side", "bar_ts", "entry", "sl", "tp1",
-                "tp2", "score", "trigger", "status", "r_result", "details")
+                "tp2", "score", "trigger", "status", "r_result", "mfe_r", "mae_r", "bars_held", "details")
         return [dict(zip(keys, row)) for row in rows]
     rows = sorted(getattr(store, "rows", []), key=lambda row: row.get("id", 0), reverse=True)
     return [{key: row.get(key) for key in (
         "id", "module", "symbol", "side", "bar_ts", "entry", "sl", "tp1",
-        "tp2", "score", "trig", "status", "r_result", "details")} for row in rows[:limit]]
+        "tp2", "score", "trig", "status", "r_result", "mfe_r", "mae_r", "bars_held", "details")} for row in rows[:limit]]
 
 
 def _safe_config():

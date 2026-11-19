@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS signals (
     details     JSONB,
     status      TEXT NOT NULL DEFAULT 'OPEN',
     r_result    DOUBLE PRECISION,
+    mfe_r       DOUBLE PRECISION,
+    mae_r       DOUBLE PRECISION,
+    bars_held   INTEGER NOT NULL DEFAULT 0,
     closed_at   TIMESTAMPTZ,
     delivery_status TEXT NOT NULL DEFAULT 'PENDING',
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
@@ -42,6 +45,9 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAU
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_error TEXT;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_held INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
 CREATE TABLE IF NOT EXISTS normal_setup_state (trade_day DATE NOT NULL, symbol TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (trade_day, symbol));
 """
@@ -72,7 +78,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, mfe_r=0.0, mae_r=0.0, bars_held=0, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -128,6 +134,15 @@ class MemoryStore:
                         r["r_result"] = r_result
                     if status not in ("OPEN", "TP1"):
                         r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
+
+    def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int):
+        with self.lock:
+            for row in self.rows:
+                if row["id"] == sid:
+                    row["mfe_r"] = max(float(row.get("mfe_r") or 0.0), float(mfe_r))
+                    row["mae_r"] = max(float(row.get("mae_r") or 0.0), float(mae_r))
+                    row["bars_held"] = max(int(row.get("bars_held") or 0), int(bars_held))
+                    return
 
     def load_normal_states(self, day: date) -> dict:
         with self.lock:
@@ -263,6 +278,16 @@ class PostgresStore(MemoryStore):
         self._run("UPDATE signals SET status=%s, r_result=COALESCE(%s, r_result), "
                   "closed_at=CASE WHEN %s THEN now() ELSE closed_at END WHERE id=%s",
                   (status, r_result, closed, sid))
+
+    def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int):
+        self._run(
+            """UPDATE signals
+               SET mfe_r=GREATEST(COALESCE(mfe_r, 0), %s),
+                   mae_r=GREATEST(COALESCE(mae_r, 0), %s),
+                   bars_held=GREATEST(COALESCE(bars_held, 0), %s)
+               WHERE id=%s""",
+            (float(mfe_r), float(mae_r), int(bars_held), sid),
+        )
 
     def stats(self, since: date) -> list:
         rows = self._run(
