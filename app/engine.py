@@ -19,7 +19,7 @@ import pandas as pd
 from . import mod_normal
 from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED)
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R)
 from .indicators import add_indicators, compute_features
 from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
 from .telegram import format_signal, send
@@ -356,13 +356,25 @@ class Engine:
                                 )
                             else:
                                 sig.reasons.append("15m DI context unavailable (informational only)")
-                            cands.append(sig)
-                            state.update({"phase":"COOLDOWN","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                            sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
+                            # Persist TRIGGERED as its own lifecycle stage. The next
+                            # completed candle advances it to COOLDOWN; this prevents a
+                            # restart between scans from skipping the triggered stage.
+                            state.update({"phase":"TRIGGERED","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
                             d["rejects"]["rsi_triggered"] += 1
                         else:
                             state.update({"phase":"IDLE","side":0,"invalidated":False})
                             d["rejects"][why or "trigger_rejected"] += 1
                     else: d["rejects"]["armed_waiting_rsi"] += 1
+                elif phase == "TRIGGERED":
+                    # The trigger candle was already evaluated and persisted. On
+                    # the next completed candle, enter the existing four-bar
+                    # cooldown (the current candle is cooldown bar one).
+                    valid=mod.setup_side(f)==side
+                    invalidated=bool(state.get("invalidated",False)) or not valid
+                    state.update({"phase":"COOLDOWN","side":side,
+                                  "cooldown_remaining":3,"invalidated":invalidated})
+                    d["rejects"]["triggered_to_cooldown"] += 1
                 elif phase == "COOLDOWN":
                     valid=mod.setup_side(f)==side
                     invalidated=bool(state.get("invalidated",False)) or not valid
@@ -383,10 +395,10 @@ class Engine:
                     cands=[x for x in cands if not (x.symbol==sym and x.bar_ts==f.bar_ts)]
                     d["rejects"]["state_storage_error"] += 1
                     log.exception("could not persist Normal state for %s; signal suppressed",sym)
-                if state.get("phase") in ("ARMED","COOLDOWN"): watching += 1
+                if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
                 continue
             elif sig:
-                cands.append(sig)
+                sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
             else:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
@@ -506,10 +518,20 @@ class Engine:
                 d["rejects"]["cycle_top_n"] += 1
                 continue
             message = format_signal(sig)
+            shadow = None
+            try:
+                from .telegram_polling import get_persistent_state
+                if get_persistent_state(self.store, "training_shadow_mode", False):
+                    from .training import shadow_result
+                    proposal = get_persistent_state(self.store, "training_proposal", None)
+                    shadow = shadow_result(getattr(sig, "indicator_snapshot", {}), proposal)
+            except Exception:
+                log.exception("shadow evaluation failed; live signal remains unaffected")
             row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
-                   "score": sig.score, "trig": sig.trigger,
+                   "score": sig.score, "trig": sig.trigger, "cost_r": TRAINING_COST_R,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
+                               "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
                                "option": dict(sig.option or {}), "telegram_text": message}}
             try:
                 sid = self.store.add_signal(row)
@@ -524,7 +546,8 @@ class Engine:
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
-                result = self.notify(message)
+                result = (send(message, signal_id=sid) if self.notify is send
+                          else self.notify(message))
                 ok = result is not False
                 delivery_error = None if ok else "notify returned false"
             except Exception as e:
@@ -554,7 +577,8 @@ class Engine:
             return
         for item in pending:
             try:
-                result = self.notify(item["text"])
+                result = (send(item["text"], signal_id=item["id"]) if self.notify is send
+                          else self.notify(item["text"]))
                 ok = result is not False
                 self.store.mark_notification(item["id"], ok, None if ok else "notify returned false")
                 if not ok:
