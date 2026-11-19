@@ -43,7 +43,8 @@ def _pair(name, default):
 UPSTOX_TOKEN = _env("UPSTOX_ACCESS_TOKEN", "")          # Analytics token works (1 year)
 TELEGRAM_TOKEN = _env("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID", "")
-DATABASE_URL = _env("DATABASE_URL", "")                  # Render Postgres internal URL
+DATABASE_URL = _env("NEON_DATABASE_URL", _env("DATABASE_URL", ""))  # Neon PostgreSQL; DATABASE_URL remains a compatibility alias
+REQUIRE_PERSISTENT_DB = _b("REQUIRE_PERSISTENT_DB", "1")
 ADMIN_TOKEN = _env("ADMIN_TOKEN", "").strip()            # required for /force /stats /diag; fail closed
 KEEPALIVE = _b("KEEPALIVE", "1")                         # self-ping so the free dyno stays awake
 RUN_SCHEDULER = _b("RUN_SCHEDULER", "1")
