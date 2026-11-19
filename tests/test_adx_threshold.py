@@ -3,9 +3,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from types import SimpleNamespace
 
 from app import mod_normal
 
