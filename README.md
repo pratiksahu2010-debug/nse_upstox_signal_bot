@@ -19,9 +19,9 @@ CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 22, +DI > -DI, followed
 
 PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 22, -DI > +DI, followed by RSI14 crossing downward through 42.
 
-ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 22 and may only be raised. The 15-minute EMA trend feature is calculated but is not an active setup gate in app/mod_normal.py.
+ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 22 and may only be raised. The strategy uses completed 5-minute candles only; no higher-timeframe context is calculated.
 
-The master prompt includes proposed strategy changes: 15-minute DI informational-only, a fixed 150-symbol list, score gate and different targets. They are not silently applied because the existing strategy was explicitly locked. The current 5-minute DI gate, RSI-cross trigger, universe resolver and ATR target parameters remain unchanged.
+Proposed higher-timeframe context and other strategy changes are not silently applied because the existing strategy was explicitly locked. The current 5-minute DI gate, RSI-cross trigger, universe resolver and ATR target parameters remain unchanged.
 
 ## Risk and state
 
@@ -30,7 +30,7 @@ Default underlying reference levels:
 - TP1: 1.5R.
 - TP2: 2.0R.
 
-Completed 15-minute +DI/-DI/ADX values are calculated from completed 15-minute bars and attached to signal explanations as informational context only; they do not alter the current 5-minute strategy eligibility. The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
+The first completed candle observed after startup is a baseline. A qualifying setup can arm a symbol; the same direction must remain valid and RSI must cross the relevant threshold before a signal is created. A signal enters a four-completed-bar cooldown. State is persisted in PostgreSQL. MFE, MAE and completed bars held are persisted per signal and calculated only from candles after the signal candle; the signal candle's pre-entry range is excluded. The state machine is implemented in app/engine.py and app/mod_normal.py.
 
 ## Universe and option selection — current behaviour
 
@@ -137,7 +137,7 @@ Remaining master-prompt work and live-verification gaps:
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
 4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2 and option-premium outcome tracking remain incomplete. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
 5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
-6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. Separately, completed 15-minute +DI/-DI/ADX is now calculated and displayed as informational-only context; it never changes signal eligibility.
+6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. No 15-minute context is calculated or displayed.
 
 No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
 

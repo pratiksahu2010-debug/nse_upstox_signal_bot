@@ -89,49 +89,6 @@ def rvol_time_of_day(df: pd.DataFrame, lookback_days: int = 5, min_days: int = 3
     return float(v.iloc[-1] / base) if base and base > 0 else 0.0
 
 
-def htf_trend(df: pd.DataFrame, minutes: int = 15) -> str:
-    """'bull' / 'bear' / 'neutral' from COMPLETED 15-minute bars (EMA9 vs EMA21 and close)."""
-    rule = f"{minutes}min"
-    agg = df.resample(rule, closed="left", label="left").agg(
-        {"close": "last", "volume": "sum"}
-    )
-    cnt = df["close"].resample(rule, closed="left", label="left").count()
-    agg = agg[cnt > 0]
-    cnt = cnt[cnt > 0]
-    per_bin = minutes // 5
-    if len(cnt) and cnt.iloc[-1] < per_bin:
-        # last bin still forming only if it is at the tail of the data
-        agg = agg.iloc[:-1]
-    if len(agg) < 25:
-        return "neutral"
-    c = agg["close"]
-    e9, e21 = ema(c, IND.ema_fast), ema(c, IND.ema_slow)
-    if c.iloc[-1] > e21.iloc[-1] and e9.iloc[-1] > e21.iloc[-1]:
-        return "bull"
-    if c.iloc[-1] < e21.iloc[-1] and e9.iloc[-1] < e21.iloc[-1]:
-        return "bear"
-    return "neutral"
-
-
-def htf_di_context(df: pd.DataFrame, minutes: int = 15):
-    """Return (+DI, -DI, ADX) from completed 15m OHLCV bars only."""
-    rule = f"{minutes}min"
-    agg = df.resample(rule, closed="left", label="left").agg({
-        "open": "first", "high": "max", "low": "min",
-        "close": "last", "volume": "sum",
-    })
-    count = df["close"].resample(rule, closed="left", label="left").count()
-    agg = agg[count == minutes // 5]
-    if len(agg) < IND.adx_n + 1:
-        return None, None, None
-    htf = add_indicators(agg)
-    row = htf.iloc[-1]
-    values = (row["pdi"], row["mdi"], row["adx"])
-    if any(pd.isna(value) for value in values):
-        return None, None, None
-    return tuple(float(value) for value in values)
-
-
 def cross_info(df: pd.DataFrame, lookback: int = 20):
     """(crossings in last `lookback` bars, bars since latest EMA9/21 cross or None)."""
     d = (df["ema9"] - df["ema21"]).to_numpy()[-(lookback + 1):]
@@ -167,13 +124,9 @@ class Features:
     rvol: float
     crosses20: int
     cross_age: Optional[int]
-    htf: str
     body_frac: float
     close_pos: float          # 0 = closed on low, 1 = closed on high
     range_atr: float
-    htf_pdi: Optional[float] = None
-    htf_mdi: Optional[float] = None
-    htf_adx: Optional[float] = None
 
 
 def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features]:
@@ -187,7 +140,6 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
     rng = float(r.high - r.low)
     body = abs(float(r.close - r.open))
     n_cross, age = cross_info(df)
-    htf_pdi, htf_mdi, htf_adx = htf_di_context(df)
     ts = df.index[-1]
     return Features(
         bar_ts=ts,
@@ -204,9 +156,7 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
         atr=float(r.atr), atr_pct=float(r.atr / r.close * 100),
         rvol=rvol_time_of_day(df),
         crosses20=n_cross, cross_age=age,
-        htf=htf_trend(df),
         body_frac=(body / rng) if rng > 0 else 0.0,
         close_pos=((float(r.close - r.low)) / rng) if rng > 0 else 0.5,
         range_atr=rng / float(r.atr),
-        htf_pdi=htf_pdi, htf_mdi=htf_mdi, htf_adx=htf_adx,
     )
