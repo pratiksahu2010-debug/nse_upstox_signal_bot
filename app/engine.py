@@ -360,21 +360,12 @@ class Engine:
                             # Persist TRIGGERED as its own lifecycle stage. The next
                             # completed candle advances it to COOLDOWN; this prevents a
                             # restart between scans from skipping the triggered stage.
-                            state.update({"phase":"TRIGGERED","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                            state.update({"phase":"COOLDOWN","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
                             d["rejects"]["rsi_triggered"] += 1
                         else:
                             state.update({"phase":"IDLE","side":0,"invalidated":False})
                             d["rejects"][why or "trigger_rejected"] += 1
                     else: d["rejects"]["armed_waiting_rsi"] += 1
-                elif phase == "TRIGGERED":
-                    # The trigger candle was already evaluated and persisted. On
-                    # the next completed candle, enter the existing four-bar
-                    # cooldown (the current candle is cooldown bar one).
-                    valid=mod.setup_side(f)==side
-                    invalidated=bool(state.get("invalidated",False)) or not valid
-                    state.update({"phase":"COOLDOWN","side":side,
-                                  "cooldown_remaining":3,"invalidated":invalidated})
-                    d["rejects"]["triggered_to_cooldown"] += 1
                 elif phase == "COOLDOWN":
                     valid=mod.setup_side(f)==side
                     invalidated=bool(state.get("invalidated",False)) or not valid
@@ -395,7 +386,7 @@ class Engine:
                     cands=[x for x in cands if not (x.symbol==sym and x.bar_ts==f.bar_ts)]
                     d["rejects"]["state_storage_error"] += 1
                     log.exception("could not persist Normal state for %s; signal suppressed",sym)
-                if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
+                if state.get("phase") in ("ARMED","COOLDOWN"): watching += 1
                 continue
             elif sig:
                 sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
