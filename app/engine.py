@@ -436,18 +436,20 @@ class Engine:
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
         d["_persisted_candidates"] = set()
-        d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
-        persisted_candidates = d.pop("_persisted_candidates", set())
-        for (key, triggered_state) in pending_trigger_states.items():
-            final_state = _trigger_state_after_persist(
-                triggered_state, key in persisted_candidates
-            )
-            try:
-                self.store.save_normal_state(day, key[0], final_state)
-                self.states[(module, key[0])].normal_state = final_state
-            except Exception:
-                d["rejects"]["trigger_state_storage_error"] += 1
-                log.exception("could not commit trigger lifecycle state for %s", key[0])
+        try:
+            d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+        finally:
+            persisted_candidates = d.pop("_persisted_candidates", set())
+            for (sym, bar_ts), triggered_state in pending_trigger_states.items():
+                final_state = _trigger_state_after_persist(
+                    triggered_state, (sym, bar_ts) in persisted_candidates
+                )
+                try:
+                    self.store.save_normal_state(day, sym, final_state)
+                    self.states[(module, sym)].normal_state = final_state
+                except Exception:
+                    d["rejects"]["trigger_state_storage_error"] += 1
+                    log.exception("could not commit trigger lifecycle state for %s", sym)
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
