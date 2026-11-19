@@ -151,15 +151,16 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     monkeypatch.setattr(mod_normal, "rsi_triggered", lambda _features, _side: True)
     monkeypatch.setattr(mod_normal, "evaluate", lambda *_args: (signal, None))
 
+    persisted = [False]
+
     def dispatch(_module, _cfg, candidates, _now, _force, diag):
         assert candidates == [signal]
-        if diag["simulate_persist"]:
+        if persisted[0]:
             diag["_persisted_candidates"].add(("TEST", bar_ts.isoformat()))
-        return 1 if diag["simulate_persist"] else 0
+        return 1 if persisted[0] else 0
 
     monkeypatch.setattr(engine, "_dispatch", dispatch)
 
-    engine.diag["normal"] = {"simulate_persist": False}
     engine.cycle("normal", now)
     assert store.load_normal_states(now.date())["TEST"]["phase"] == "IDLE"
 
@@ -167,7 +168,7 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     armed_again = dict(state)
     store.save_normal_state(now.date(), "TEST", armed_again)
     engine.states[("normal", "TEST")].normal_state = armed_again
-    engine.diag["normal"] = {"simulate_persist": True}
+    persisted[0] = True
     engine.cycle("normal", now)
     persisted_state = store.load_normal_states(now.date())["TEST"]
     assert persisted_state["phase"] == "TRIGGERED"
