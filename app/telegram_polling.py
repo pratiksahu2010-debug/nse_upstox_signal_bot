@@ -38,6 +38,26 @@ def get_persistent_state(store, key, default=None):
     return _memory_state(store).get(key, default)
 
 
+
+def save_training_proposal(store, proposal):
+    """Persist proposal history and maintain a latest-proposal pointer."""
+    history = get_persistent_state(store, "training_proposals", [])
+    history = [item for item in history if str(item.get("id")) != str(proposal.get("id"))]
+    history.append(proposal)
+    set_persistent_state(store, "training_proposals", history[-100:])
+    set_persistent_state(store, "training_proposal", proposal)
+
+
+def find_training_proposal(store, proposal_id):
+    history = get_persistent_state(store, "training_proposals", [])
+    for proposal in history:
+        if str(proposal.get("id")) == str(proposal_id):
+            return proposal
+    latest = get_persistent_state(store, "training_proposal", None)
+    if latest and str(latest.get("id")) == str(proposal_id):
+        return latest
+    return None
+
 def set_persistent_state(store, key, value):
     _ensure_state_table(store)
     if getattr(store, "kind", "") == "postgres":
@@ -193,22 +213,26 @@ class TelegramPoller:
             proposal = report.get("proposal")
             if proposal:
                 proposal["report"] = {k: report.get(k) for k in ("samples", "train", "validation", "held_out_test", "baseline_test")}
-                set_persistent_state(self.store, "training_proposal", proposal)
+                save_training_proposal(self.store, proposal)
                 self._reply(f"<b>Proposal {proposal['id']} created.</b>\nUse /proposals to inspect. Nothing was applied.")
             else:
                 self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples', 0)} · required {report.get('required', 'n/a')}. No proposal.")
         elif command == "/proposals":
+            history = get_persistent_state(self.store, "training_proposals", [])
             proposal = get_persistent_state(self.store, "training_proposal", None)
-            if not proposal:
+            if not history and not proposal:
                 self._reply("No proposal. Run /train after enough completed outcomes.")
             else:
-                diff = proposal.get("diff", {})
-                lines = [f"<b>Proposal {proposal.get('id')} · {proposal.get('state', 'PENDING')}</b>"]
-                lines.extend(f"{k}: {v}" for k, v in diff.items())
-                report = proposal.get("report") or {}
-                for section in ("train", "validation", "held_out_test", "baseline_test"):
-                    if report.get(section): lines.append(f"{section}: {report[section]}")
-                lines.append("Research-only filter. Approval does not change the live strategy.")
+                lines = ["<b>Training proposals (latest 10)</b>"]
+                for item in history[-10:]:
+                    lines.append(f"{item.get('id')} · {item.get('state', 'PENDING')} · {item.get('diff', {})}")
+                if proposal:
+                    lines.append("Latest validation and held-out report:")
+                    report = proposal.get("report") or {}
+                    for section in ("train", "validation", "held_out_test", "baseline_test"):
+                        if report.get(section):
+                            lines.append(f"{section}: {report[section]}")
+                lines.append("Research-only. No proposal changes the live strategy.")
                 self._reply("\n".join(lines))
         elif command == "/shadow":
             if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
@@ -218,12 +242,12 @@ class TelegramPoller:
                 set_persistent_state(self.store, "training_shadow_mode", enabled)
                 self._reply("Shadow evaluation enabled; proposed filters are logged only and cannot block alerts." if enabled else "Shadow evaluation disabled.")
         elif command in ("/approve", "/rollback"):
-            proposal = get_persistent_state(self.store, "training_proposal", None)
-            if not proposal or len(parts) != 2 or parts[1] != str(proposal.get("id")):
-                self._reply(f"Usage: {command} <proposal_id> · inspect /proposals first.")
+            proposal = find_training_proposal(self.store, parts[1]) if len(parts) == 2 else None
+            if not proposal:
+                self._reply(f"Usage: {command} <known_proposal_id> · inspect /proposals first.")
             else:
                 proposal["state"] = "APPROVED_STAGED" if command == "/approve" else "ROLLED_BACK"
-                set_persistent_state(self.store, "training_proposal", proposal)
+                save_training_proposal(self.store, proposal)
                 self._reply("Approved proposal staged for manual review; live strategy unchanged." if command == "/approve" else "Proposal rolled back; live strategy unchanged.")
         elif command == "/export":
             rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))
