@@ -145,3 +145,12 @@ No automatic order execution is implemented. No strategy thresholds are automati
 ### Outcome timing metrics
 
 The offline training export includes `bars_to_tp1` and `bars_to_tp2`: completed 5-minute bars from the signal candle to the first target touch. These are descriptive outcome metrics only; they do not change live entry, exit, alert, or lifecycle rules. Same-candle stop/target ambiguity follows the existing conservative tracker rule (stop first; after TP1, breakeven first).
+
+
+### Option-premium and cost reconciliation
+
+When `OPTION_PREMIUM_TRACKING=1`, each new signal stores its selected option instrument key and a fresh signal-time quote reference. Long option entry is marked at the ask (LTP is a tagged fallback); subsequent exits are marked at the bid (LTP fallback). The bot records option-premium MFE/MAE in points and percent, last quote timestamp/age, quote sample count and source. A missing or stale entry quote is never backfilled from a later quote, so that signal remains marked `MISSING_ENTRY_QUOTE` rather than receiving a biased premium excursion.
+
+The quote-based premium result includes the bid/ask spread naturally. Optional fee/slippage estimates are controlled by `OPTION_EST_ROUND_TRIP_FEE_PCT` and `OPTION_EST_SLIPPAGE_BPS_PER_SIDE`; both default to zero and are explicitly estimates, not Upstox tariff calculations. Configure them from your own current broker cost schedule before using estimated net premium returns. The existing underlying-R training cost setting is separate.
+
+Because this bot is signal-only and never places orders, it cannot know actual fills, actual brokerage or actual slippage automatically. To reconcile a real or paper execution from your broker record, send `/actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>`. The command stores brokerage, other statutory/transaction fees and slippage separately and records cost per option unit (quantity is entered in units, not lots); it does not invent execution prices or alter signal outcomes. These actual cost fields are included in `/export`. Historical signals created before option contract keys were retained cannot be backfilled with reliable option-premium history.

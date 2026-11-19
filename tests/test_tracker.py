@@ -54,3 +54,45 @@ def test_memory_store_persists_target_time_metrics_in_training_rows():
     row = store.training_rows(date(2026, 11, 1))[0]
     assert row["bars_to_tp1"] == 3
     assert row["bars_to_tp2"] == 7
+
+
+
+def test_memory_store_persists_option_tracking_and_manual_actual_costs():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "ABC", "side": "LONG",
+        "bar_ts": datetime(2026, 11, 18, 10, tzinfo=timezone.utc),
+        "trade_day": date(2026, 11, 18), "entry": 100, "sl": 98,
+        "tp1": 103, "tp2": 104, "score": 0, "trig": "rsi",
+        "option_tracking": {"instrument_key": "NSE_FO|ABC", "entry_price": 12.5, "mfe_pct": 8.0},
+        "details": {"indicator_snapshot": {"adx": 25}},
+    })
+    store.update_option_tracking(sid, {
+        "instrument_key": "NSE_FO|ABC", "entry_price": 12.5, "mfe_pct": 12.0,
+        "mae_pct": -4.0, "tracking_status": "TRACKING",
+    })
+    assert store.update_actual_option_costs(sid, 50, 80.0, 40.0, 30.0, "2026-11-19T10:00:00+05:30")
+    row = store.training_rows(date(2026, 11, 1))[0]
+    assert row["option_tracking"]["mfe_pct"] == 12.0
+    assert row["actual_option_costs"]["brokerage_rupees"] == 80.0
+    assert row["actual_option_costs"]["other_fees_rupees"] == 40.0
+    assert row["actual_option_costs"]["total_cost_rupees"] == 150.0
+    assert row["actual_option_costs"]["cost_per_unit"] == 3.0
+
+
+def test_memory_store_rejects_invalid_actual_cost_inputs():
+    store = MemoryStore()
+    assert not store.update_actual_option_costs(1, 0, 5.0, 5.0, 2.0, "2026-11-19T10:00:00+05:30")
+    assert not store.update_actual_option_costs(1, 10, -1.0, 0.0, 2.0, "2026-11-19T10:00:00+05:30")
+
+
+def test_memory_store_requires_option_contract_for_actual_costs():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal", "symbol": "ABC", "side": "LONG",
+        "bar_ts": datetime(2026, 11, 18, 10, tzinfo=timezone.utc),
+        "trade_day": date(2026, 11, 18), "entry": 100, "sl": 98,
+        "tp1": 103, "tp2": 104, "score": 0, "trig": "rsi",
+        "details": {},
+    })
+    assert not store.update_actual_option_costs(sid, 50, 80.0, 40.0, 30.0, "2026-11-19T10:00:00+05:30")

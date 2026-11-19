@@ -5,6 +5,7 @@ Stored: every alert (dedupe via UNIQUE), cooldown/daily-cap state, and trade out
 """
 import json
 import logging
+import math
 import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -72,9 +73,12 @@ MIGRATIONS = (
     (6, "time_to_target_metrics", """ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS bars_to_tp1 INTEGER;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp2 INTEGER"""),
+    (7, "option_premium_and_actual_costs", """ALTER TABLE signals
+        ADD COLUMN IF NOT EXISTS option_tracking JSONB NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS actual_option_costs JSONB NOT NULL DEFAULT '{}'::jsonb"""),
 )
 
-COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
+COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result, details, option_tracking, actual_option_costs"
 
 
 def _row_to_dict(r) -> dict:
@@ -172,7 +176,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, bars_to_tp1=None, bars_to_tp2=None, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, bars_to_tp1=None, bars_to_tp2=None, option_tracking=dict(s.get("option_tracking") or {}), actual_option_costs={}, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -255,7 +259,9 @@ class MemoryStore:
                     "snapshot":details.get("indicator_snapshot",{}),"status":row.get("status"),
                     "gross_r":row.get("r_result"),"net_r":row.get("net_r",row.get("r_result")),
                     "auto_label":row.get("auto_label"),"user_label":row.get("user_label"),"first_hit":row.get("first_hit"),
-                    "bars_to_tp1":row.get("bars_to_tp1"),"bars_to_tp2":row.get("bars_to_tp2")})
+                    "bars_to_tp1":row.get("bars_to_tp1"),"bars_to_tp2":row.get("bars_to_tp2"),
+                    "option_tracking":dict(row.get("option_tracking") or {}),
+                    "actual_option_costs":dict(row.get("actual_option_costs") or {})})
             return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
@@ -278,6 +284,38 @@ class MemoryStore:
                     if bars_to_tp2 is not None and row.get("bars_to_tp2") is None:
                         row["bars_to_tp2"] = int(bars_to_tp2)
                     return
+
+    def update_option_tracking(self, sid: int, tracking: dict):
+        with self.lock:
+            for row in self.rows:
+                if row["id"] == sid:
+                    row["option_tracking"] = dict(tracking or {})
+                    return True
+        return False
+
+    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
+                                   other_fees_rupees: float, slippage_rupees: float,
+                                   updated_at: str) -> bool:
+        if quantity <= 0 or not all(math.isfinite(float(v)) and float(v) >= 0
+                                   for v in (brokerage_rupees, other_fees_rupees, slippage_rupees)):
+            return False
+        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
+        costs = {
+            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
+            "other_fees_rupees": float(other_fees_rupees),
+            "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
+            "cost_per_unit": total / int(quantity), "updated_at": updated_at,
+            "source": "MANUAL_BROKER_RECONCILIATION",
+        }
+        with self.lock:
+            for row in self.rows:
+                if row["id"] == sid:
+                    tracking = row.get("option_tracking") or {}
+                    if not tracking.get("instrument_key"):
+                        return False
+                    row["actual_option_costs"] = costs
+                    return True
+        return False
 
     def load_normal_states(self, day: date) -> dict:
         with self.lock:
@@ -393,11 +431,12 @@ class PostgresStore(MemoryStore):
 
     def add_signal(self, s: dict) -> Optional[int]:
         row = self._run(
-            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r, option_tracking, actual_option_costs)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
                ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id""",
             (s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"], s["entry"], s["sl"], s["tp1"],
-             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0)), fetch="one")
+             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0),
+             json.dumps(s.get("option_tracking") or {}), json.dumps({})), fetch="one")
         return row[0] if row else None
 
     def pending_notifications(self, limit: int = 100) -> list:
@@ -460,7 +499,8 @@ class PostgresStore(MemoryStore):
 
     def training_rows(self, since: date) -> list:
         rows=self._run("""SELECT id,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
-            status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit,bars_to_tp1,bars_to_tp2
+            status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit,bars_to_tp1,bars_to_tp2,
+            COALESCE(option_tracking,'{}'::jsonb),COALESCE(actual_option_costs,'{}'::jsonb)
             FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
         out=[]
         for row in rows:
@@ -468,7 +508,9 @@ class PostgresStore(MemoryStore):
             out.append({"id":row[0],"bar_ts":row[1],"symbol":row[2],"side":row[3],"bars_held":row[4],
                 "snapshot":snap,"status":row[6],"gross_r":row[7],"net_r":row[8],
                 "auto_label":row[9],"user_label":row[10],"first_hit":row[11],
-                "bars_to_tp1":row[12],"bars_to_tp2":row[13]})
+                "bars_to_tp1":row[12],"bars_to_tp2":row[13],
+                "option_tracking":row[14] if isinstance(row[14],dict) else json.loads(row[14] or "{}"),
+                "actual_option_costs":row[15] if isinstance(row[15],dict) else json.loads(row[15] or "{}")})
         return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
@@ -491,6 +533,36 @@ class PostgresStore(MemoryStore):
                WHERE id=%s""",
             (bars_to_tp1, bars_to_tp2, sid),
         )
+
+    def update_option_tracking(self, sid: int, tracking: dict):
+        self._run(
+            """UPDATE signals SET option_tracking=COALESCE(option_tracking,'{}'::jsonb) || %s::jsonb
+               WHERE id=%s""",
+            (json.dumps(tracking or {}), sid),
+        )
+        return True
+
+    def update_actual_option_costs(self, sid: int, quantity: int, brokerage_rupees: float,
+                                   other_fees_rupees: float, slippage_rupees: float,
+                                   updated_at: str) -> bool:
+        if quantity <= 0 or not all(math.isfinite(float(v)) and float(v) >= 0
+                                   for v in (brokerage_rupees, other_fees_rupees, slippage_rupees)):
+            return False
+        total = float(brokerage_rupees) + float(other_fees_rupees) + float(slippage_rupees)
+        costs = {
+            "quantity": int(quantity), "brokerage_rupees": float(brokerage_rupees),
+            "other_fees_rupees": float(other_fees_rupees),
+            "slippage_rupees": float(slippage_rupees), "total_cost_rupees": total,
+            "cost_per_unit": total / int(quantity), "updated_at": updated_at,
+            "source": "MANUAL_BROKER_RECONCILIATION",
+        }
+        row = self._run(
+            """UPDATE signals SET actual_option_costs=%s::jsonb
+               WHERE id=%s AND COALESCE(option_tracking,'{}'::jsonb) ? 'instrument_key'
+               RETURNING id""",
+            (json.dumps(costs), sid), "one",
+        )
+        return bool(row)
 
     def performance_report(self, since: date) -> dict:
         rows = self._run(

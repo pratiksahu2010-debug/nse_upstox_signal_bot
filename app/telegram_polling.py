@@ -166,6 +166,7 @@ class TelegramPoller:
                 "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
                 "/train · /proposals · /approve <id> · /rollback <id>\n"
                 "/export · /shadow on|off · /pause · /resume\n"
+                "/actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>\n"
                 "Signal-only: no order placement or execution.")
         elif command == "/status":
             status = self.engine.status()
@@ -253,12 +254,15 @@ class TelegramPoller:
             rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))
             output = io.StringIO()
             fields = ["id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r",
-                      "bars_to_tp1", "bars_to_tp2", "auto_label", "user_label", "snapshot"]
+                      "bars_to_tp1", "bars_to_tp2", "option_tracking", "actual_option_costs",
+                      "auto_label", "user_label", "snapshot"]
             writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             for row in rows:
                 export_row = dict(row)
                 export_row["snapshot"] = json.dumps(row.get("snapshot") or {}, separators=(",", ":"))
+                export_row["option_tracking"] = json.dumps(row.get("option_tracking") or {}, separators=(",", ":"))
+                export_row["actual_option_costs"] = json.dumps(row.get("actual_option_costs") or {}, separators=(",", ":"))
                 writer.writerow(export_row)
             try:
                 response = requests.post(
@@ -274,6 +278,28 @@ class TelegramPoller:
             except Exception:
                 log.exception("Telegram CSV export failed")
                 self._reply("CSV export failed. Check Telegram connectivity and bot permissions.")
+        elif command == "/actualcost":
+            if len(parts) != 6:
+                self._reply("Usage: /actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees> — enter values from your broker record.")
+            else:
+                try:
+                    signal_id = int(parts[1])
+                    quantity = int(parts[2])
+                    brokerage = float(parts[3])
+                    other_fees = float(parts[4])
+                    slippage = float(parts[5])
+                    if quantity <= 0 or min(brokerage, other_fees, slippage) < 0:
+                        raise ValueError("costs must be non-negative; quantity must be positive")
+                    ok = self.store.update_actual_option_costs(
+                        signal_id, quantity, brokerage, other_fees, slippage,
+                        datetime.now(IST).isoformat()
+                    )
+                except (ValueError, TypeError):
+                    ok = False
+                self._reply(
+                    "Actual brokerage, other fees and slippage saved separately from your broker reconciliation."
+                    if ok else "Could not save costs. Check the option signal ID, quantity and non-negative rupee amounts."
+                )
         elif command == "/pause":
             self.engine.paused = True
             set_persistent_state(self.store, "paused", True)
