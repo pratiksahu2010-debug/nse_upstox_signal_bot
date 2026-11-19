@@ -185,7 +185,16 @@ class UpstoxMarketStream:
             updates[key] = quote
 
         with self._lock:
-            self._quotes.update(updates)
+            for key, quote in updates.items():
+                previous = self._quotes.get(key)
+                previous_ts = int(previous.get("exchange_ts_ms") or 0) if previous else 0
+                incoming_ts = int(quote.get("exchange_ts_ms") or 0)
+                # Upstox WebSocket delivery can be reordered. Do not let an
+                # older exchange tick roll the cached quote backwards. A zero
+                # timestamp is treated as unknown for backward compatibility.
+                if previous_ts > 0 and incoming_ts > 0 and incoming_ts < previous_ts:
+                    continue
+                self._quotes[key] = quote
             self.ticks += len(updates)
             self.last_message_at = now
             self.connected = True

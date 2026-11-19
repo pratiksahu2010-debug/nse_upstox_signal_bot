@@ -30,3 +30,38 @@ def test_market_feed_decodes_live_quote_and_depth_without_touching_strategy():
     assert quote["bid"] == 123.40
     assert quote["ask"] == 123.50
     assert stream.diagnostics()["ticks"] == 1
+
+
+
+def test_market_feed_does_not_replace_newer_quote_with_out_of_order_tick():
+    stream = UpstoxMarketStream(FakeClient())
+
+    newer = pb.FeedResponse()
+    market = newer.feeds["NSE_EQ|TEST"].fullFeed.marketFF
+    market.ltpc.ltp = 125.0
+    market.ltpc.ltt = 1795000002000
+    market.vtt = 26000
+    market.oi = 1100
+    depth = market.marketLevel.bidAskQuote.add()
+    depth.bidP = 124.9
+    depth.askP = 125.1
+    stream._consume(newer.SerializeToString())
+
+    older = pb.FeedResponse()
+    market = older.feeds["NSE_EQ|TEST"].fullFeed.marketFF
+    market.ltpc.ltp = 123.0
+    market.ltpc.ltt = 1795000001000
+    market.vtt = 25000
+    market.oi = 1000
+    depth = market.marketLevel.bidAskQuote.add()
+    depth.bidP = 122.9
+    depth.askP = 123.1
+    stream._consume(older.SerializeToString())
+
+    quote = stream.quote("NSE_EQ|TEST")
+    assert quote["ltp"] == 125.0
+    assert quote["exchange_ts_ms"] == 1795000002000
+    assert quote["volume"] == 26000
+    assert quote["bid"] == 124.9
+    assert quote["ask"] == 125.1
+    assert stream.diagnostics()["ticks"] == 2
