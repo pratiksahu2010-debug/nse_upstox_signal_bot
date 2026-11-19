@@ -96,12 +96,10 @@ def htf_trend(df: pd.DataFrame, minutes: int = 15) -> str:
         {"close": "last", "volume": "sum"}
     )
     cnt = df["close"].resample(rule, closed="left", label="left").count()
-    agg = agg[cnt > 0]
-    cnt = cnt[cnt > 0]
     per_bin = minutes // 5
-    if len(cnt) and cnt.iloc[-1] < per_bin:
-        # last bin still forming only if it is at the tail of the data
-        agg = agg.iloc[:-1]
+    # A 15m candle is complete only when all three source 5m candles exist.
+    # Drop partial bins anywhere in the frame, not just a partial final bin.
+    agg = agg[cnt == per_bin]
     if len(agg) < 25:
         return "neutral"
     c = agg["close"]
