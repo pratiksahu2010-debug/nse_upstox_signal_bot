@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from app.training import build_proposal, walk_forward
+from app.training import walk_forward, effective_label
 from app.db import MemoryStore
 
 
@@ -49,6 +49,7 @@ def test_user_feedback_is_persisted_separately_and_overrides_training_label():
     row = store.training_rows(date(2026, 11, 1))[0]
     assert row["auto_label"] == "LOSS"
     assert row["user_label"] == "GOOD"
+    assert effective_label(row) == "GOOD"
     assert row["snapshot"]["adx"] == 25
     assert row["net_r"] == -1.0
     assert row["first_hit"] == "SL"
