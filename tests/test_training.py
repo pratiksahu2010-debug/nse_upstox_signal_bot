@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from app.training import walk_forward, effective_label, purge_overlapping_outcomes
+from app.training import walk_forward, effective_label, purge_overlapping_outcomes, _score
 from app.db import MemoryStore
 
 
@@ -108,3 +108,13 @@ def test_memory_training_rows_include_symbol_and_holding_duration():
     row = store.training_rows(date(2026, 11, 1))[0]
     assert row["symbol"] == "ABC"
     assert row["bars_held"] == 3
+
+
+def test_score_reports_profit_factor_and_drawdown_from_net_r():
+    rows = [{"net_r": 1.0}, {"net_r": -2.0}, {"net_r": 1.0}]
+    report = _score(rows)
+    assert report["sum_net_r"] == 0.0
+    assert report["profit_factor"] == 1.0
+    assert report["max_drawdown_r"] == 2.0
+    assert report["avg_win_r"] == 1.0
+    assert report["avg_loss_r"] == -2.0
