@@ -173,7 +173,7 @@ class MemoryStore:
     def add_signal(self, s: dict) -> Optional[int]:
         with self.lock:
             for r in self.rows:
-                if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
+                if (r["module"], r["symbol"], r["bar_ts"]) == (s["module"], s["symbol"], s["bar_ts"]):
                     return None
             self._id += 1
             row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, bars_to_tp1=None, bars_to_tp2=None, option_tracking=dict(s.get("option_tracking") or {}), actual_option_costs={}, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
@@ -430,14 +430,63 @@ class PostgresStore(MemoryStore):
         self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
 
     def add_signal(self, s: dict) -> Optional[int]:
-        row = self._run(
-            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r, option_tracking, actual_option_costs)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
-               ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id""",
-            (s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"], s["entry"], s["sl"], s["tp1"],
-             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0),
-             json.dumps(s.get("option_tracking") or {}), json.dumps({})), fetch="one")
-        return row[0] if row else None
+        """Insert at most one direction for a module/symbol/candle across workers."""
+        from psycopg2 import InterfaceError, OperationalError
+
+        bar_ts = s["bar_ts"]
+        if getattr(bar_ts, "tzinfo", None) is not None:
+            bar_ts = bar_ts.astimezone(timezone.utc)
+        lock_key = chr(31).join((s["module"], s["symbol"], bar_ts.isoformat()))
+        insert_sql = """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r, option_tracking, actual_option_costs)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+                        ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id"""
+        params = (
+            s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"],
+            s["entry"], s["sl"], s["tp1"], s["tp2"], s["score"], s["trig"],
+            json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0),
+            json.dumps(s.get("option_tracking") or {}), json.dumps({}),
+        )
+        for attempt in range(2):
+            conn = self.pool.getconn()
+            discard = False
+            try:
+                with conn.cursor() as cur:
+                    # Transaction-scoped lock closes the race between the existence
+                    # check and INSERT, including overlapping app instances/workers.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (lock_key,),
+                    )
+                    cur.execute(
+                        "SELECT id FROM signals WHERE module=%s AND symbol=%s AND bar_ts=%s LIMIT 1",
+                        (s["module"], s["symbol"], s["bar_ts"]),
+                    )
+                    if cur.fetchone():
+                        conn.commit()
+                        return None
+                    cur.execute(insert_sql, params)
+                    row = cur.fetchone()
+                conn.commit()
+                return row[0] if row else None
+            except (OperationalError, InterfaceError):
+                discard = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    log.warning("Postgres connection failed during signal insert; retrying once")
+                    continue
+                raise
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    discard = True
+                raise
+            finally:
+                self.pool.putconn(conn, close=discard or bool(conn.closed))
+        return None
 
     def pending_notifications(self, limit: int = 100) -> list:
         rows = self._run("SELECT id, details->>'telegram_text' FROM signals WHERE delivery_status='PENDING' "
