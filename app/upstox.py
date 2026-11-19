@@ -84,6 +84,7 @@ class UpstoxClient:
         # candle data. Once that happens, stop calling it until a new token is
         # installed; this prevents a warning/request on every scan cycle.
         self._ltp_auth_disabled = False
+        self._optional_data_disabled = set()
 
     def _session(self):
         # requests.Session is not documented as thread-safe. Each worker owns one.
@@ -106,6 +107,7 @@ class UpstoxClient:
             self.last_error = ""
             self.last_status = None
             self._ltp_auth_disabled = False
+            self._optional_data_disabled.clear()
 
     def diagnostics(self) -> dict:
         with self._state_lock:
@@ -118,6 +120,7 @@ class UpstoxClient:
                 "last_status": self.last_status,
                 "request_count": self.request_count,
                 "failure_count": self.failure_count,
+                "optional_data_disabled": sorted(self._optional_data_disabled),
             }
 
     @staticmethod
@@ -307,6 +310,61 @@ class UpstoxClient:
                 log.warning("ltp lookup failed: %s", e)
             return {}
 
+
+
+    def _optional_market_data(self, endpoint: str, path: str, params: dict):
+        """Optional quote/option endpoints never latch the core candle-data auth state."""
+        with self._state_lock:
+            if endpoint in self._optional_data_disabled:
+                return {}
+        try:
+            return self._get(path, params, retries=2, latch_auth=False, api_version="2.0")
+        except UpstoxError as exc:
+            if "optional endpoint auth error" in str(exc):
+                with self._state_lock:
+                    first = endpoint not in self._optional_data_disabled
+                    self._optional_data_disabled.add(endpoint)
+                if first:
+                    log.warning("optional Upstox %s endpoint rejected token; disabling this endpoint until token refresh", endpoint)
+                return {}
+            raise
+
+    def option_contracts(self, underlying_key: str, expiry_date: Optional[str] = None) -> list:
+        """Return active option contracts from Upstox for an underlying instrument."""
+        if not underlying_key:
+            return []
+        params = {"instrument_key": underlying_key}
+        if expiry_date:
+            params["expiry_date"] = expiry_date
+        payload = self._optional_market_data("option_contracts", "/v2/option/contract", params)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return data if isinstance(data, list) else []
+
+    def option_chain(self, underlying_key: str, expiry_date: str) -> list:
+        """Return the Upstox put/call chain for an underlying and exact expiry date."""
+        if not underlying_key or not expiry_date:
+            return []
+        payload = self._optional_market_data(
+            "option_chain", "/v2/option/chain",
+            {"instrument_key": underlying_key, "expiry_date": expiry_date},
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return data if isinstance(data, list) else []
+
+    def full_quotes(self, instrument_keys: list[str]) -> dict:
+        """Fetch full market snapshots in API-sized batches (maximum 500 keys per call)."""
+        keys = list(dict.fromkeys(key for key in instrument_keys if key))
+        out = {}
+        for start in range(0, len(keys), 500):
+            batch = keys[start:start + 500]
+            payload = self._optional_market_data(
+                "full_quotes", "/v2/market-quote/quotes",
+                {"instrument_key": ",".join(batch)},
+            )
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, dict):
+                out.update(data)
+        return out
 
 # --------------------------------------------------------------------------- #
 # Instrument master (streamed: the NSE file is far too big to json.load on 512 MB)

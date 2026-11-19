@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from .config import ENGINE, IST
+from .config import ENGINE, IST, UPSTOX_TOKEN
 from .engine import Engine, floor5
 
 log = logging.getLogger("scheduler")
@@ -28,6 +28,18 @@ def loop(engine: Engine, stop: threading.Event):
             engine.housekeeping(now)
         except Exception:
             log.exception("housekeeping failed")
+        # Start the V3 live feed only after the validated instrument universe exists.
+        # Closed 5m REST candles remain authoritative for strategy decisions.
+        if engine.uni and UPSTOX_TOKEN:
+            try:
+                from .market_stream import UpstoxMarketStream
+                if engine.market_stream is None:
+                    engine.market_stream = UpstoxMarketStream(engine.client)
+                    engine.market_stream.start([item.key for item in engine.uni.normal])
+                else:
+                    engine.market_stream.set_keys([item.key for item in engine.uni.normal])
+            except Exception:
+                log.exception("could not start/update Upstox market feed")
         # candle that just closed and is past the fetch delay?
         bar_close = floor5(now)
         due = bar_close + timedelta(seconds=ENGINE.fetch_delay_sec)
@@ -42,6 +54,8 @@ def loop(engine: Engine, stop: threading.Event):
                 except Exception:
                     log.exception("run_boundary failed")
         stop.wait(2.0)
+    if engine.market_stream is not None:
+        engine.market_stream.stop()
     log.info("scheduler stopped")
 
 

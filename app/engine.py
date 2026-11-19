@@ -69,6 +69,8 @@ class Engine:
         self.started = datetime.now(IST)
         self.last_error = ""
         self.last_outbox_retry_at = None
+        self.paused = False
+        self.market_stream = None
 
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
@@ -264,6 +266,12 @@ class Engine:
             stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
             if stale:
                 d["rejects"]["stale_data"] += 1
+                continue
+
+            # A pause suppresses new signal decisions but leaves existing open-signal
+            # outcome tracking above this point active.
+            if self.paused:
+                d["rejects"]["paused"] += 1
                 continue
 
             # Process the lifecycle once per newly completed 5m candle.
