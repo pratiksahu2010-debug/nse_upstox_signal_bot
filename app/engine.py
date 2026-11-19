@@ -356,10 +356,11 @@ class Engine:
                                 )
                             else:
                                 sig.reasons.append("15m DI context unavailable (informational only)")
-                            sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
-                            # Persist TRIGGERED as its own lifecycle stage. The next
-                            # completed candle advances it to COOLDOWN; this prevents a
-                            # restart between scans from skipping the triggered stage.
+                            sig.indicator_snapshot = {
+                                k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                                for k, v in vars(f).items()
+                            }
+                            cands.append(sig)
                             state.update({"phase":"COOLDOWN","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
                             d["rejects"]["rsi_triggered"] += 1
                         else:
@@ -389,7 +390,11 @@ class Engine:
                 if state.get("phase") in ("ARMED","COOLDOWN"): watching += 1
                 continue
             elif sig:
-                sig.indicator_snapshot = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vars(f).items()}; cands.append(sig)
+                sig.indicator_snapshot = {
+                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                    for k, v in vars(f).items()
+                }
+                cands.append(sig)
             else:
                 d["rejects"][why] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
