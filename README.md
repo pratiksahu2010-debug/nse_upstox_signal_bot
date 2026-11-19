@@ -49,7 +49,7 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /pause
 - /resume
 
-Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. No command can execute a trade.
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset and pause state are stored in the bot_state table. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
 
 ## API
 
@@ -57,7 +57,7 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
-- GET /stats?days=30 — admin-authenticated performance summary.
+- GET /stats?days=30 — admin-authenticated performance summary, including average MFE/MAE when available.
 - GET /symbols — currently resolved universe.
 - GET /config — safe, non-secret runtime configuration.
 - POST /pause and POST /resume — admin-authenticated pause controls.
