@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
+
+from app import mod_normal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,3 +57,23 @@ def test_normal_adx_minimum_defaults_to_19():
         check=True,
     )
     assert result.stdout.strip() == "14 19.0"
+
+
+def test_normal_setup_side_accepts_adx_19_and_rejects_below(monkeypatch):
+    monkeypatch.setattr(mod_normal, "C", SimpleNamespace(adx_min=19.0))
+    common = {
+        "adx": 19.0,
+        "ema9": 2.0,
+        "ema21": 1.0,
+        "close": 2.0,
+        "vwap": 1.0,
+        "pdi": 30.0,
+        "mdi": 20.0,
+    }
+    assert mod_normal.setup_side(SimpleNamespace(**common)) == 1
+
+    short = dict(common, ema9=1.0, ema21=2.0, close=1.0, vwap=2.0, pdi=20.0, mdi=30.0)
+    assert mod_normal.setup_side(SimpleNamespace(**short)) == -1
+
+    below = dict(common, adx=18.99)
+    assert mod_normal.setup_side(SimpleNamespace(**below)) == 0
