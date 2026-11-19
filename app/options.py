@@ -97,3 +97,89 @@ def stream_quote_snapshot(quote: dict):
             "sell": [{"price": quote.get("ask")}],
         },
     }
+
+
+
+def _positive(value):
+    number = _finite_number(value)
+    return number if number is not None and number > 0 else None
+
+
+def initial_option_tracking(instrument_key: str, metrics: dict, max_quote_age_sec: int,
+                            fee_pct: float = 0.0, slippage_bps_per_side: float = 0.0) -> dict:
+    """Freeze a conservative option entry reference from a fresh signal-time quote.
+
+    Long option entries use the ask; LTP is a clearly tagged fallback. If no fresh
+    quote exists, the entry remains missing rather than being backfilled later.
+    """
+    metrics = metrics if isinstance(metrics, dict) else {}
+    age = _finite_number(metrics.get("quote_age_sec"))
+    fresh = age is not None and age <= max_quote_age_sec
+    bid, ask, ltp = (_positive(metrics.get(k)) for k in ("bid", "ask", "ltp"))
+    entry_price = ask if fresh and ask is not None else ltp if fresh else None
+    entry_source = "ASK" if entry_price is not None and ask is not None else "LTP" if entry_price is not None else "MISSING"
+    fee = max(0.0, _finite_number(fee_pct) or 0.0)
+    slip = max(0.0, _finite_number(slippage_bps_per_side) or 0.0) * 2.0 / 100.0
+    return {
+        "instrument_key": instrument_key,
+        "entry_price": entry_price,
+        "entry_source": entry_source,
+        "entry_bid": bid if fresh else None,
+        "entry_ask": ask if fresh else None,
+        "entry_ltp": ltp if fresh else None,
+        "entry_quote_timestamp": metrics.get("quote_timestamp") if fresh else None,
+        "last_bid": bid if fresh else None,
+        "last_ask": ask if fresh else None,
+        "last_ltp": ltp if fresh else None,
+        "last_quote_timestamp": metrics.get("quote_timestamp") if fresh else None,
+        "last_quote_age_sec": age if fresh else None,
+        "mark_source": "BID" if bid is not None else "LTP" if ltp is not None else None,
+        "mfe_points": 0.0 if entry_price is not None else None,
+        "mae_points": 0.0 if entry_price is not None else None,
+        "mfe_pct": 0.0 if entry_price is not None else None,
+        "mae_pct": 0.0 if entry_price is not None else None,
+        "estimated_fee_pct": fee,
+        "estimated_slippage_pct": slip,
+        "estimated_total_cost_pct": fee + slip,
+        "estimated_net_mfe_pct": 0.0 if entry_price is not None else None,
+        "estimated_net_mae_pct": 0.0 if entry_price is not None else None,
+        "quote_samples": 1 if fresh else 0,
+        "tracking_status": "TRACKING" if entry_price is not None else "MISSING_ENTRY_QUOTE",
+    }
+
+
+def update_option_tracking(state: dict, metrics: dict, max_quote_age_sec: int) -> dict:
+    """Update quote-based premium MFE/MAE using executable sell-side bid marks."""
+    out = dict(state or {})
+    metrics = metrics if isinstance(metrics, dict) else {}
+    age = _finite_number(metrics.get("quote_age_sec"))
+    if age is None or age > max_quote_age_sec:
+        return out
+    entry = _positive(out.get("entry_price"))
+    if entry is None:
+        out["tracking_status"] = "MISSING_ENTRY_QUOTE"
+        return out
+    timestamp = metrics.get("quote_timestamp")
+    if timestamp is not None and str(timestamp) == str(out.get("last_quote_timestamp")):
+        return out
+    bid, ask, ltp = (_positive(metrics.get(k)) for k in ("bid", "ask", "ltp"))
+    mark = bid if bid is not None else ltp
+    if mark is None:
+        return out
+    source = "BID" if bid is not None else "LTP"
+    points = mark - entry
+    pct = points / entry * 100.0
+    out["mfe_points"] = max(float(out.get("mfe_points") or 0.0), points)
+    out["mae_points"] = min(float(out.get("mae_points") or 0.0), points)
+    out["mfe_pct"] = max(float(out.get("mfe_pct") or 0.0), pct)
+    out["mae_pct"] = min(float(out.get("mae_pct") or 0.0), pct)
+    total_cost = float(out.get("estimated_total_cost_pct") or 0.0)
+    out["estimated_net_mfe_pct"] = float(out["mfe_pct"]) - total_cost
+    out["estimated_net_mae_pct"] = float(out["mae_pct"]) - total_cost
+    out.update({
+        "last_bid": bid, "last_ask": ask, "last_ltp": ltp,
+        "last_quote_timestamp": timestamp, "last_quote_age_sec": age,
+        "mark_source": source, "quote_samples": int(out.get("quote_samples") or 0) + 1,
+        "tracking_status": "TRACKING",
+    })
+    return out
