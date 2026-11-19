@@ -261,7 +261,7 @@ class Engine:
                 continue
             for r in open_rows.get(sym, []):
                 status, rr = simulate(r, ind, cfg.session_end)
-                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind)
+                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
                 try:
                     self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
                 except Exception:

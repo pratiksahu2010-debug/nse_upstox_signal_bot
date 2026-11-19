@@ -75,3 +75,30 @@ def test_memory_store_keeps_best_excursion_seen():
     assert row["mfe_r"] == 1.5
     assert row["mae_r"] == 0.6
     assert row["bars_held"] == 2
+
+
+def test_mfe_mae_stops_at_exit_bar_and_ignores_later_price_extremes():
+    index = pd.DatetimeIndex([
+        pd.Timestamp("2026-11-17 10:20", tz=IST),
+        pd.Timestamp("2026-11-17 10:25", tz=IST),
+        pd.Timestamp("2026-11-17 10:30", tz=IST),
+    ])
+    frame = pd.DataFrame(
+        {"high": [150.0, 101.0, 200.0], "low": [50.0, 97.0, 99.0], "close": [100.0, 98.0, 150.0]},
+        index=index,
+    )
+    row = {
+        "side": "LONG",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST),
+        "entry": 100.0,
+        "sl": 98.0,
+        "tp1": 105.0,
+        "tp2": 110.0,
+    }
+
+    mfe, mae, bars, last_bar = measure_excursions(row, frame)
+
+    assert mfe == 0.5
+    assert mae == 1.5
+    assert bars == 1
+    assert last_bar == pd.Timestamp("2026-11-17 10:25", tz=IST).to_pydatetime()
