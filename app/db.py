@@ -379,7 +379,7 @@ class PostgresStore(MemoryStore):
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id""",
             (s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"], s["entry"], s["sl"], s["tp1"],
-             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {}))), fetch="one")
+             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0)), fetch="one")
         return row[0] if row else None
 
     def pending_notifications(self, limit: int = 100) -> list:
