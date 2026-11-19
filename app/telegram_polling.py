@@ -253,7 +253,7 @@ class TelegramPoller:
             rows = self.store.training_rows(datetime.now(IST).date() - timedelta(days=30))
             output = io.StringIO()
             fields = ["id", "bar_ts", "side", "status", "first_hit", "gross_r", "net_r",
-                      "auto_label", "user_label", "snapshot"]
+                      "bars_to_tp1", "bars_to_tp2", "auto_label", "user_label", "snapshot"]
             writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             for row in rows:
