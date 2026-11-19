@@ -13,13 +13,13 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 
 ## Strategy — preserved current implementation
 
-There is one active strategy module: Normal NSE F&O. The existing strategy code in app/mod_normal.py has been kept unchanged.
+There is one active strategy module: Normal NSE F&O. The existing strategy logic in app/mod_normal.py is retained; the approved 5-minute ADX minimum is 19.
 
-CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 22, +DI > -DI, followed by RSI14 crossing upward through 52.
+CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 19, +DI > -DI, followed by RSI14 crossing upward through 52.
 
 PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 22, -DI > +DI, followed by RSI14 crossing downward through 42.
 
-ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 22 and may only be raised. The strategy uses completed 5-minute candles only; no higher-timeframe context is calculated.
+ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 19 and may be raised with the environment variable. The strategy uses completed 5-minute candles only; no higher-timeframe context is calculated.
 
 Proposed higher-timeframe context and other strategy changes are not silently applied because the existing strategy was explicitly locked. The current 5-minute DI gate, RSI-cross trigger, universe resolver and ATR target parameters remain unchanged.
 
@@ -90,7 +90,7 @@ Runtime controls:
 - UPSTOX_STREAM_ENABLED: 1 (Upstox V3 underlying/selected-option feed)
 - REQUIRE_PERSISTENT_DB: 1
 - KEEPALIVE: 1
-- N_ADX_MIN: 22 (hard floor)
+- N_ADX_MIN: 19 (hard floor)
 - N_SL_ATR: 1.2
 - N_TP1_R: 1.5
 - N_TP2_R: 2.0
