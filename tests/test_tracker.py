@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 import pandas as pd
 
 from app.db import MemoryStore
-from app.tracker import measure_target_times
+from app.tracker import measure_excursions, measure_target_times
 
 
 def _frame(rows):
@@ -114,3 +114,36 @@ def test_memory_training_rows_include_score_trigger_and_excursions():
     assert row["mfe_r"] == 2.1
     assert row["mae_r"] == 0.4
     assert row["bars_held"] == 5
+
+
+def test_excursions_exclude_unknown_favourable_extreme_on_stop_bar():
+    df = _frame([[100, 110, 97, 99, 1000]])
+    mfe, mae, bars, last = measure_excursions(_signal(), df)
+    assert mfe == 0.0
+    assert mae == 1.0
+    assert bars == 1
+    assert last == df.index[-1].to_pydatetime()
+
+
+def test_short_excursions_exclude_unknown_favourable_extreme_on_stop_bar():
+    df = _frame([[100, 103, 90, 101, 1000]])
+    mfe, mae, bars, _ = measure_excursions(_signal("SHORT"), df)
+    assert mfe == 0.0
+    assert mae == 1.0
+    assert bars == 1
+
+
+def test_excursions_use_known_tp1_and_tp2_barriers_not_full_exit_bar_range():
+    tp1_be = _frame([[100, 105, 99.5, 100, 1000]])
+    assert measure_excursions(_signal(), tp1_be)[:3] == (1.5, 0.0, 1)
+
+    tp2 = _frame([[100, 105, 100.5, 104.5, 1000]])
+    assert measure_excursions(_signal(), tp2)[:3] == (2.0, 0.0, 1)
+
+
+def test_excursions_keep_full_ranges_before_terminal_bar_only():
+    df = _frame([[100, 102, 99, 101, 1000], [100, 110, 97, 99, 1000]])
+    mfe, mae, bars, _ = measure_excursions(_signal(), df)
+    assert mfe == 1.0
+    assert mae == 1.0
+    assert bars == 2
