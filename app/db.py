@@ -168,7 +168,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -375,8 +375,8 @@ class PostgresStore(MemoryStore):
 
     def add_signal(self, s: dict) -> Optional[int]:
         row = self._run(
-            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id""",
             (s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"], s["entry"], s["sl"], s["tp1"],
              s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {}))), fetch="one")
