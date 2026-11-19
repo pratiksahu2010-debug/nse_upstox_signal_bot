@@ -23,7 +23,7 @@ from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, 
 from .indicators import add_indicators, compute_features
 from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
 from .telegram import format_signal, send
-from .tracker import measure_excursions, simulate
+from .tracker import measure_excursions, measure_target_times, simulate
 from .universe import Universe, build_universe, pick_option
 
 log = logging.getLogger("engine")
@@ -291,11 +291,17 @@ class Engine:
             for r in open_rows.get(sym, []):
                 status, rr = simulate(r, ind, cfg.session_end)
                 mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
+                bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind)
                 try:
                     self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
                 except Exception:
                     d["rejects"]["excursion_storage_error"] += 1
                     log.exception("could not persist MFE/MAE for signal id=%s", r["id"])
+                try:
+                    self.store.update_target_times(r["id"], bars_to_tp1, bars_to_tp2)
+                except Exception:
+                    d["rejects"]["target_time_storage_error"] += 1
+                    log.exception("could not persist target times for signal id=%s", r["id"])
                 if status != r["status"]:
                     self.store.update_outcome(r["id"], status, rr)
 

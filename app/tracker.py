@@ -71,6 +71,46 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
     return "OPEN", None
 
 
+def measure_target_times(row: dict, df: pd.DataFrame):
+    """Return completed 5m bars to first TP1 and TP2 touch; SL wins same-bar ties."""
+    risk = abs(float(row["entry"]) - float(row["sl"]))
+    if risk <= 0:
+        return None, None
+    side = 1 if row["side"] == "LONG" else -1
+    entry = float(row["entry"])
+    sl, tp1, tp2 = float(row["sl"]), float(row["tp1"]), float(row["tp2"])
+    after = df[df.index > _ts(row["bar_ts"])]
+    stage, bars_held = "OPEN", 0
+    bars_to_tp1 = bars_to_tp2 = None
+    for _bar_ts, bar in after.iterrows():
+        bars_held += 1
+        low, high = float(bar["low"]), float(bar["high"])
+        if stage == "OPEN":
+            hit_sl = low <= sl if side > 0 else high >= sl
+            hit_tp1 = high >= tp1 if side > 0 else low <= tp1
+            if hit_sl:
+                break
+            if hit_tp1:
+                bars_to_tp1 = bars_held
+                stage = "TP1"
+                hit_be = low <= entry if side > 0 else high >= entry
+                hit_tp2 = high >= tp2 if side > 0 else low <= tp2
+                if hit_be:
+                    break
+                if hit_tp2:
+                    bars_to_tp2 = bars_held
+                    break
+        else:
+            hit_be = low <= entry if side > 0 else high >= entry
+            hit_tp2 = high >= tp2 if side > 0 else low <= tp2
+            if hit_be:
+                break
+            if hit_tp2:
+                bars_to_tp2 = bars_held
+                break
+    return bars_to_tp1, bars_to_tp2
+
+
 def measure_excursions(
     row: dict,
     df: pd.DataFrame,

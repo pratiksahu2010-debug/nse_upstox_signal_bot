@@ -140,3 +140,8 @@ Remaining master-prompt work and live-verification gaps:
 6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. Separately, completed 15-minute +DI/-DI/ADX is now calculated and displayed as informational-only context; it never changes signal eligibility.
 
 No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
+
+
+### Outcome timing metrics
+
+The offline training export includes `bars_to_tp1` and `bars_to_tp2`: completed 5-minute bars from the signal candle to the first target touch. These are descriptive outcome metrics only; they do not change live entry, exit, alert, or lifecycle rules. Same-candle stop/target ambiguity follows the existing conservative tracker rule (stop first; after TP1, breakeven first).
