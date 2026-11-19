@@ -241,13 +241,18 @@ def symbols():
         return {"ready": False, "configured_symbols": 0, "validated_symbols": 0, "active_symbols": []}
     items = engine.uni.normal
     configured = list(engine.uni.configured_symbols)
+    active = {item.symbol for item in items}
+    duplicates = sorted({symbol for symbol in configured if configured.count(symbol) > 1})
+    missing = sorted(set(configured) - active)
     return {
-        "ready": len(configured) == 150,
+        "ready": bool(getattr(engine.uni, "ready", False)) and len(configured) == 150 and len(items) == 150 and not duplicates and not missing,
         "configured_symbols": len(configured),
         "configured_symbol_list": configured,
         "validated_symbols": len(items),
+        "missing_symbols": missing,
         "invalid_symbols": engine.uni.dropped,
-        "duplicate_symbols": [],
+        "duplicate_symbols": duplicates,
+        "validation_errors": getattr(engine.uni, "validation_errors", []),
         "active_symbols": [{"symbol": item.symbol, "instrument_key": item.key, "is_index": item.is_index} for item in items],
     }
 

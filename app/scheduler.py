@@ -54,7 +54,7 @@ def loop(engine: Engine, stop: threading.Event):
             log.exception("housekeeping failed")
         # Start the V3 live feed only after the validated instrument universe exists.
         # Closed 5m REST candles remain authoritative for strategy decisions.
-        if engine.uni and UPSTOX_TOKEN:
+        if engine.uni and getattr(engine.uni, "ready", True) and UPSTOX_TOKEN:
             try:
                 from .market_stream import UpstoxMarketStream
                 if engine.market_stream is None:

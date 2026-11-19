@@ -17,11 +17,10 @@ import numpy as np
 import pandas as pd
 
 from . import mod_normal
-from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED)
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC)
 from .indicators import add_indicators, compute_features
-from .options import snapshot_metrics, validate_option_liquidity, stream_quote_snapshot
+from .options import snapshot_metrics, validate_option_liquidity
 from .telegram import format_signal, send
 from .tracker import measure_excursions, simulate
 from .universe import Universe, build_universe, pick_option
@@ -73,7 +72,6 @@ class Engine:
         self.last_outbox_retry_at = None
         self.paused = False
         self.market_stream = None
-        self._stream_keys = []
         self.auth_alerted_at = None
 
     # ------------------------------------------------------------------ universe
@@ -92,19 +90,6 @@ class Engine:
                 raise
             return
         self.uni = uni
-        # One V3 feed for the fixed underlying universe; option contracts are
-        # added lazily when a qualified setup resolves its contract.
-        underlying_keys = [item.key for item in uni.normal if item.key]
-        self._stream_keys = list(dict.fromkeys(underlying_keys))
-        if UPSTOX_STREAM_ENABLED and getattr(self.client, "_token", ""):
-            try:
-                if self.market_stream is None:
-                    self.market_stream = UpstoxMarketStream(self.client)
-                    self.market_stream.start(self._stream_keys)
-                else:
-                    self.market_stream.set_keys(self._stream_keys)
-            except Exception:
-                log.exception("could not start/update Upstox V3 market stream")
         # Rebuild the complete single universe once per trading day.
         self.states = {}
         for info in uni.normal:
@@ -236,6 +221,13 @@ class Engine:
              "fetch_seconds": 0.0, "evaluate_seconds": 0.0, "dispatch_seconds": 0.0,
              "duration_seconds": 0.0}
         self.diag[module] = d
+        if self.uni is not None and not getattr(self.uni, "ready", True):
+            d["scope"] = "universe_incomplete"
+            d["symbols"] = len(getattr(self.uni, "configured_symbols", []))
+            d["loaded"] = len(self.uni.normal)
+            d["rejects"]["universe_incomplete"] = 1
+            d["errors"] = list(getattr(self.uni, "validation_errors", []))[:10]
+            return d
         if (seg, day) in self.closed_days and not force:
             d["scope"] = "market_closed_today"
             return d
@@ -413,23 +405,15 @@ class Engine:
 
         # Optional full quote snapshots provide bid/ask, volume and OI.
         # The liquidity hard gate is OFF by default to preserve current alert eligibility.
-        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or self.market_stream is not None) and prepared:
+        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS) and prepared:
             option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
             snapshots = {}
-            # Prefer the live V3 stream cache; REST is an optional fallback for missing keys.
-            if self.market_stream is not None:
-                for key in option_keys:
-                    raw_snapshot = stream_quote_snapshot(self.market_stream.quote(key))
-                    if raw_snapshot:
-                        snapshots[key] = raw_snapshot
-            needs_rest = [key for key in option_keys if key not in snapshots]
-            if needs_rest and (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS):
-                try:
-                    snapshots.update(self.client.full_quotes(needs_rest) or {})
-                except Exception as exc:
-                    log.warning("optional full option quote snapshot failed: %s", type(exc).__name__)
+            try:
+                snapshots = self.client.full_quotes(option_keys) or {}
+            except Exception as exc:
+                log.warning("optional full option quote snapshot failed: %s", type(exc).__name__)
             retained = []
             for sig in prepared:
                 key = sig.option.get("_key")
@@ -549,16 +533,6 @@ class Engine:
             return None
         # Keep the instrument key internal until all candidate contracts are
         # collected and quoted in one optional batch request.
-        if rec.key and self.market_stream is not None:
-            if rec.key not in self._stream_keys:
-                self._stream_keys.append(rec.key)
-                # Keep the active subscription set bounded; current underlyings
-                # remain subscribed and only the latest 1,000 option keys are retained.
-                base_keys = [item.key for item in self.uni.normal if item.key]
-                base_set = set(base_keys)
-                option_keys = [key for key in self._stream_keys if key not in base_set][-1000:]
-                self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
-                self.market_stream.set_keys(self._stream_keys)
         return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
                 "ltp": None, "_key": rec.key}
 
@@ -654,6 +628,8 @@ class Engine:
             "started": self.started.isoformat(),
             "store": getattr(self.store, "kind", "?"),
             "universe": ({
+                "ready": getattr(self.uni, "ready", True),
+                "validation_errors": getattr(self.uni, "validation_errors", []),
                 "configured_symbols": len(self.uni.configured_symbols),
                 "validated_symbols": len(self.uni.normal),
                 "invalid_symbols": self.uni.dropped,

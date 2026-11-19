@@ -29,6 +29,8 @@ class Universe:
     dropped: dict = field(default_factory=dict)
     built_on: str = ""
     configured_symbols: list = field(default_factory=list)
+    ready: bool = True
+    validation_errors: list = field(default_factory=list)
 
 
 def _pick_future(futs: list, today: datetime, roll_days: int = 2):
@@ -75,16 +77,18 @@ def resolve_nse(rows: Iterable[dict], today: datetime, stock_candidates: list,
         if typ == "FUT":
             item = (exp, row.get("instrument_key"), int(row.get("lot_size") or 0),
                     row.get("trading_symbol", ""), float(row.get("tick_size") or 0.05))
-            if underlying_type == "INDEX" or und in explicit_indices:
+            is_index = underlying_type == "INDEX" or und in explicit_indices
+            if is_index and (not explicit_indices or und in explicit_indices):
                 index_futs.setdefault(und, []).append(item)
             elif und in want:
                 fut_by_und.setdefault(und, []).append(item)
-        elif (typ in ("CE", "PE") and exp <= horizon
-              and (und in want or underlying_type == "INDEX" or und in explicit_indices)):
-            opts.setdefault(und, []).append(OptionRec(
-                exp, float(row.get("strike_price") or 0), typ,
-                row.get("instrument_key", ""), row.get("trading_symbol", ""),
-                int(row.get("lot_size") or 0)))
+        elif typ in ("CE", "PE") and exp <= horizon:
+            is_index = underlying_type == "INDEX" or und in explicit_indices
+            if und in want or (is_index and (not explicit_indices or und in explicit_indices)):
+                opts.setdefault(und, []).append(OptionRec(
+                    exp, float(row.get("strike_price") or 0), typ,
+                    row.get("instrument_key", ""), row.get("trading_symbol", ""),
+                    int(row.get("lot_size") or 0)))
 
     uni = Universe(built_on=today.strftime("%Y-%m-%d"), options=opts)
     dropped_stocks = []
@@ -152,8 +156,27 @@ def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
         "fixed F&O universe: configured=%d active=%d stocks=%d indices=%d invalid=%s",
         len(uni.configured_symbols), len(uni.normal), stock_count, index_count, uni.dropped,
     )
-    if not uni.normal:
-        raise RuntimeError("NSE master resolved no eligible midcap stocks or index derivatives")
+    configured = set(uni.configured_symbols)
+    validated = {item.symbol for item in uni.normal}
+    missing = sorted(configured - validated)
+    unexpected = sorted(validated - configured)
+    validation_errors = []
+    if len(uni.configured_symbols) != S.EXPECTED_UNIVERSE_SIZE:
+        validation_errors.append(
+            f"configured universe count {len(uni.configured_symbols)} != {S.EXPECTED_UNIVERSE_SIZE}"
+        )
+    if len(uni.normal) != S.EXPECTED_UNIVERSE_SIZE:
+        validation_errors.append(
+            f"validated universe count {len(uni.normal)} != {S.EXPECTED_UNIVERSE_SIZE}"
+        )
+    if missing:
+        validation_errors.append(f"missing configured underlyings: {missing}")
+    if unexpected:
+        validation_errors.append(f"unexpected underlyings: {unexpected}")
+    uni.validation_errors = validation_errors
+    uni.ready = not validation_errors
+    if not uni.ready:
+        log.error("fixed F&O universe is incomplete: %s", validation_errors)
     return uni
 
 
