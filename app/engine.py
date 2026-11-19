@@ -322,23 +322,28 @@ class Engine:
                 status, rr = simulate(r, ind, cfg.session_end)
                 mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
                 bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind)
+                # Do not close a signal until all training metrics for this
+                # replay have been persisted. The row remains OPEN/TP1 on any
+                # transient metrics write failure, so the next scan retries it.
+                metrics_persisted = True
                 try:
                     self.store.update_excursions(r["id"], mfe_r, mae_r, bars_held)
                 except Exception:
+                    metrics_persisted = False
                     d["rejects"]["excursion_storage_error"] += 1
                     log.exception("could not persist MFE/MAE for signal id=%s", r["id"])
                 try:
                     self.store.update_target_times(r["id"], bars_to_tp1, bars_to_tp2)
                 except Exception:
+                    metrics_persisted = False
                     d["rejects"]["target_time_storage_error"] += 1
                     log.exception("could not persist target times for signal id=%s", r["id"])
-                if status != r["status"]:
+                if status != r["status"] and metrics_persisted:
                     try:
                         self.store.update_outcome(r["id"], status, rr)
                     except Exception:
-                        # Outcome analytics are secondary to evaluating the current
-                        # completed candle. A transient write failure must not abort
-                        # the scan and suppress otherwise-valid new signals.
+                        # Keep the row open so the next cycle retries the outcome
+                        # write; never abort evaluation of new signals.
                         d["rejects"]["outcome_storage_error"] += 1
                         log.exception("could not persist outcome for signal id=%s", r["id"])
 
