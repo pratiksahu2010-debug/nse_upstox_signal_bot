@@ -8,7 +8,7 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 - Gunicorn with Uvicorn worker; exactly one worker because the scanner is in-process.
 - Upstox REST remains the source of completed 5-minute OHLCV candles and instrument master data.
 - Upstox Market Data Feed V3 WebSocket provides live quote/feed-health observations. Live ticks do not create signals.
-- Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias.
+- Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias. The database bootstrap is tracked through an idempotent schema_migrations version table.
 - Telegram Bot API getUpdates long polling; no webhook.
 
 ## Strategy — preserved current implementation
@@ -126,7 +126,7 @@ Still not complete against the full master prompt:
 1. Exactly 150 fixed static underlyings and startup count validation.
 2. Wiring the option-chain endpoint into contract selection and validating the optional liquidity gate with the real Analytics Token; the full-quote REST gate is implemented but opt-in.
 3. Subscribing selected option contracts to the WebSocket option-chain mode and using that stream as a quote source.
-4. Dedicated schema migration system and expanded telemetry/configuration/feedback persistence.
+4. Expanded telemetry/configuration/feedback persistence beyond the current signals, setup-state, migration and command-state tables.
 5. Time-stop and expanded performance analytics; MFE/MAE tracking is implemented.
 6. No-look-ahead walk-forward backtesting.
 7. The master prompt's 15-minute DI informational-only requirement conflicts with the current strategy lock because the existing 5-minute DI direction is a hard gate. No strategy change has been made.
