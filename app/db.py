@@ -433,7 +433,10 @@ class PostgresStore(MemoryStore):
         """Insert at most one direction for a module/symbol/candle across workers."""
         from psycopg2 import InterfaceError, OperationalError
 
-        lock_key = f'{s["module"]}\\x1f{s["symbol"]}\\x1f{s["bar_ts"].isoformat()}'
+        bar_ts = s["bar_ts"]
+        if getattr(bar_ts, "tzinfo", None) is not None:
+            bar_ts = bar_ts.astimezone(timezone.utc)
+        lock_key = chr(31).join((s["module"], s["symbol"], bar_ts.isoformat()))
         insert_sql = """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r, option_tracking, actual_option_costs)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
                         ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id"""
