@@ -56,6 +56,8 @@ def test_outcome_write_failure_does_not_abort_new_signal_scan(monkeypatch):
 
     def dispatch(_module, _cfg, candidates, _now, _force, diag):
         assert candidates == [signal]
+        # Match _dispatch: lifecycle advances only after durable persistence.
+        diag["_persisted_candidates"].add((signal.symbol, signal.bar_ts.isoformat()))
         return 1
 
     monkeypatch.setattr(engine, "_dispatch", dispatch)
