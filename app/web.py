@@ -220,7 +220,7 @@ def signals(request: Request, limit: int = 20):
 
 
 @app.get("/stats")
-def stats(request: Request, days: int = 30):
+def stats(request: Request, days: int = 30, detailed: bool = False):
     candidate, error = _require_engine()
     if error:
         return error
@@ -228,6 +228,8 @@ def stats(request: Request, days: int = 30):
         return JSONResponse(status_code=401, content={"error": "unauthorized"})
     days = max(1, min(365, days))
     since = (datetime.now(IST) - timedelta(days=days)).date()
+    if detailed:
+        return jsonable_encoder(candidate.store.performance_report(since))
     rows = candidate.store.stats(since)
     for row in rows:
         row["win_rate_pct"] = round(100 * row["wins"] / row["closed"], 1) if row["closed"] else None

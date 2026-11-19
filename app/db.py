@@ -72,6 +72,78 @@ def _row_to_dict(r) -> dict:
     return dict(zip(keys, r))
 
 
+def _performance_report(rows: list) -> dict:
+    """Build detailed outcome analytics from persisted, completed signal records."""
+    closed = [
+        row for row in rows
+        if row.get("status") not in ("OPEN", "TP1", "EXPIRED") and row.get("r_result") is not None
+    ]
+
+    def outcome_stats(items):
+        done = [
+            row for row in items
+            if row.get("status") not in ("OPEN", "TP1", "EXPIRED") and row.get("r_result") is not None
+        ]
+        wins = sum(float(row["r_result"]) > 0 for row in done)
+        sum_r = sum(float(row["r_result"]) for row in done)
+        mfe = [float(row["mfe_r"]) for row in items if row.get("mfe_r") is not None]
+        mae = [float(row["mae_r"]) for row in items if row.get("mae_r") is not None]
+        return {
+            "signals": len(items),
+            "closed": len(done),
+            "wins": wins,
+            "losses": sum(float(row["r_result"]) < 0 for row in done),
+            "win_rate_pct": round(100 * wins / len(done), 1) if done else None,
+            "sum_r": round(sum_r, 3),
+            "avg_r": round(sum_r / len(done), 3) if done else None,
+            "avg_mfe_r": round(sum(mfe) / len(mfe), 3) if mfe else None,
+            "avg_mae_r": round(sum(mae) / len(mae), 3) if mae else None,
+        }
+
+    def grouped(key_fn):
+        groups = {}
+        for row in rows:
+            key = key_fn(row)
+            groups.setdefault(str(key if key not in (None, "") else "unknown"), []).append(row)
+        return {key: outcome_stats(items) for key, items in sorted(groups.items())}
+
+    ordered = sorted(
+        closed,
+        key=lambda row: row.get("closed_at") or row.get("bar_ts"),
+    )
+    equity = peak = max_drawdown = 0.0
+    for row in ordered:
+        equity += float(row["r_result"])
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+
+    total = outcome_stats(rows)
+    tp1_status = {"TP1", "TP1_BE", "TP2"}
+    total.update({
+        "total_signals": len(rows),
+        "call_signals": sum(row.get("side") == "LONG" for row in rows),
+        "put_signals": sum(row.get("side") == "SHORT" for row in rows),
+        "tp1_hits": sum(row.get("status") in tp1_status for row in rows),
+        "tp2_hits": sum(row.get("status") == "TP2" for row in rows),
+        "stop_hits": sum(row.get("status") == "SL" for row in rows),
+        "time_stop_review_due": sum(bool(row.get("time_stop_review_due")) for row in rows),
+        "max_drawdown_r": round(max_drawdown, 3),
+    })
+
+    def hour_bucket(row):
+        stamp = row.get("bar_ts")
+        return f"{stamp.hour:02d}:00-{stamp.hour:02d}:59" if stamp is not None else "unknown"
+
+    return {
+        "summary": total,
+        "by_direction": grouped(lambda row: "CALL" if row.get("side") == "LONG" else "PUT" if row.get("side") == "SHORT" else row.get("side")),
+        "by_symbol": grouped(lambda row: row.get("symbol")),
+        "by_setup": grouped(lambda row: row.get("trig")),
+        "by_time_of_day": grouped(hour_bucket),
+        "by_score": grouped(lambda row: row.get("score")),
+    }
+
+
 class MemoryStore:
     kind = "memory"
 
@@ -165,6 +237,11 @@ class MemoryStore:
     def save_normal_state(self, day: date, symbol: str, state: dict):
         with self.lock:
             self.normal_states[(day, symbol)] = dict(state)
+
+    def performance_report(self, since: date) -> dict:
+        with self.lock:
+            rows = [dict(row) for row in self.rows if row["trade_day"] >= since]
+        return _performance_report(rows)
 
     def stats(self, since: date) -> list:
         agg: dict = {}
@@ -335,6 +412,20 @@ class PostgresStore(MemoryStore):
                WHERE id=%s""",
             (float(mfe_r), float(mae_r), int(bars_held), bool(time_stop_review_due), sid),
         )
+
+    def performance_report(self, since: date) -> dict:
+        rows = self._run(
+            """SELECT module, symbol, side, bar_ts, trade_day, score, trig, status,
+                      r_result, mfe_r, mae_r, bars_held, time_stop_review_due, closed_at
+               FROM signals WHERE trade_day >= %s ORDER BY bar_ts, id""",
+            (since,), "all",
+        )
+        keys = (
+            "module", "symbol", "side", "bar_ts", "trade_day", "score", "trig",
+            "status", "r_result", "mfe_r", "mae_r", "bars_held",
+            "time_stop_review_due", "closed_at",
+        )
+        return _performance_report([dict(zip(keys, row)) for row in rows])
 
     def stats(self, since: date) -> list:
         rows = self._run(
