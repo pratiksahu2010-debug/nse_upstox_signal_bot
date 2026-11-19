@@ -171,6 +171,9 @@ class Features:
     body_frac: float
     close_pos: float          # 0 = closed on low, 1 = closed on high
     range_atr: float
+    htf_pdi: Optional[float] = None
+    htf_mdi: Optional[float] = None
+    htf_adx: Optional[float] = None
 
 
 def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features]:
