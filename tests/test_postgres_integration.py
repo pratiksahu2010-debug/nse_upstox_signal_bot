@@ -49,7 +49,9 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         }
         signal_id = store.add_signal(signal)
         assert signal_id is not None
-        assert store.add_signal(signal) is None  # UNIQUE dedupe works in PostgreSQL.
+        assert store.add_signal(signal) is None  # same-side duplicate is rejected
+        opposite_side = dict(signal, side="SHORT")
+        assert store.add_signal(opposite_side) is None  # one direction per symbol/candle
 
         assert store.set_feedback(signal_id, "GOOD") is True
         store.update_excursions(signal_id, 1.2, 0.4, 3, True)
