@@ -57,6 +57,20 @@ def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     return next_state
 
 
+def _trigger_state_after_persist(state: dict, persisted: bool) -> dict:
+    """Commit cooldown only when the signal row exists in durable storage."""
+    result = dict(state)
+    if not persisted:
+        result.update({
+            "phase": "IDLE",
+            "side": 0,
+            "cooldown_remaining": 0,
+            "invalidated": False,
+        })
+        result.pop("trigger_bar", None)
+    return result
+
+
 @dataclass
 class SymbolState:
     info: SymbolInfo
@@ -292,6 +306,7 @@ class Engine:
         evaluate_started = _time.monotonic()
         expected = latest_eligible_bar(now)
         cands: list = []
+        pending_trigger_states: dict = {}
         watching = 0
         for sym, df in data.items():
             st = self.states[(module, sym)]
@@ -373,6 +388,7 @@ class Engine:
                             }
                             cands.append(sig)
                             state.update({"phase":"TRIGGERED","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                            pending_trigger_states[(sym, f.bar_ts.isoformat())] = dict(state)
                             d["rejects"]["rsi_triggered"] += 1
                         else:
                             state.update({"phase":"IDLE","side":0,"invalidated":False})
@@ -397,12 +413,13 @@ class Engine:
                     state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
                     d["rejects"]["unknown_state_reset"] += 1
                 state["last_bar"]=f.bar_ts.isoformat()
-                try:
-                    self.store.save_normal_state(day,sym,state); st.normal_state=state
-                except Exception:
-                    cands=[x for x in cands if not (x.symbol==sym and x.bar_ts==f.bar_ts)]
-                    d["rejects"]["state_storage_error"] += 1
-                    log.exception("could not persist Normal state for %s; signal suppressed",sym)
+                if (sym, f.bar_ts.isoformat()) not in pending_trigger_states:
+                    try:
+                        self.store.save_normal_state(day,sym,state); st.normal_state=state
+                    except Exception:
+                        cands=[x for x in cands if not (x.symbol==sym and x.bar_ts==f.bar_ts)]
+                        d["rejects"]["state_storage_error"] += 1
+                        log.exception("could not persist Normal state for %s; signal suppressed",sym)
                 if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
                 continue
             elif sig:
@@ -418,7 +435,19 @@ class Engine:
         d["watching"] = watching
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
+        d["_persisted_candidates"] = set()
         d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+        persisted_candidates = d.pop("_persisted_candidates", set())
+        for (key, triggered_state) in pending_trigger_states.items():
+            final_state = _trigger_state_after_persist(
+                triggered_state, key in persisted_candidates
+            )
+            try:
+                self.store.save_normal_state(day, key[0], final_state)
+                self.states[(module, key[0])].normal_state = final_state
+            except Exception:
+                d["rejects"]["trigger_state_storage_error"] += 1
+                log.exception("could not commit trigger lifecycle state for %s", key[0])
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
@@ -440,6 +469,7 @@ class Engine:
     def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
         """Persist and deliver eligible signals; fetch optional option quotes in one batch."""
         day = now.date()
+        d.setdefault("_persisted_candidates", set())
         cands.sort(key=lambda s: -s.score)
         sent = 0
         self._deliver_pending(d, now)
@@ -572,8 +602,10 @@ class Engine:
                 log.exception("could not persist signal %s/%s; alert was not sent", module, sig.symbol)
                 continue
             if sid is None:
+                d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
                 d["rejects"]["duplicate"] += 1
                 continue
+            d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)

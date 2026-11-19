@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app import mod_normal
-from app.engine import _triggered_to_cooldown
+from app.engine import _triggered_to_cooldown, _trigger_state_after_persist
 from app.db import MemoryStore
 from datetime import date
 
@@ -86,3 +86,34 @@ def test_triggered_phase_survives_memory_store_restart():
     }
     store.save_normal_state(date(2026, 11, 18), "TEST", payload)
     assert store.load_normal_states(date(2026, 11, 18)) == {"TEST": payload}
+
+
+def test_unpersisted_trigger_does_not_consume_cooldown():
+    triggered = {
+        "phase": "TRIGGERED", "side": 1,
+        "last_bar": "2026-11-19T10:00:00+05:30",
+        "trigger_bar": "2026-11-19T10:00:00+05:30",
+        "cooldown_remaining": 4, "invalidated": False,
+    }
+
+    result = _trigger_state_after_persist(triggered, persisted=False)
+
+    assert result["phase"] == "IDLE"
+    assert result["side"] == 0
+    assert result["last_bar"] == triggered["last_bar"]
+    assert result["cooldown_remaining"] == 0
+    assert "trigger_bar" not in result
+    assert triggered["phase"] == "TRIGGERED"
+
+
+def test_persisted_trigger_enters_existing_four_bar_cooldown_stage():
+    triggered = {
+        "phase": "TRIGGERED", "side": -1,
+        "last_bar": "2026-11-19T10:00:00+05:30",
+        "trigger_bar": "2026-11-19T10:00:00+05:30",
+        "cooldown_remaining": 4, "invalidated": False,
+    }
+
+    result = _trigger_state_after_persist(triggered, persisted=True)
+
+    assert result == triggered
