@@ -145,6 +145,7 @@ def _safe_config():
         "option_max_spread_pct": config.OPTION_MAX_SPREAD_PCT,
         "option_max_quote_age_sec": config.OPTION_MAX_QUOTE_AGE_SEC,
         "scheduler_enabled": config.RUN_SCHEDULER,
+        "upstox_stream_enabled": config.UPSTOX_STREAM_ENABLED,
         "signal_only": True,
         "orders_enabled": False,
     }
