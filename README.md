@@ -90,6 +90,12 @@ Runtime controls:
 - STALE_MAX_BARS: 1
 - WORKERS: 6
 - OPTION_QUOTE: 0
+- OPTION_MARKET_SNAPSHOT: 0 (attach full option quote data)
+- OPTION_LIQUIDITY_CHECKS: 0 (opt-in fail-closed option liquidity gate)
+- OPTION_MIN_VOLUME: 100
+- OPTION_MIN_OI: 500
+- OPTION_MAX_SPREAD_PCT: 3.0
+- OPTION_MAX_QUOTE_AGE_SEC: 20
 - DRY_RUN: 0
 
 Strategy parameters remain frozen unless explicitly approved.
@@ -118,8 +124,8 @@ GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, 
 
 Still not complete against the full master prompt:
 1. Exactly 150 fixed static underlyings and startup count validation.
-2. Full option-chain integration and contract-level spread, volume, OI and quote-freshness validation.
-3. Subscribing to selected option contracts and wiring quote cache into alerts.
+2. Wiring the option-chain endpoint into contract selection and validating the optional liquidity gate with the real Analytics Token; the full-quote REST gate is implemented but opt-in.
+3. Subscribing selected option contracts to the WebSocket option-chain mode and using that stream as a quote source.
 4. Dedicated schema migration system and expanded telemetry/configuration/feedback persistence.
 5. MFE/MAE, time-stop and expanded performance analytics.
 6. No-look-ahead walk-forward backtesting.

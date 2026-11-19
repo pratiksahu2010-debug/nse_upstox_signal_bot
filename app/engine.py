@@ -18,8 +18,9 @@ import pandas as pd
 
 from . import mod_normal
 from .common import Ctx, Signal, SymbolInfo
-from .config import ENGINE, IST, NORMAL, OPTION_QUOTE
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC)
 from .indicators import add_indicators, compute_features
+from .options import snapshot_metrics, validate_option_liquidity
 from .telegram import format_signal, send
 from .tracker import simulate
 from .universe import Universe, build_universe, pick_option
@@ -388,19 +389,56 @@ class Engine:
                 continue
             prepared.append(sig)
 
-        quotes = {}
-        if OPTION_QUOTE and prepared:
-            keys = list(dict.fromkeys(
+        # Optional full quote snapshots provide bid/ask, volume and OI.
+        # The liquidity hard gate is OFF by default to preserve current alert eligibility.
+        if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS) and prepared:
+            option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
+            snapshots = {}
+            try:
+                snapshots = self.client.full_quotes(option_keys) or {}
+            except Exception as exc:
+                log.warning("optional full option quote snapshot failed: %s", type(exc).__name__)
+            retained = []
+            for sig in prepared:
+                key = sig.option.get("_key")
+                raw = snapshots.get(key)
+                if raw is None:
+                    raw = next((value for value in snapshots.values()
+                                if isinstance(value, dict) and value.get("instrument_token") == key), None)
+                if raw is None:
+                    if OPTION_LIQUIDITY_CHECKS:
+                        d["rejects"]["option_quote_missing"] += 1
+                        continue
+                    retained.append(sig)
+                    continue
+                metrics = snapshot_metrics(raw, now.timestamp())
+                sig.option.update(metrics)
+                if OPTION_LIQUIDITY_CHECKS:
+                    valid, reason = validate_option_liquidity(
+                        metrics, OPTION_MIN_VOLUME, OPTION_MIN_OI,
+                        OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC,
+                    )
+                    if not valid:
+                        d["rejects"][f"option_{reason}"] += 1
+                        continue
+                retained.append(sig)
+            prepared = retained
+
+        quotes = {}
+        if OPTION_QUOTE and prepared:
+            missing = [sig.option.get("_key") for sig in prepared
+                       if sig.option.get("_key") and not sig.option.get("ltp")]
+            keys = list(dict.fromkeys(missing))
             if keys:
                 try:
                     quotes = self.client.ltp(keys) or {}
                 except Exception as e:
-                    log.warning("batched optional option quote failed: %s", e)
+                    log.warning("batched optional option LTP failed: %s", type(e).__name__)
         for sig in prepared:
             key = sig.option.pop("_key", None)
-            if key and OPTION_QUOTE:
+            if key and OPTION_QUOTE and not sig.option.get("ltp"):
                 sig.option["ltp"] = quotes.get(key)
 
         accepted = 0
@@ -416,7 +454,7 @@ class Engine:
                    "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
                    "score": sig.score, "trig": sig.trigger,
                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
-                               "telegram_text": message}}
+                               "option": dict(sig.option or {}), "telegram_text": message}}
             try:
                 sid = self.store.add_signal(row)
             except Exception:
