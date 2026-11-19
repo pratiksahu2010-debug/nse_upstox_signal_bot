@@ -56,14 +56,25 @@ def loop(engine: Engine, stop: threading.Event):
         bar_close = floor5(now)
         due = bar_close + timedelta(seconds=ENGINE.fetch_delay_sec)
         if now >= due and last_run != bar_close and now.weekday() < 5:
-            last_run = bar_close
-            if now - due < timedelta(minutes=ENGINE.candle_min):   # skip if we woke up very late
+            # Preserve the existing late-wake policy: skip boundaries that are
+            # already too old, rather than issuing stale signals after a long sleep.
+            if now - due >= timedelta(minutes=ENGINE.candle_min):
+                last_run = bar_close
+            else:
                 try:
                     res = engine.run_boundary(now)
+                    # A concurrent /force scan can hold the engine lock. Do not
+                    # consume this candle boundary when run_boundary reports busy:
+                    # retry on the next scheduler tick after the lock is released.
+                    if not (isinstance(res, dict) and res.get("busy")):
+                        last_run = bar_close
                     log.info("cycle %s -> %s", bar_close.strftime("%H:%M"),
                              {m: (d.get("scope"), d.get("loaded"), d.get("signals")) for m, d in res.items()
                               if isinstance(d, dict)})
                 except Exception:
+                    # Avoid a tight retry loop for unexpected failures. The engine's
+                    # own per-cycle diagnostics report module-level failures.
+                    last_run = bar_close
                     log.exception("run_boundary failed")
         stop.wait(2.0)
     if engine.market_stream is not None:
