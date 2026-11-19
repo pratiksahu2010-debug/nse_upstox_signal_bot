@@ -31,6 +31,7 @@ class Universe:
     configured_symbols: list = field(default_factory=list)
     ready: bool = True
     validation_errors: list = field(default_factory=list)
+    unavailable_symbols: list = field(default_factory=list)
 
 
 def _pick_future(futs: list, today: datetime, roll_days: int = 2):
@@ -165,12 +166,9 @@ def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
         validation_errors.append(
             f"configured universe count {len(uni.configured_symbols)} != {S.EXPECTED_UNIVERSE_SIZE}"
         )
-    if len(uni.normal) != S.EXPECTED_UNIVERSE_SIZE:
-        validation_errors.append(
-            f"validated universe count {len(uni.normal)} != {S.EXPECTED_UNIVERSE_SIZE}"
-        )
-    if missing:
-        validation_errors.append(f"missing configured underlyings: {missing}")
+    # Missing contracts are reported but are not silently replaced. A valid
+    # configured list can still scan the remaining validated instruments.
+    uni.unavailable_symbols = missing
     if unexpected:
         validation_errors.append(f"unexpected underlyings: {unexpected}")
     uni.validation_errors = validation_errors
