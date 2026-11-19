@@ -49,3 +49,27 @@ def test_fixed_universe_reports_incomplete_master_without_scanning_partial_list(
     assert len(universe.configured_symbols) == 150
     assert len(universe.normal) == 0
     assert any("validated universe count 0 != 150" in error for error in universe.validation_errors)
+
+
+def test_engine_skips_all_signal_scans_when_fixed_universe_is_incomplete():
+    from app.db import MemoryStore
+    from app.engine import Engine
+    from app.universe import Universe
+
+    engine = Engine(client=object(), store=MemoryStore())
+    engine.uni = Universe(
+        normal=[],
+        configured_symbols=[f"SYMBOL{i}" for i in range(150)],
+        ready=False,
+        validation_errors=["validated universe count 0 != 150"],
+    )
+
+    result = engine.cycle(
+        "normal",
+        datetime(2026, 11, 19, 10, 0, tzinfo=IST),
+        force=True,
+    )
+
+    assert result["scope"] == "universe_incomplete"
+    assert result["signals"] == 0
+    assert result["rejects"]["universe_incomplete"] == 1
