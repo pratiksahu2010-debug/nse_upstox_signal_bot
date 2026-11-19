@@ -1,0 +1,77 @@
+from datetime import date
+
+import pandas as pd
+
+from app.config import IST
+from app.db import MemoryStore
+from app.tracker import measure_excursions
+
+
+def _bars():
+    index = pd.DatetimeIndex([
+        pd.Timestamp("2026-11-17 10:20", tz=IST),
+        pd.Timestamp("2026-11-17 10:25", tz=IST),
+        pd.Timestamp("2026-11-17 10:30", tz=IST),
+    ])
+    return pd.DataFrame(
+        {
+            "high": [150.0, 103.0, 102.0],
+            "low": [50.0, 99.0, 97.0],
+            "close": [100.0, 102.0, 101.0],
+        },
+        index=index,
+    )
+
+
+def test_mfe_mae_excludes_signal_candle_for_long_trade():
+    row = {
+        "side": "LONG",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST),
+        "entry": 100.0,
+        "sl": 98.0,
+    }
+    mfe, mae, bars, last_bar = measure_excursions(row, _bars())
+
+    assert mfe == 1.5
+    assert mae == 1.5
+    assert bars == 2
+    assert last_bar == pd.Timestamp("2026-11-17 10:30", tz=IST).to_pydatetime()
+
+
+def test_mfe_mae_uses_inverse_direction_for_short_trade():
+    row = {
+        "side": "SHORT",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST),
+        "entry": 100.0,
+        "sl": 102.0,
+    }
+    mfe, mae, bars, _ = measure_excursions(row, _bars())
+
+    assert mfe == 1.5
+    assert mae == 1.5
+    assert bars == 2
+
+
+def test_memory_store_keeps_best_excursion_seen():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal",
+        "symbol": "TEST",
+        "side": "LONG",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST).to_pydatetime(),
+        "trade_day": date(2026, 11, 17),
+        "entry": 100.0,
+        "sl": 98.0,
+        "tp1": 103.0,
+        "tp2": 104.0,
+        "score": 0,
+        "trig": "test",
+    })
+
+    store.update_excursions(sid, 1.5, 0.6, 2)
+    store.update_excursions(sid, 1.0, 0.2, 1)
+    row = store.rows[0]
+
+    assert row["mfe_r"] == 1.5
+    assert row["mae_r"] == 0.6
+    assert row["bars_held"] == 2
