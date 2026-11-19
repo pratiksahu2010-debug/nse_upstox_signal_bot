@@ -212,11 +212,11 @@ class TelegramPoller:
             report = build_proposal(rows)
             proposal = report.get("proposal")
             if proposal:
-                proposal["report"] = {k: report.get(k) for k in ("samples", "train", "validation", "held_out_test", "baseline_test")}
+                proposal["report"] = {k: report.get(k) for k in ("samples", "distinct_days", "overlap_purged", "train", "validation", "held_out_test", "baseline_test")}
                 save_training_proposal(self.store, proposal)
                 self._reply(f"<b>Proposal {proposal['id']} created.</b>\nUse /proposals to inspect. Nothing was applied.")
             else:
-                self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples', 0)} · required {report.get('required', 'n/a')}. No proposal.")
+                self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples', 0)} · overlap purged {report.get('overlap_purged', 0)} · required {report.get('required', 'n/a')}. No proposal.")
         elif command == "/proposals":
             history = get_persistent_state(self.store, "training_proposals", [])
             proposal = get_persistent_state(self.store, "training_proposal", None)
