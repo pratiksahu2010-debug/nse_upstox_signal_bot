@@ -167,13 +167,28 @@ class MemoryStore:
             for r in self.rows:
                 if r["trade_day"] < since:
                     continue
-                a = agg.setdefault(r["module"], {"module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0})
+                a = agg.setdefault(r["module"], {
+                    "module": r["module"], "n": 0, "closed": 0, "wins": 0, "sum_r": 0.0,
+                    "_mfe_sum": 0.0, "_mae_sum": 0.0, "_excursion_count": 0,
+                })
                 a["n"] += 1
+                if r.get("mfe_r") is not None and r.get("mae_r") is not None:
+                    a["_mfe_sum"] += float(r["mfe_r"])
+                    a["_mae_sum"] += float(r["mae_r"])
+                    a["_excursion_count"] += 1
                 if r["status"] not in ("OPEN", "TP1", "EXPIRED") and r["r_result"] is not None:
                     a["closed"] += 1
                     a["sum_r"] += r["r_result"]
                     a["wins"] += 1 if r["r_result"] > 0 else 0
-        return list(agg.values())
+        result = []
+        for row in agg.values():
+            count = row.pop("_excursion_count")
+            mfe_sum = row.pop("_mfe_sum")
+            mae_sum = row.pop("_mae_sum")
+            row["avg_mfe_r"] = round(mfe_sum / count, 3) if count else None
+            row["avg_mae_r"] = round(mae_sum / count, 3) if count else None
+            result.append(row)
+        return result
 
 
 class PostgresStore(MemoryStore):
@@ -319,10 +334,20 @@ class PostgresStore(MemoryStore):
             """SELECT module, count(*) AS n,
                       count(*) FILTER (WHERE r_result IS NOT NULL AND status NOT IN ('OPEN','TP1','EXPIRED')) AS closed,
                       count(*) FILTER (WHERE r_result > 0 AND status NOT IN ('OPEN','TP1','EXPIRED')) AS wins,
-                      COALESCE(sum(r_result) FILTER (WHERE status NOT IN ('OPEN','TP1','EXPIRED')), 0) AS sum_r
+                      COALESCE(sum(r_result) FILTER (WHERE status NOT IN ('OPEN','TP1','EXPIRED')), 0) AS sum_r,
+                      AVG(mfe_r) AS avg_mfe_r,
+                      AVG(mae_r) AS avg_mae_r
                FROM signals WHERE trade_day >= %s GROUP BY module ORDER BY module""",
             (since,), "all")
-        return [{"module": r[0], "n": r[1], "closed": r[2], "wins": r[3], "sum_r": float(r[4])} for r in rows]
+        return [
+            {
+                "module": r[0], "n": r[1], "closed": r[2], "wins": r[3],
+                "sum_r": float(r[4]),
+                "avg_mfe_r": round(float(r[5]), 3) if r[5] is not None else None,
+                "avg_mae_r": round(float(r[6]), 3) if r[6] is not None else None,
+            }
+            for r in rows
+        ]
 
 
 def make_store(dsn: str):

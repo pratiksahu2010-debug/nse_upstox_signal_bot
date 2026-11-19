@@ -172,8 +172,11 @@ class TelegramPoller:
                     wins = row.get("wins", 0)
                     win_rate = 100.0 * wins / closed if closed else 0.0
                     avg_r = row.get("sum_r", 0.0) / closed if closed else 0.0
+                    mfe = row.get("avg_mfe_r")
+                    mae = row.get("avg_mae_r")
+                    excursion = f" · MFE {mfe:.2f}R / MAE {mae:.2f}R" if mfe is not None and mae is not None else ""
                     lines.append(
-                        f"{row.get('module')}: {closed} closed · {win_rate:.1f}% wins · {avg_r:.2f} avg R"
+                        f"{row.get('module')}: {closed} closed · {win_rate:.1f}% wins · {avg_r:.2f} avg R{excursion}"
                     )
                 self._reply("\n".join(lines))
         elif command == "/pause":

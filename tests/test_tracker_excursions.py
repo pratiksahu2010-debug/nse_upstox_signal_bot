@@ -115,3 +115,28 @@ def test_mfe_mae_stops_at_exit_bar_and_ignores_later_price_extremes():
     assert mae == 1.5
     assert bars == 1
     assert last_bar == pd.Timestamp("2026-11-17 10:25", tz=IST).to_pydatetime()
+
+
+def test_stats_exposes_average_mfe_and_mae_for_module():
+    store = MemoryStore()
+    sid = store.add_signal({
+        "module": "normal",
+        "symbol": "TEST",
+        "side": "LONG",
+        "bar_ts": pd.Timestamp("2026-11-17 10:20", tz=IST).to_pydatetime(),
+        "trade_day": date(2026, 11, 17),
+        "entry": 100.0,
+        "sl": 98.0,
+        "tp1": 103.0,
+        "tp2": 104.0,
+        "score": 0,
+        "trig": "test",
+    })
+    store.update_excursions(sid, 1.5, 0.5, 3)
+    store.update_outcome(sid, "TP2", 2.0)
+
+    row = store.stats(date(2026, 11, 1))[0]
+
+    assert row["avg_mfe_r"] == 1.5
+    assert row["avg_mae_r"] == 0.5
+    assert row["closed"] == 1
