@@ -62,6 +62,13 @@ MIGRATIONS = (
     )"""),
     (3, "time_stop_review_flag", """ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS time_stop_review_due BOOLEAN NOT NULL DEFAULT FALSE"""),
+    (4, "training_feedback_labels", """ALTER TABLE signals
+        ADD COLUMN IF NOT EXISTS user_label TEXT;
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS auto_label TEXT;
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS net_r DOUBLE PRECISION;
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS cost_r DOUBLE PRECISION NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_signals_training ON signals (trade_day, module, status)"""),
+    (5, "first_target_hit", """ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_hit TEXT"""),
 )
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result"
@@ -162,7 +169,7 @@ class MemoryStore:
                 if (r["module"], r["symbol"], r["side"], r["bar_ts"]) == (s["module"], s["symbol"], s["side"], s["bar_ts"]):
                     return None
             self._id += 1
-            row = dict(s, id=self._id, status="OPEN", r_result=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
+            row = dict(s, id=self._id, status="OPEN", r_result=None, net_r=None, cost_r=float(s.get("cost_r") or 0.0), auto_label=None, user_label=None, mfe_r=0.0, mae_r=0.0, bars_held=0, time_stop_review_due=False, closed_at=None, delivery_status="PENDING", delivery_attempts=0, delivery_error=None, delivered_at=None)
             self.rows.append(row)
             return self._id
 
@@ -210,14 +217,42 @@ class MemoryStore:
                     and (module is None or r["module"] == module) and (symbol is None or r["symbol"] == symbol)]
 
     def update_outcome(self, sid: int, status: str, r_result: Optional[float]):
+        label = "WIN" if r_result is not None and r_result > 0 else "LOSS" if r_result is not None and r_result < 0 else "BREAKEVEN" if r_result is not None else None
         with self.lock:
             for r in self.rows:
                 if r["id"] == sid:
                     r["status"] = status
+                    first_hit = "SL" if status == "SL" else "TP1" if status in ("TP1", "TP1_BE", "TP2") else None
+                    if first_hit and not r.get("first_hit"): r["first_hit"] = first_hit
                     if r_result is not None:
                         r["r_result"] = r_result
+                        r["net_r"] = float(r_result) - float(r.get("cost_r") or 0.0)
+                        r["auto_label"] = label
                     if status not in ("OPEN", "TP1"):
                         r["closed_at"] = r.get("closed_at") or datetime.now(timezone.utc)
+                    return
+
+    def set_feedback(self, sid: int, label: str) -> bool:
+        if label not in {"GOOD", "BAD", "LATE", "FAKE", "SKIP"}: return False
+        with self.lock:
+            for row in self.rows:
+                if int(row["id"]) == int(sid):
+                    row["user_label"] = label
+                    return True
+        return False
+
+    def training_rows(self, since: date) -> list:
+        with self.lock:
+            out=[]
+            for row in self.rows:
+                if row["trade_day"] < since: continue
+                details=row.get("details") or {}
+                out.append({"id":row["id"],"bar_ts":row["bar_ts"],"symbol":row.get("symbol"),
+                    "side":row["side"],"bars_held":row.get("bars_held",0),
+                    "snapshot":details.get("indicator_snapshot",{}),"status":row.get("status"),
+                    "gross_r":row.get("r_result"),"net_r":row.get("net_r",row.get("r_result")),
+                    "auto_label":row.get("auto_label"),"user_label":row.get("user_label"),"first_hit":row.get("first_hit")})
+            return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
                           time_stop_review_due: bool = False):
@@ -344,11 +379,11 @@ class PostgresStore(MemoryStore):
 
     def add_signal(self, s: dict) -> Optional[int]:
         row = self._run(
-            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id""",
             (s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"], s["entry"], s["sl"], s["tp1"],
-             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {}))), fetch="one")
+             s["tp2"], s["score"], s["trig"], json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0)), fetch="one")
         return row[0] if row else None
 
     def pending_notifications(self, limit: int = 100) -> list:
@@ -397,9 +432,29 @@ class PostgresStore(MemoryStore):
 
     def update_outcome(self, sid: int, status: str, r_result: Optional[float]):
         closed = status not in ("OPEN", "TP1")
+        label = "WIN" if r_result is not None and r_result > 0 else "LOSS" if r_result is not None and r_result < 0 else "BREAKEVEN" if r_result is not None else None
         self._run("UPDATE signals SET status=%s, r_result=COALESCE(%s, r_result), "
+                  "net_r=CASE WHEN %s IS NULL THEN net_r ELSE %s-COALESCE(cost_r,0) END, "
+                  "auto_label=COALESCE(%s,auto_label), first_hit=COALESCE(first_hit,%s), "
                   "closed_at=CASE WHEN %s THEN now() ELSE closed_at END WHERE id=%s",
-                  (status, r_result, closed, sid))
+                  (status, r_result, r_result, r_result, label, ("SL" if status == "SL" else "TP1" if status in ("TP1", "TP1_BE", "TP2") else None), closed, sid))
+
+    def set_feedback(self, sid: int, label: str) -> bool:
+        if label not in {"GOOD","BAD","LATE","FAKE","SKIP"}: return False
+        row=self._run("UPDATE signals SET user_label=%s WHERE id=%s RETURNING id",(label,sid),"one")
+        return bool(row)
+
+    def training_rows(self, since: date) -> list:
+        rows=self._run("""SELECT id,bar_ts,symbol,side,bars_held,COALESCE(details->'indicator_snapshot','{}'::jsonb),
+            status,r_result,COALESCE(net_r,r_result),auto_label,user_label,first_hit
+            FROM signals WHERE trade_day >= %s ORDER BY bar_ts,id""",(since,),"all")
+        out=[]
+        for row in rows:
+            snap=row[5] if isinstance(row[5],dict) else json.loads(row[5] or "{}")
+            out.append({"id":row[0],"bar_ts":row[1],"symbol":row[2],"side":row[3],"bars_held":row[4],
+                "snapshot":snap,"status":row[6],"gross_r":row[7],"net_r":row[8],
+                "auto_label":row[9],"user_label":row[10],"first_hit":row[11]})
+        return out
 
     def update_excursions(self, sid: int, mfe_r: float, mae_r: float, bars_held: int,
                           time_stop_review_due: bool = False):
