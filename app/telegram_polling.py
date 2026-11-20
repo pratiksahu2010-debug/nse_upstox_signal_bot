@@ -101,6 +101,8 @@ class TelegramPoller:
         self.auth_failed = False
         self.last_success_at = None
         self.last_error = ""
+        self.leader_lock_acquired = False
+        self._leader_conn = None
 
     def start(self):
         if not self.token or not self.chat_id or self.thread is not None:
@@ -109,48 +111,112 @@ class TelegramPoller:
         self.thread = threading.Thread(target=self._loop, name="telegram-polling", daemon=True)
         self.thread.start()
 
+    def _acquire_leader_lock(self):
+        """Hold a PostgreSQL session lock so overlapping deploy instances cannot poll together."""
+        if getattr(self.store, "kind", "") != "postgres":
+            self.leader_lock_acquired = True
+            return True
+        conn = self.store.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                            ("nse_fno_telegram_getupdates",))
+                acquired = bool(cur.fetchone()[0])
+            conn.commit()
+            if acquired:
+                self._leader_conn = conn
+                self.leader_lock_acquired = True
+                log.info("Telegram polling leader lock acquired")
+                return True
+            self.store.pool.putconn(conn)
+            return False
+        except Exception:
+            try: conn.rollback()
+            finally: self.store.pool.putconn(conn, close=True)
+            raise
+
+    def _release_leader_lock(self):
+        conn, self._leader_conn = self._leader_conn, None
+        self.leader_lock_acquired = False
+        if conn is None:
+            return
+        discard = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                            ("nse_fno_telegram_getupdates",))
+                cur.fetchone()
+            conn.commit()
+        except Exception as exc:
+            discard = True
+            try: conn.rollback()
+            except Exception: pass
+            log.warning("Telegram leader lock release failed (%s); discarding connection",
+                        type(exc).__name__)
+        finally:
+            # If UNLOCK failed, closing the session is the only reliable way
+            # to ensure PostgreSQL releases the session-scoped advisory lock.
+            self.store.pool.putconn(conn, close=discard or bool(conn.closed))
+
     def stop(self):
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=3)
-        self.running = False
+            # getUpdates may block for 25s; let _loop's finally release the
+            # session lock only after the request thread has actually stopped.
+            self.thread.join(timeout=40)
+        if self.thread is None or not self.thread.is_alive():
+            self._release_leader_lock()
+            self.running = False
 
     def _api(self, method):
         return f"https://api.telegram.org/bot{self.token}/{method}"
 
     def _loop(self):
-        import time
         delay = 1.0
-        while not self.stop_event.is_set():
-            try:
-                response = requests.get(self._api("getUpdates"), params={
-                    "offset": self.offset, "timeout": 25,
-                    "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=35)
-                if response.status_code in (401, 403):
-                    self.auth_failed = True
-                    self.last_error = f"Telegram authentication rejected ({response.status_code})"
-                    log.error("%s", self.last_error)
-                    self.stop_event.wait(60)
-                    continue
-                response.raise_for_status()
-                payload = response.json()
-                if not payload.get("ok"):
-                    raise RuntimeError("Telegram getUpdates returned ok=false")
-                self.auth_failed = False
-                self.last_error = ""
-                self.last_success_at = datetime.now(IST).isoformat(timespec="seconds")
-                for update in payload.get("result", []):
-                    update_id = int(update.get("update_id", 0))
-                    self._handle_update(update)
-                    self.offset = max(self.offset, update_id + 1)
-                    set_persistent_state(self.store, "telegram_update_offset", self.offset)
-                delay = 1.0
-            except Exception as exc:
-                self.last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
-                log.exception("Telegram polling failed; retrying with bounded backoff")
-                self.stop_event.wait(delay)
-                delay = min(30.0, delay * 2)
-        self.running = False
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    if not self.leader_lock_acquired and not self._acquire_leader_lock():
+                        self.last_error = "standby: another instance owns Telegram polling"
+                        self.stop_event.wait(5.0)
+                        continue
+                    response = requests.get(self._api("getUpdates"), params={
+                        "offset": self.offset, "timeout": 25,
+                        "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=35)
+                    if response.status_code in (401, 403):
+                        self.auth_failed = True
+                        self.last_error = f"Telegram authentication rejected ({response.status_code})"
+                        log.error("%s", self.last_error)
+                        self.stop_event.wait(60)
+                        continue
+                    if response.status_code == 409:
+                        self.last_error = "Telegram getUpdates conflict (another consumer may be active)"
+                        log.warning("Telegram getUpdates returned HTTP 409; backing off without exposing credentials")
+                        self.stop_event.wait(min(30.0, max(5.0, delay)))
+                        delay = min(30.0, delay * 2)
+                        continue
+                    response.raise_for_status()
+                    payload = response.json()
+                    if not payload.get("ok"):
+                        raise RuntimeError("Telegram getUpdates returned ok=false")
+                    self.auth_failed = False
+                    self.last_error = ""
+                    self.last_success_at = datetime.now(IST).isoformat(timespec="seconds")
+                    for update in payload.get("result", []):
+                        update_id = int(update.get("update_id", 0))
+                        self._handle_update(update)
+                        self.offset = max(self.offset, update_id + 1)
+                        set_persistent_state(self.store, "telegram_update_offset", self.offset)
+                    delay = 1.0
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: Telegram polling request failed"
+                    log.warning("Telegram polling failed (%s); retrying with bounded backoff",
+                                type(exc).__name__)
+                    self.stop_event.wait(delay)
+                    delay = min(30.0, delay * 2)
+        finally:
+            self._release_leader_lock()
+            self.running = False
 
     def _answer_callback(self, callback_id, text):
         if not callback_id or not self.token:
@@ -158,8 +224,8 @@ class TelegramPoller:
         try:
             requests.post(self._api("answerCallbackQuery"),
                 json={"callback_query_id": callback_id, "text": text}, timeout=10)
-        except requests.RequestException:
-            log.exception("Telegram callback acknowledgement failed")
+        except requests.RequestException as exc:
+            log.warning("Telegram callback acknowledgement failed (%s)", type(exc).__name__)
 
     def _handle_update(self, update):
         callback = update.get("callback_query")

@@ -212,19 +212,30 @@ def readiness():
     poller_thread = getattr(poller, "thread", None) if poller is not None else None
     if poller is None or not bool(getattr(poller, "running", False)) or poller_thread is None or not poller_thread.is_alive():
         return unavailable("telegram_poller_not_running")
+    poller_is_leader = bool(getattr(poller, "leader_lock_acquired", False))
+    poller_error = str(getattr(poller, "last_error", ""))
+    poller_standby = poller_error.startswith("standby: another instance owns Telegram polling")
+    poller_conflict = poller_error.startswith("Telegram getUpdates conflict")
     if bool(getattr(poller, "auth_failed", False)):
         return unavailable("telegram_auth_rejected")
-    last_telegram_success = getattr(poller, "last_success_at", None)
-    if not last_telegram_success:
-        return unavailable("telegram_not_yet_connected")
-    try:
-        telegram_success_at = datetime.fromisoformat(last_telegram_success)
-        if telegram_success_at.tzinfo is None:
-            telegram_success_at = telegram_success_at.replace(tzinfo=IST)
-        if datetime.now(IST) - telegram_success_at > timedelta(seconds=90):
-            return unavailable("telegram_connection_stale")
-    except (TypeError, ValueError):
-        return unavailable("telegram_health_timestamp_invalid")
+    # During Render's rolling deploy, the old instance may retain the singleton
+    # lock until the new instance passes its health check. Standby and a 409
+    # from that old, pre-lock poller must not deadlock the deployment. Signal
+    # delivery is independent of getUpdates; expose the state in diagnostics.
+    if not poller_is_leader and not poller_standby:
+        return unavailable("telegram_poller_leadership_unavailable")
+    if poller_is_leader and not poller_conflict:
+        last_telegram_success = getattr(poller, "last_success_at", None)
+        if not last_telegram_success:
+            return unavailable("telegram_not_yet_connected")
+        try:
+            telegram_success_at = datetime.fromisoformat(last_telegram_success)
+            if telegram_success_at.tzinfo is None:
+                telegram_success_at = telegram_success_at.replace(tzinfo=IST)
+            if datetime.now(IST) - telegram_success_at > timedelta(seconds=90):
+                return unavailable("telegram_connection_stale")
+        except (TypeError, ValueError):
+            return unavailable("telegram_health_timestamp_invalid")
 
     client = getattr(engine, "client", None)
     if bool(getattr(client, "auth_failed", False)):
@@ -384,7 +395,10 @@ def readiness():
         "telegram": {
             "credentials_configured": True,
             "poller_running": True,
-            "auth_failed": False,
+            "leader": poller_is_leader,
+            "state": "leader" if poller_is_leader else "standby",
+            "last_error": poller_error or None,
+            "auth_failed": bool(getattr(poller, "auth_failed", False)),
             "last_success_at": getattr(poller, "last_success_at", None),
         },
         "universe": {

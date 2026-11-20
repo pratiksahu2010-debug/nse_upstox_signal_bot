@@ -46,6 +46,31 @@ CREATE TABLE IF NOT EXISTS signals (
 -- rows are retained and receive stable ids for current application queries.
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS id BIGSERIAL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_id ON signals (id);
+-- Preserve compatibility with legacy NOT NULL signal_id columns on inserts.
+DO $signal_id_compat$
+DECLARE has_legacy_column BOOLEAN; is_identity_column BOOLEAN;
+BEGIN
+    SELECT EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema=current_schema() AND table_name='signals'
+          AND column_name='signal_id') INTO has_legacy_column;
+    IF has_legacy_column THEN
+        SELECT is_identity='YES' FROM information_schema.columns
+         WHERE table_schema=current_schema() AND table_name='signals'
+           AND column_name='signal_id' INTO is_identity_column;
+        IF NOT COALESCE(is_identity_column,FALSE) THEN
+            CREATE SEQUENCE IF NOT EXISTS signals_signal_id_compat_seq;
+            PERFORM setval('signals_signal_id_compat_seq',
+                GREATEST(COALESCE((SELECT MAX(signal_id)::BIGINT FROM signals),0)+1,1),FALSE);
+            UPDATE signals SET signal_id=nextval('signals_signal_id_compat_seq')
+             WHERE signal_id IS NULL;
+            PERFORM setval('signals_signal_id_compat_seq',
+                GREATEST(COALESCE((SELECT MAX(signal_id)::BIGINT FROM signals),0)+1,1),FALSE);
+            ALTER TABLE signals ALTER COLUMN signal_id
+                SET DEFAULT nextval('signals_signal_id_compat_seq');
+        END IF;
+    END IF;
+END
+$signal_id_compat$;
 -- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
 -- does not add columns to a table created by an earlier bot release.
 -- The production-era schema used bar_time; current code consistently uses
