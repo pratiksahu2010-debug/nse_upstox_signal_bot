@@ -467,13 +467,13 @@ def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatc
 
 
 
-def _freeze_market_time(monkeypatch):
+def _freeze_market_time(monkeypatch, hour=10, minute=0):
     from datetime import datetime
 
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            current = cls(2026, 11, 20, 10, 0)
+            current = cls(2026, 11, 20, hour, minute)
             return current.replace(tzinfo=tz) if tz else current
 
     monkeypatch.setattr(web, "datetime", FrozenDateTime)
@@ -631,3 +631,42 @@ def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "normal_strategy_disabled"}
+
+
+
+def test_readiness_requires_recent_cycle_after_last_entry_until_session_end(monkeypatch):
+    _freeze_market_time(monkeypatch, hour=15, minute=5)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_completed_at = None
+    candidate.last_successful_cycle_at = None
+    candidate.last_cycle_result = {}
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_cycle_not_yet_completed"}
+
+
+def test_readiness_accepts_completed_idle_cycle_after_last_entry(monkeypatch):
+    _freeze_market_time(monkeypatch, hour=15, minute=5)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "idle", "symbols": 0, "loaded": 0, "signals": 0}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
