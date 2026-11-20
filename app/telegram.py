@@ -51,6 +51,12 @@ def format_signal(sig: Signal) -> str:
         if option.get("volume") is not None or option.get("oi") is not None:
             liquidity = f" · Vol {option.get('volume', 'n/a')} · OI {option.get('oi', 'n/a')}"
         lines.append(_b(f"Option {option['tsym']} · lot {option['lot']}{premium}{depth}{spread}{liquidity}"))
+        selection = option.get("selection_status")
+        if selection:
+            lines.append(_b(f"Strike selection: {selection}"))
+        basis = option.get("atm_reference")
+        if basis:
+            lines.append(_b(f"ATM reference: {basis}"))
     lines.append(_b("Conditions: " + " | ".join(sig.reasons)))
     if sig.forced:
         lines.append(_b("FORCED TEST"))

@@ -141,6 +141,31 @@ def resolve_nse(rows: Iterable[dict], today: datetime, stock_candidates: list,
     return uni
 
 
+
+def nearby_options(uni: Universe, underlying: str, spot: float, side: str,
+                   today: datetime, candidate_count: int = 5) -> list[OptionRec]:
+    """Return nearest-expiry contracts around ATM, nearest strike first."""
+    records = uni.options.get(underlying) or []
+    wanted = "CE" if side == "LONG" else "PE"
+    records = [r for r in records if r.otype == wanted
+               and (r.expiry.date() - today.date()).days >= OPTION_MIN_DAYS]
+    if not records:
+        return []
+    expiry = min(r.expiry for r in records)
+    same_expiry = [r for r in records if r.expiry == expiry]
+    same_expiry.sort(key=lambda r: (abs(r.strike - spot), r.strike))
+    out, seen = [], set()
+    for rec in same_expiry:
+        if rec.key in seen:
+            continue
+        seen.add(rec.key)
+        out.append(rec)
+        if len(out) >= max(1, int(candidate_count)):
+            break
+    return out
+
+
+
 def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
     today = today or datetime.now(IST)
     rows = nse_rows if nse_rows is not None else stream_master("NSE")
