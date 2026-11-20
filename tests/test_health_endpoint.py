@@ -331,6 +331,7 @@ def test_readiness_rejects_stopped_scheduler_thread(monkeypatch):
 def test_readiness_rejects_telegram_auth_failure(monkeypatch):
     class RejectedPoller:
         running = True
+        leader_lock_acquired = True
         auth_failed = True
         thread = type("Thread", (), {"is_alive": lambda self: True})()
 
@@ -372,6 +373,7 @@ def test_readiness_rejects_stale_telegram_connection(monkeypatch):
 
     class StalePoller:
         running = True
+        leader_lock_acquired = True
         auth_failed = False
         thread = type("Thread", (), {"is_alive": lambda self: True})()
         last_success_at = (web.datetime.now(web.IST) - timedelta(minutes=5)).isoformat()
