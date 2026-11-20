@@ -183,7 +183,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         persisted_legacy_aliases = store._run(
             "SELECT entry_price, stop_loss, target1, target2, state_cycle_id FROM signals WHERE id=%s",
             (legacy_module_signal_id,), "one",
-        )[0]
+        )
         assert persisted_legacy_aliases[:4] == (100.0, 98.0, 102.0, 104.0)
         assert persisted_legacy_aliases[4]
         assert persisted_legacy_aliases[4] != legacy_cycle_id
