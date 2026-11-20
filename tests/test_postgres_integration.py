@@ -18,6 +18,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
     store = PostgresStore(os.environ["TEST_DATABASE_URL"])
     signal_id = None
     legacy_id = None
+    legacy_module_signal_id = None
     initialized = False
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     stamp = datetime.now(timezone.utc)
@@ -92,6 +93,26 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )
         assert legacy_training["snapshot"] == {"adx": 27.0}
         assert legacy_training["symbol"] == legacy_symbol
+        assert legacy_training["module"] == "normal"
+
+        # A pre-module unique key must not block a distinct module from
+        # recording its own signal on the same symbol/candle.
+        legacy_module_signal = {
+            "module": "momentum",
+            "symbol": legacy_symbol,
+            "side": "LONG",
+            "bar_ts": stamp,
+            "trade_day": today,
+            "entry": 100.0,
+            "sl": 98.0,
+            "tp1": 102.0,
+            "tp2": 104.0,
+            "score": 90,
+            "trig": "CI_LEGACY_MODULE_DEDUPE",
+            "details": {},
+        }
+        legacy_module_signal_id = store.add_signal(legacy_module_signal)
+        assert legacy_module_signal_id is not None
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
@@ -153,6 +174,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         # The CI database is disposable; remove only records created by this test.
         if legacy_id is not None:
             store._run("DELETE FROM signals WHERE id=%s", (legacy_id,))
+        if legacy_module_signal_id is not None:
+            store._run("DELETE FROM signals WHERE id=%s", (legacy_module_signal_id,))
         if initialized:
             if signal_id is not None:
                 store._run("DELETE FROM signals WHERE id=%s", (signal_id,))
