@@ -152,6 +152,31 @@ BEGIN
     END IF;
 END
 $identity_compat$;
+-- The retired pre-repository signal_claims table is not used by this bot.
+-- Older production databases may still have signals.identity referencing it.
+-- Keep the identity column and every existing value, but remove only that
+-- obsolete FK so current signal inserts are not blocked by missing legacy claims.
+DO $legacy_identity_claim_fk$
+DECLARE fk_name TEXT;
+BEGIN
+    IF to_regclass('signal_claims') IS NOT NULL THEN
+        FOR fk_name IN
+            SELECT constraint_row.conname
+              FROM pg_constraint AS constraint_row
+             WHERE constraint_row.conrelid = 'signals'::regclass
+               AND constraint_row.confrelid = to_regclass('signal_claims')
+               AND constraint_row.contype = 'f'
+               AND constraint_row.conkey = ARRAY[
+                   (SELECT attnum FROM pg_attribute
+                     WHERE attrelid = 'signals'::regclass
+                       AND attname = 'identity' AND NOT attisdropped)
+               ]::smallint[]
+        LOOP
+            EXECUTE format('ALTER TABLE signals DROP CONSTRAINT %I', fk_name);
+        END LOOP;
+    END IF;
+END
+$legacy_identity_claim_fk$;
 -- Older deployments may retain a required state_cycle_id column from the
 -- previous signal lifecycle schema. Backfill only NULL values and add a
 -- type-aware default for future inserts; existing cycle identifiers remain
