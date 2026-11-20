@@ -69,4 +69,4 @@ def test_postgres_store_does_not_reapply_recorded_migrations():
         sql.startswith("INSERT INTO schema_migrations")
         for sql, _, _ in calls
     )
-    assert calls[-1][0].startswith("DELETE FROM signals")
+    assert not any(sql.lstrip().upper().startswith("DELETE FROM SIGNALS") for sql, _, _ in calls)
