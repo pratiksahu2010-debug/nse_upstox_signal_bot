@@ -3,6 +3,23 @@ from fastapi.testclient import TestClient
 from app import web
 
 
+def _ready_engine():
+    class FakeClient:
+        auth_failed = False
+
+    class FakeUniverse:
+        ready = True
+        configured_symbols = [f"SYMBOL{i}" for i in range(150)]
+        normal = [object() for _ in range(150)]
+
+    class FakeEngine:
+        client = FakeClient()
+        uni = FakeUniverse()
+        last_error = ""
+
+    return FakeEngine()
+
+
 def _configure_ready(monkeypatch):
     monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
     monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "configured-upstox-token")
@@ -53,7 +70,7 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
 
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
 
