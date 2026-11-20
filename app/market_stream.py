@@ -7,6 +7,7 @@ Ticks are never treated as completed candles and cannot create early signals.
 import asyncio
 import json
 import logging
+import math
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -29,14 +30,21 @@ class UpstoxMarketStream:
         self._quotes = {}
         self.connected = False
         self.last_message_at = None
+        self.last_quote_at = None
         self.last_error = ""
         self.reconnects = 0
         self.ticks = 0
 
     def start(self, instrument_keys):
         self.set_keys(instrument_keys)
-        if not self._keys or self._thread is not None:
+        if not self._keys:
             return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        # A dead worker must not permanently disable the feed. Clear a prior
+        # stop flag and create a fresh worker whenever start is called again.
+        self._stop.clear()
+        self._resubscribe.clear()
         self._thread = threading.Thread(
             target=lambda: asyncio.run(self._run()),
             name="upstox-market-feed",
@@ -49,6 +57,10 @@ class UpstoxMarketStream:
         with self._lock:
             changed = new_keys != self._keys
             self._keys = new_keys
+            if changed:
+                # A quote for the previous subscription set must not make a
+                # newly expanded/replaced subscription set look fresh.
+                self.last_quote_at = None
             # The engine rotates option subscriptions during the session. Keep
             # cached quote state only for currently subscribed instruments.
             active_keys = set(new_keys)
@@ -73,15 +85,40 @@ class UpstoxMarketStream:
 
     def diagnostics(self):
         with self._lock:
-            return {
-                "connected": self.connected,
-                "subscribed_symbols": len(self._keys),
-                "ticks": self.ticks,
-                "reconnects": self.reconnects,
-                "last_message_at": self.last_message_at,
-                "last_error": self.last_error,
-                "quote_cache_size": len(self._quotes),
-            }
+            last_message_at = self.last_message_at
+            last_quote_at = self.last_quote_at
+            connected = self.connected
+            keys = len(self._keys)
+            ticks = self.ticks
+            reconnects = self.reconnects
+            last_error = self.last_error
+            cache_size = len(self._quotes)
+        def age_seconds(value):
+            if not value:
+                return None
+            try:
+                stamp = datetime.fromisoformat(value)
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                return max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        message_age = age_seconds(last_message_at)
+        quote_age = age_seconds(last_quote_at)
+        return {
+            "connected": connected,
+            "thread_alive": bool(self._thread and self._thread.is_alive()),
+            "subscribed_symbols": keys,
+            "ticks": ticks,
+            "reconnects": reconnects,
+            "last_message_at": last_message_at,
+            "last_message_age_sec": round(message_age, 2) if message_age is not None else None,
+            "last_quote_at": last_quote_at,
+            "last_quote_age_sec": round(quote_age, 2) if quote_age is not None else None,
+            "last_error": last_error,
+            "quote_cache_size": cache_size,
+        }
 
     async def _run(self):
         delay = 1.0
@@ -155,9 +192,15 @@ class UpstoxMarketStream:
             else:
                 continue
 
+            ltp = float(ltpc.ltp)
+            exchange_ts_ms = int(ltpc.ltt)
+            # A protobuf default (0) or non-finite price is not a real quote.
+            # It must not make the feed look fresh to /ready or option tracking.
+            if not math.isfinite(ltp) or ltp <= 0 or exchange_ts_ms <= 0:
+                continue
             quote = {
-                "ltp": float(ltpc.ltp),
-                "exchange_ts_ms": int(ltpc.ltt),
+                "ltp": ltp,
+                "exchange_ts_ms": exchange_ts_ms,
                 "received_at": now,
                 "volume": None,
                 "oi": None,
@@ -185,18 +228,20 @@ class UpstoxMarketStream:
             updates[key] = quote
 
         with self._lock:
+            accepted = 0
             for key, quote in updates.items():
                 previous = self._quotes.get(key)
                 previous_ts = int(previous.get("exchange_ts_ms") or 0) if previous else 0
                 incoming_ts = int(quote.get("exchange_ts_ms") or 0)
-                # Upstox WebSocket delivery can be reordered. Do not let an
-                # older exchange tick roll the cached quote backwards. A zero
-                # timestamp is treated as unknown for backward compatibility.
-                if previous_ts > 0 and (incoming_ts <= 0 or incoming_ts < previous_ts):
-                    # An unknown timestamp cannot establish that this update is newer.
-                    # Preserve the last quote whose exchange ordering is known.
+                # Upstox WebSocket delivery can be reordered or duplicated.
+                # Only a strictly newer exchange timestamp refreshes quote
+                # freshness; duplicate ticks must not keep a dead feed alive.
+                if previous_ts > 0 and incoming_ts <= previous_ts:
                     continue
                 self._quotes[key] = quote
-            self.ticks += len(updates)
+                accepted += 1
+            self.ticks += accepted
             self.last_message_at = now
+            if accepted:
+                self.last_quote_at = now
             self.connected = True

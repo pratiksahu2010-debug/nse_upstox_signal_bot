@@ -6,6 +6,22 @@ from app import web
 def _ready_engine():
     class FakeClient:
         auth_failed = False
+        last_success_at = web.datetime.now(web.IST).isoformat(timespec="seconds")
+
+        def diagnostics(self):
+            return {"last_success_at": self.last_success_at}
+
+    class FakeFeed:
+        def stop(self):
+            pass
+
+        def diagnostics(self):
+            return {
+                "connected": True,
+                "thread_alive": True,
+                "subscribed_symbols": 150,
+                "last_quote_age_sec": 5.0,
+            }
 
     class FakeUniverse:
         ready = True
@@ -16,7 +32,13 @@ def _ready_engine():
     class FakeEngine:
         client = FakeClient()
         uni = FakeUniverse()
+        market_stream = FakeFeed()
         last_error = ""
+        last_cycle_started_at = web.datetime.now(web.IST).isoformat(timespec="seconds")
+        last_cycle_completed_at = last_cycle_started_at
+        last_successful_cycle_at = last_cycle_started_at
+        last_cycle_error = ""
+        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "signals": 0}}
 
     return FakeEngine()
 
@@ -90,6 +112,8 @@ def test_readiness_is_unavailable_before_application_initialization(monkeypatch)
 
 
 def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
     class FakeStore:
         kind = "memory"
 
@@ -106,7 +130,9 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     payload = response.json()
     assert payload["ready"] is True
     assert payload["scheduler"] == {"enabled": True, "running": True}
-    assert payload["upstox"] == {"token_configured": True, "auth_failed": False}
+    assert payload["upstox"]["token_configured"] is True
+    assert payload["upstox"]["auth_failed"] is False
+    assert payload["upstox"]["last_success_at"] is not None
     assert payload["telegram"]["credentials_configured"] is True
     assert payload["telegram"]["poller_running"] is True
     assert payload["telegram"]["auth_failed"] is False
@@ -412,3 +438,170 @@ def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatc
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "universe_stale"}
+
+
+
+def _freeze_market_time(monkeypatch):
+    from datetime import datetime
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = cls(2026, 11, 20, 10, 0)
+            return current.replace(tzinfo=tz) if tz else current
+
+    monkeypatch.setattr(web, "datetime", FrozenDateTime)
+
+
+def test_readiness_rejects_no_completed_scan_during_entry_window(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_completed_at = None
+    candidate.last_successful_cycle_at = None
+    candidate.last_cycle_result = {}
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_cycle_not_yet_completed"}
+
+
+def test_readiness_rejects_stale_scanner_cycle(monkeypatch):
+    from datetime import datetime
+
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    old = datetime(2026, 11, 20, 9, 45, tzinfo=web.IST).isoformat()
+    candidate.last_cycle_completed_at = old
+    candidate.last_successful_cycle_at = old
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_cycle_stale"}
+
+
+def test_readiness_rejects_incomplete_150_symbol_scan(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "signals": 0}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_data_incomplete"}
+
+
+def test_readiness_rejects_stale_upstox_rest_data(monkeypatch):
+    from datetime import datetime
+
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.client.last_success_at = datetime(2026, 11, 20, 9, 45, tzinfo=web.IST).isoformat()
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "upstox_rest_data_stale"}
+
+
+def test_readiness_rejects_disconnected_market_feed(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": False, "thread_alive": True, "subscribed_symbols": 150, "last_quote_age_sec": 1.0
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_disconnected"}
+
+
+def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": True, "thread_alive": True, "subscribed_symbols": 150, "last_quote_age_sec": 180.0
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_stale"}
+
+
+
+def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": True,
+        "thread_alive": True,
+        "subscribed_symbols": 149,
+        "last_quote_age_sec": 1.0,
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_subscription_incomplete"}
+
+
+def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "ENABLE_NORMAL", False)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "normal_strategy_disabled"}

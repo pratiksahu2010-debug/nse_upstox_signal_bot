@@ -99,6 +99,12 @@ class Engine:
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
         self.started = datetime.now(IST)
         self.last_error = ""
+        self.last_cycle_started_at = None
+        self.last_cycle_completed_at = None
+        self.last_successful_cycle_at = None
+        self.last_cycle_error = ""
+        self.last_cycle_result = {}
+        self.last_cycle_busy_count = 0
         self.last_outbox_retry_at = None
         self.paused = False
         self.market_stream = None
@@ -868,10 +874,13 @@ class Engine:
     def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:
         """Run every module that is active at `now`. Returns {module: diag}."""
         if not self.lock.acquire(blocking=False):
+            self.last_cycle_busy_count += 1
             return {"busy": True}
+        started_at = datetime.now(IST)
+        self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
+        out = {}
         try:
             self.ensure_universe(now)
-            out = {}
             t = floor5(now).time()
             for m, enabled in (("normal", _on("ENABLE_NORMAL")),):
                 if only and only != m:
@@ -887,11 +896,37 @@ class Engine:
                 except Exception as e:
                     self.last_error = f"{m}: {e}"
                     log.exception("cycle %s failed", m)
-                    out[m] = {"error": str(e)}
+                    out[m] = {"error": f"{type(e).__name__}: {str(e)[:240]}"}
                     if getattr(self.client, "auth_failed", False):
                         self._alert_once("auth", "⚠️ <b>Upstox token rejected (401/403) - update UPSTOX_ACCESS_TOKEN</b>", now)
+            self.last_cycle_result = {
+                name: {
+                    key: value for key, value in result.items()
+                    if key in ("scope", "symbols", "loaded", "signals", "watching", "duration_seconds", "error")
+                }
+                for name, result in out.items() if isinstance(result, dict)
+            }
+            normal_result = out.get("normal")
+            if isinstance(normal_result, dict):
+                if normal_result.get("error"):
+                    self.last_cycle_error = str(normal_result["error"])[:240]
+                else:
+                    expected = int(normal_result.get("symbols") or 0)
+                    loaded = int(normal_result.get("loaded") or 0)
+                    minimum_loaded = max(1, int(expected * 0.90)) if expected else 1
+                    if loaded >= minimum_loaded:
+                        self.last_successful_cycle_at = datetime.now(IST).isoformat(timespec="seconds")
+                        self.last_cycle_error = ""
+                    else:
+                        self.last_cycle_error = f"normal_scan_incomplete:{loaded}/{expected}"
+            elif out:
+                self.last_cycle_error = "normal_scan_not_run"
             return out
+        except Exception as e:
+            self.last_cycle_error = f"{type(e).__name__}: {str(e)[:240]}"
+            raise
         finally:
+            self.last_cycle_completed_at = datetime.now(IST).isoformat(timespec="seconds")
             self.lock.release()
 
     def _alert_once(self, key: str, text: str, now: datetime, every_min: int = 60):
@@ -905,6 +940,13 @@ class Engine:
         if now.weekday() >= 5:
             return
         self.ensure_universe(now)
+        if self.market_stream is not None:
+            try:
+                feed_state = self.market_stream.diagnostics()
+                if not feed_state.get("thread_alive"):
+                    self.market_stream.start(self._stream_keys)
+            except Exception:
+                log.exception("market feed worker restart check failed")
         t = now.time()
         if ENGINE.prewarm_nse <= t < time(9, 15):
             self.prewarm(now, "nse")
@@ -972,6 +1014,12 @@ class Engine:
             "auth_failed": getattr(self.client, "auth_failed", False),
             "closed_days": sorted(f"{segment}:{day}" for segment, day in self.closed_days),
             "last_error": self.last_error,
+            "last_cycle_started_at": self.last_cycle_started_at,
+            "last_cycle_completed_at": self.last_cycle_completed_at,
+            "last_successful_cycle_at": self.last_successful_cycle_at,
+            "last_cycle_error": self.last_cycle_error,
+            "last_cycle_result": dict(self.last_cycle_result),
+            "last_cycle_busy_count": self.last_cycle_busy_count,
         }
 
     def diag_json(self) -> dict:

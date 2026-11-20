@@ -64,7 +64,7 @@ def test_market_feed_does_not_replace_newer_quote_with_out_of_order_tick():
     assert quote["volume"] == 26000
     assert quote["bid"] == 124.9
     assert quote["ask"] == 125.1
-    assert stream.diagnostics()["ticks"] == 2
+    assert stream.diagnostics()["ticks"] == 1
 
 
 def test_market_feed_does_not_replace_timestamped_quote_with_unknown_timestamp():
@@ -98,3 +98,106 @@ def test_market_feed_does_not_replace_timestamped_quote_with_unknown_timestamp()
     assert quote["volume"] == 26000
     assert quote["bid"] == 124.9
     assert quote["ask"] == 125.1
+
+
+
+def test_market_feed_diagnostics_exposes_worker_and_message_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    response = pb.FeedResponse()
+    feed = response.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 123.45
+    feed.ltt = 1795000000000
+    stream._consume(response.SerializeToString())
+
+    health = stream.diagnostics()
+
+    assert health["thread_alive"] is False
+    assert health["connected"] is True
+    assert health["last_message_age_sec"] is not None
+    assert health["last_message_age_sec"] < 5
+    assert health["last_quote_age_sec"] is not None
+    assert health["last_quote_age_sec"] < 5
+
+
+def test_market_feed_start_replaces_dead_worker(monkeypatch):
+    class DeadThread:
+        def is_alive(self):
+            return False
+
+    class StartedThread:
+        def __init__(self, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr("app.market_stream.threading.Thread", StartedThread)
+    stream = UpstoxMarketStream(FakeClient())
+    stream._thread = DeadThread()
+
+    stream.start(["NSE_EQ|TEST"])
+
+    assert isinstance(stream._thread, StartedThread)
+    assert stream._thread.started is True
+    assert stream._stop.is_set() is False
+
+
+
+def test_market_feed_subscription_change_invalidates_previous_quote_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    response = pb.FeedResponse()
+    feed = response.feeds["NSE_EQ|OLD"].ltpc
+    feed.ltp = 123.45
+    feed.ltt = 1795000000000
+    stream._consume(response.SerializeToString())
+    assert stream.diagnostics()["last_quote_age_sec"] is not None
+
+    stream.set_keys(["NSE_EQ|NEW"])
+
+    assert stream.diagnostics()["last_quote_age_sec"] is None
+
+
+
+def test_market_feed_duplicate_timestamp_does_not_refresh_quote_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    first = pb.FeedResponse()
+    feed = first.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 123.45
+    feed.ltt = 1795000000000
+    stream._consume(first.SerializeToString())
+    first_seen = stream.last_quote_at
+
+    duplicate = pb.FeedResponse()
+    feed = duplicate.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 124.00
+    feed.ltt = 1795000000000
+    stream._consume(duplicate.SerializeToString())
+
+    assert stream.quote("NSE_EQ|TEST")["ltp"] == 123.45
+    assert stream.last_quote_at == first_seen
+    assert stream.diagnostics()["ticks"] == 1
+
+
+def test_market_feed_rejects_empty_or_invalid_quotes_for_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    response = pb.FeedResponse()
+    zero_price = response.feeds["NSE_EQ|ZERO"].ltpc
+    zero_price.ltp = 0.0
+    zero_price.ltt = 1795000000000
+    missing_time = response.feeds["NSE_EQ|NO_TIME"].ltpc
+    missing_time.ltp = 123.45
+    # ltt intentionally left at protobuf's zero default.
+
+    stream._consume(response.SerializeToString())
+
+    health = stream.diagnostics()
+    assert health["ticks"] == 0
+    assert health["last_quote_age_sec"] is None
+    assert stream.quote("NSE_EQ|ZERO") is None
+    assert stream.quote("NSE_EQ|NO_TIME") is None
