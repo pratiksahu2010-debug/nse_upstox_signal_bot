@@ -65,7 +65,8 @@ class Engine:
     warm_sessions: int = 6                 # prior sessions kept for indicator warm-up
     fetch_delay_sec: int = _i("FETCH_DELAY_SEC", 6)   # wait after candle close before fetching
     stale_max_bars: int = _i("STALE_MAX_BARS", 1)     # signal bar must be newest or 1 bar old
-    workers: int = _i("WORKERS", 6)
+    # I/O-bound Upstox candle fetches need enough concurrency to finish a 150-symbol scan inside the 5m cadence. Budget still enforces provider request caps.
+    workers: int = max(16, min(24, _i("WORKERS", 24)))
     retry_passes: int = 2
     max_bars_kept: int = 900
     # Upstox standard limits: 50/s, 500/min, 2000/30min. We stay well below.
