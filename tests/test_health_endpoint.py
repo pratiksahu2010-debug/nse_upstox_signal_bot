@@ -21,10 +21,27 @@ def _ready_engine():
 
 
 def _configure_ready(monkeypatch):
+    import threading
+
+    class RunningThread:
+        def is_alive(self):
+            return True
+
+    class RunningStop:
+        thread = RunningThread()
+
+    class RunningPoller:
+        running = True
+        thread = RunningThread()
+        auth_failed = False
+        last_success_at = "2026-11-20T10:00:00+05:30"
+
     monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
     monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "configured-upstox-token")
     monkeypatch.setattr(web.config, "TELEGRAM_TOKEN", "configured-telegram-token")
     monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "123456")
+    monkeypatch.setattr(web, "_scheduler_stop", RunningStop())
+    monkeypatch.setattr(web, "_telegram_poller", RunningPoller())
 
 
 def test_health_is_immediate_and_does_not_initialize_application(monkeypatch):
@@ -80,9 +97,11 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     assert response.status_code == 200
     payload = response.json()
     assert payload["ready"] is True
-    assert payload["scheduler"] == "enabled"
+    assert payload["scheduler"] == {"enabled": True, "running": True}
     assert payload["upstox"] == {"token_configured": True, "auth_failed": False}
-    assert payload["telegram"] == {"credentials_configured": True}
+    assert payload["telegram"]["credentials_configured"] is True
+    assert payload["telegram"]["poller_running"] is True
+    assert payload["telegram"]["auth_failed"] is False
     assert payload["database"] == {"kind": "memory", "persistent": False}
 
 
@@ -223,3 +242,61 @@ def test_readiness_rejects_incomplete_universe(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "universe_validation_failed"}
+
+
+
+def test_readiness_rejects_stopped_scheduler_thread(monkeypatch):
+    class StoppedThread:
+        def is_alive(self):
+            return False
+
+    class StoppedScheduler:
+        thread = StoppedThread()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_scheduler_stop", StoppedScheduler())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scheduler_not_running"}
+
+
+def test_readiness_rejects_telegram_auth_failure(monkeypatch):
+    class RejectedPoller:
+        running = True
+        auth_failed = True
+        thread = type("Thread", (), {"is_alive": lambda self: True})()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", RejectedPoller())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_auth_rejected"}
+
+
+def test_readiness_rejects_missing_telegram_poller(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", None)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_poller_not_running"}
