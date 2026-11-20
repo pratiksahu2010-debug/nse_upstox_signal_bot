@@ -162,16 +162,18 @@ DECLARE
     cycle_data_type TEXT;
     cycle_udt_name TEXT;
     cycle_is_identity TEXT;
+    cycle_is_generated TEXT;
     cycle_column_default TEXT;
 BEGIN
-    SELECT data_type, udt_name, is_identity, column_default
-      INTO cycle_data_type, cycle_udt_name, cycle_is_identity, cycle_column_default
+    SELECT data_type, udt_name, is_identity, is_generated, column_default
+      INTO cycle_data_type, cycle_udt_name, cycle_is_identity, cycle_is_generated, cycle_column_default
       FROM information_schema.columns
      WHERE table_schema = current_schema()
        AND table_name = 'signals'
        AND column_name = 'state_cycle_id';
 
     IF FOUND AND COALESCE(cycle_is_identity, 'NO') <> 'YES'
+       AND COALESCE(cycle_is_generated, 'NEVER') = 'NEVER'
        AND cycle_column_default IS NULL THEN
         IF cycle_data_type IN ('text', 'character varying', 'character') THEN
             UPDATE signals
@@ -686,10 +688,10 @@ class PostgresStore(MemoryStore):
             "actual_option_costs": json.dumps({}),
         }
         legacy_aliases = {
-            "entry_price": s.get("entry"),
-        "stop_loss": s.get("sl"),
-        "target1": s.get("tp1"),
-        "target2": s.get("tp2"),
+                "entry_price": s.get("entry"),
+            "stop_loss": s.get("sl"),
+            "target1": s.get("tp1"),
+            "target2": s.get("tp2"),
         }
         for attempt in range(2):
             conn = self.pool.getconn()
