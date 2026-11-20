@@ -129,7 +129,9 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     payload = response.json()
     assert payload["ready"] is True
     assert payload["scheduler"] == {"enabled": True, "running": True}
-    assert payload["upstox"] == {"token_configured": True, "auth_failed": False}
+    assert payload["upstox"]["token_configured"] is True
+    assert payload["upstox"]["auth_failed"] is False
+    assert payload["upstox"]["last_success_at"] is not None
     assert payload["telegram"]["credentials_configured"] is True
     assert payload["telegram"]["poller_running"] is True
     assert payload["telegram"]["auth_failed"] is False
