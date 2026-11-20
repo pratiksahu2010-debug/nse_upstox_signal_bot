@@ -92,7 +92,7 @@ def test_readiness_rejects_memory_store_when_persistent_database_is_required(mon
 
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
@@ -114,7 +114,7 @@ def test_readiness_checks_postgres_connectivity(monkeypatch):
 
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
@@ -135,7 +135,7 @@ def test_readiness_rejects_missing_upstox_token(monkeypatch):
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "")
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
@@ -156,7 +156,7 @@ def test_readiness_rejects_missing_telegram_configuration(monkeypatch):
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "")
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
