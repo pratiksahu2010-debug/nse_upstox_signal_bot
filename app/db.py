@@ -59,6 +59,8 @@ BEGIN
            AND column_name='signal_id' INTO is_identity_column;
         IF NOT COALESCE(is_identity_column,FALSE) THEN
             CREATE SEQUENCE IF NOT EXISTS signals_signal_id_compat_seq;
+            PERFORM setval('signals_signal_id_compat_seq',
+                GREATEST(COALESCE((SELECT MAX(signal_id)::BIGINT FROM signals),0)+1,1),FALSE);
             UPDATE signals SET signal_id=nextval('signals_signal_id_compat_seq')
              WHERE signal_id IS NULL;
             PERFORM setval('signals_signal_id_compat_seq',
