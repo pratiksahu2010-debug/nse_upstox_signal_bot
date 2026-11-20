@@ -914,7 +914,10 @@ class Engine:
                     expected = int(normal_result.get("symbols") or 0)
                     loaded = int(normal_result.get("loaded") or 0)
                     minimum_loaded = max(1, int(expected * 0.90)) if expected else 1
-                    if loaded >= minimum_loaded:
+                    idle_cycle = normal_result.get("scope") == "idle" and expected == 0
+                    if idle_cycle or (expected > 0 and loaded >= minimum_loaded):
+                        # A tracking-window cycle with no open signals or armed
+                        # setups is valid idle work, not a 0/0 data failure.
                         self.last_successful_cycle_at = datetime.now(IST).isoformat(timespec="seconds")
                         self.last_cycle_error = ""
                     else:
