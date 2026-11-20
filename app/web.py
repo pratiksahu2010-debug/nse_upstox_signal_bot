@@ -322,7 +322,7 @@ def readiness():
         feed_health = feed.diagnostics()
         if not feed_health.get("connected") or not feed_health.get("thread_alive"):
             return unavailable("market_feed_disconnected")
-        feed_age = feed_health.get("last_message_age_sec")
+        feed_age = feed_health.get("last_quote_age_sec")
         if feed_age is None or feed_age > 120:
             return unavailable("market_feed_stale")
 
