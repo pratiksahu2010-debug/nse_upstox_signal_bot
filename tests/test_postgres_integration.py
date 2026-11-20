@@ -71,6 +71,15 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                VALUES (%s, 'SHORT', %s, 200, 202, 198, 196)""",
             (legacy_old_symbol, old_stamp),
         )
+        # Reproduce the legacy required signal_id column with no default.
+        store._run("ALTER TABLE signals ADD COLUMN signal_id BIGINT")
+        store._run(
+            """UPDATE signals SET signal_id = numbered.row_number
+               FROM (SELECT ctid, row_number() OVER (ORDER BY ctid) AS row_number
+                     FROM signals) AS numbered
+               WHERE signals.ctid = numbered.ctid"""
+        )
+        store._run("ALTER TABLE signals ALTER COLUMN signal_id SET NOT NULL")
 
         store.init()
         initialized = True
@@ -133,6 +142,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         }
         legacy_module_signal_id = store.add_signal(legacy_module_signal)
         assert legacy_module_signal_id is not None
+        assert store._run("SELECT signal_id FROM signals WHERE id=%s",
+                          (legacy_module_signal_id,), "one")[0] is not None
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
