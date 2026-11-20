@@ -35,8 +35,14 @@ class UpstoxMarketStream:
 
     def start(self, instrument_keys):
         self.set_keys(instrument_keys)
-        if not self._keys or self._thread is not None:
+        if not self._keys:
             return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        # A dead worker must not permanently disable the feed. Clear a prior
+        # stop flag and create a fresh worker whenever start is called again.
+        self._stop.clear()
+        self._resubscribe.clear()
         self._thread = threading.Thread(
             target=lambda: asyncio.run(self._run()),
             name="upstox-market-feed",
@@ -73,15 +79,33 @@ class UpstoxMarketStream:
 
     def diagnostics(self):
         with self._lock:
-            return {
-                "connected": self.connected,
-                "subscribed_symbols": len(self._keys),
-                "ticks": self.ticks,
-                "reconnects": self.reconnects,
-                "last_message_at": self.last_message_at,
-                "last_error": self.last_error,
-                "quote_cache_size": len(self._quotes),
-            }
+            last_message_at = self.last_message_at
+            connected = self.connected
+            keys = len(self._keys)
+            ticks = self.ticks
+            reconnects = self.reconnects
+            last_error = self.last_error
+            cache_size = len(self._quotes)
+        age = None
+        if last_message_at:
+            try:
+                stamp = datetime.fromisoformat(last_message_at)
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                age = max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                age = None
+        return {
+            "connected": connected,
+            "thread_alive": bool(self._thread and self._thread.is_alive()),
+            "subscribed_symbols": keys,
+            "ticks": ticks,
+            "reconnects": reconnects,
+            "last_message_at": last_message_at,
+            "last_message_age_sec": round(age, 2) if age is not None else None,
+            "last_error": last_error,
+            "quote_cache_size": cache_size,
+        }
 
     async def _run(self):
         delay = 1.0
