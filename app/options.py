@@ -46,7 +46,10 @@ def snapshot_metrics(raw: dict, now_epoch: float = None) -> dict:
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             ts = parsed.timestamp()
-        quote_age_sec = max(0.0, (now_epoch if now_epoch is not None else time.time()) - ts)
+        age = (now_epoch if now_epoch is not None else time.time()) - ts
+        # A future exchange timestamp is not proof of freshness. Treat clock-skewed
+        # quotes as unusable so liquidity checks and premium tracking fail closed.
+        quote_age_sec = age if age >= 0 else None
     except (TypeError, ValueError, OverflowError):
         pass
 
