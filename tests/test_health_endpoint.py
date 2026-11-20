@@ -30,8 +30,14 @@ def _configure_ready(monkeypatch):
     class RunningStop:
         thread = RunningThread()
 
+        def set(self):
+            pass
+
     class RunningPoller:
         running = True
+
+        def stop(self):
+            pass
         thread = RunningThread()
         auth_failed = False
         last_success_at = datetime.now(web.IST).isoformat(timespec="seconds")
@@ -253,6 +259,9 @@ def test_readiness_rejects_stopped_scheduler_thread(monkeypatch):
     class StoppedScheduler:
         thread = StoppedThread()
 
+        def set(self):
+            pass
+
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_scheduler_stop", StoppedScheduler())
     monkeypatch.setattr(web, "_started", True)
@@ -272,6 +281,9 @@ def test_readiness_rejects_telegram_auth_failure(monkeypatch):
         running = True
         auth_failed = True
         thread = type("Thread", (), {"is_alive": lambda self: True})()
+
+        def stop(self):
+            pass
 
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_telegram_poller", RejectedPoller())
@@ -311,6 +323,9 @@ def test_readiness_rejects_stale_telegram_connection(monkeypatch):
         auth_failed = False
         thread = type("Thread", (), {"is_alive": lambda self: True})()
         last_success_at = (web.datetime.now(web.IST) - timedelta(minutes=5)).isoformat()
+
+        def stop(self):
+            pass
 
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_telegram_poller", StalePoller())
