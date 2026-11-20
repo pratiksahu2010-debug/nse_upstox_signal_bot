@@ -243,6 +243,13 @@ def readiness():
             or "" in active_symbols
         ):
             return unavailable("universe_validation_failed")
+        now = datetime.now(IST)
+        if (
+            now.weekday() < 5
+            and now.time() >= time(7, 30)
+            and getattr(universe, "built_on", "") != now.strftime("%Y-%m-%d")
+        ):
+            return unavailable("universe_stale")
     if universe is None:
         # On trading weekdays the master must be resolved before the normal
         # session begins. Before 07:30 and on weekends, no universe is expected.
