@@ -254,6 +254,18 @@ def readiness():
         except (TypeError, ValueError, OverflowError):
             return None
 
+    # Check durable storage before scanner-cycle details so readiness reports
+    # the infrastructure blocker directly when PostgreSQL is unavailable.
+    persistent = getattr(store, "kind", "") == "postgres"
+    if config.REQUIRE_PERSISTENT_DB and not persistent:
+        return unavailable("persistent_database_required")
+    if persistent:
+        try:
+            store._run("SELECT 1", fetch="one")
+        except Exception:
+            log.exception("readiness database check failed")
+            return unavailable("database_unavailable")
+
     market_open = (
         now.weekday() < 5
         and time(9, 15) <= now.time() <= time(15, 30)
@@ -384,16 +396,6 @@ def readiness():
         feed_age = feed_health.get("last_quote_age_sec")
         if feed_age is None or feed_age > 120:
             return unavailable("market_feed_stale")
-
-    persistent = getattr(store, "kind", "") == "postgres"
-    if config.REQUIRE_PERSISTENT_DB and not persistent:
-        return unavailable("persistent_database_required")
-    if persistent:
-        try:
-            store._run("SELECT 1", fetch="one")
-        except Exception:
-            log.exception("readiness database check failed")
-            return unavailable("database_unavailable")
 
     return {
         "ready": True,
