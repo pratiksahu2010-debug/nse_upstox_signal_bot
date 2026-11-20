@@ -45,6 +45,8 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert "UPDATE signals" in sql_calls[schema_reconcile]
     assert "SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date" in sql_calls[schema_reconcile]
     assert "ADD COLUMN IF NOT EXISTS trade_day DATE" in sql_calls[schema_reconcile]
+    assert "RENAME COLUMN bar_time TO bar_ts" in sql_calls[schema_reconcile]
+    assert sql_calls[schema_reconcile].index("RENAME COLUMN bar_time TO bar_ts") < sql_calls[schema_reconcile].index("SET trade_day = (bar_ts AT TIME ZONE")
     assert calls[-1][0].startswith("DELETE FROM signals")
 
 

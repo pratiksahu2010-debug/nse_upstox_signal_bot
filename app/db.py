@@ -43,6 +43,26 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 -- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
 -- does not add columns to a table created by an earlier bot release.
+-- The production-era schema used bar_time; current code consistently uses
+-- bar_ts. Rename the legacy column in place so its data and dependent indexes
+--/constraints remain intact. Do this before any backfill references bar_ts.
+DO $body$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'signals'
+           AND column_name = 'bar_time'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'signals'
+           AND column_name = 'bar_ts'
+    ) THEN
+        ALTER TABLE signals RENAME COLUMN bar_time TO bar_ts;
+    END IF;
+END
+$body$;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_day DATE;
 UPDATE signals
    SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date

@@ -1,10 +1,12 @@
 """Real PostgreSQL persistence and migration integration coverage.
 
 The CI job supplies an isolated disposable database through TEST_DATABASE_URL.
-The test is skipped in local/unit-only runs without that explicit variable.
+This deliberately starts from the production-era schema_migrations and signals
+layouts so startup reconciliation is tested against the real legacy shape.
 """
 import os
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -15,18 +17,78 @@ from app.db import PostgresStore
 def test_postgres_migrations_and_signal_lifecycle_round_trip():
     store = PostgresStore(os.environ["TEST_DATABASE_URL"])
     signal_id = None
+    legacy_id = None
     initialized = False
-    today = date.today()
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     stamp = datetime.now(timezone.utc)
     symbol = "CI_POSTGRES_INTEGRATION"
+    legacy_symbol = "CI_LEGACY_BAR_TIME"
 
     try:
+        # Reproduce the old production migration ledger: version only, with
+        # baseline version 1 already recorded even though its schema is stale.
+        store._run(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)"
+        )
+        store._run("INSERT INTO schema_migrations (version) VALUES (1)")
+        store._run(
+            """
+            CREATE TABLE signals (
+                id BIGSERIAL PRIMARY KEY,
+                module TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                bar_time TIMESTAMPTZ NOT NULL,
+                entry DOUBLE PRECISION,
+                sl DOUBLE PRECISION,
+                tp1 DOUBLE PRECISION,
+                tp2 DOUBLE PRECISION,
+                score INTEGER,
+                trig TEXT,
+                details JSONB,
+                status TEXT NOT NULL DEFAULT 'OPEN',
+                r_result DOUBLE PRECISION,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (module, symbol, side, bar_time)
+            )
+            """
+        )
+        legacy_id = store._run(
+            """
+            INSERT INTO signals
+                (module, symbol, side, bar_time, entry, sl, tp1, tp2,
+                 score, trig, details, status)
+            VALUES
+                ('normal', %s, 'LONG', %s, 100, 98, 102, 104,
+                 91, 'LEGACY_FIXTURE',
+                 '{"indicator_snapshot":{"adx":27.0}}'::jsonb, 'OPEN')
+            RETURNING id
+            """,
+            (legacy_symbol, stamp),
+            "one",
+        )[0]
+
         store.init()
         initialized = True
+
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
         versions = store._run("SELECT version FROM schema_migrations ORDER BY version", fetch="all")
         assert [row[0] for row in versions] == list(range(1, 8))
+
+        # The legacy timestamp and signal row must survive the in-place rename.
+        migrated = store._run(
+            "SELECT bar_ts, trade_day FROM signals WHERE id=%s",
+            (legacy_id,),
+            "one",
+        )
+        assert migrated[0] == stamp
+        assert migrated[1] == today
+        legacy_training = next(
+            item for item in store.training_rows(today) if item["id"] == legacy_id
+        )
+        assert legacy_training["snapshot"] == {"adx": 27.0}
+        assert legacy_training["symbol"] == legacy_symbol
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
@@ -85,6 +147,9 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )
         assert excursion == (1.2, 0.4, 3, True)
     finally:
+        # The CI database is disposable; remove only records created by this test.
+        if legacy_id is not None:
+            store._run("DELETE FROM signals WHERE id=%s", (legacy_id,))
         if initialized:
             if signal_id is not None:
                 store._run("DELETE FROM signals WHERE id=%s", (signal_id,))
