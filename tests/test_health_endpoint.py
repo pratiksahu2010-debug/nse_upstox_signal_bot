@@ -430,3 +430,132 @@ def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatc
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "universe_stale"}
+
+
+
+def _freeze_market_time(monkeypatch):
+    from datetime import datetime
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = cls(2026, 11, 20, 10, 0)
+            return current.replace(tzinfo=tz) if tz else current
+
+    monkeypatch.setattr(web, "datetime", FrozenDateTime)
+
+
+def test_readiness_rejects_no_completed_scan_during_entry_window(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_completed_at = None
+    candidate.last_successful_cycle_at = None
+    candidate.last_cycle_result = {}
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_cycle_not_yet_completed"}
+
+
+def test_readiness_rejects_stale_scanner_cycle(monkeypatch):
+    from datetime import datetime
+
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    old = datetime(2026, 11, 20, 9, 45, tzinfo=web.IST).isoformat()
+    candidate.last_cycle_completed_at = old
+    candidate.last_successful_cycle_at = old
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_cycle_stale"}
+
+
+def test_readiness_rejects_incomplete_150_symbol_scan(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "signals": 0}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_data_incomplete"}
+
+
+def test_readiness_rejects_stale_upstox_rest_data(monkeypatch):
+    from datetime import datetime
+
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.client.last_success_at = datetime(2026, 11, 20, 9, 45, tzinfo=web.IST).isoformat()
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "upstox_rest_data_stale"}
+
+
+def test_readiness_rejects_disconnected_market_feed(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": False, "thread_alive": True, "last_message_age_sec": 1.0
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_disconnected"}
+
+
+def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": True, "thread_alive": True, "last_message_age_sec": 180.0
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_stale"}
