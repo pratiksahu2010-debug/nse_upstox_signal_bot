@@ -108,15 +108,17 @@ DECLARE
     identity_data_type TEXT;
     identity_udt_name TEXT;
     identity_is_generated TEXT;
+    identity_column_default TEXT;
 BEGIN
-    SELECT data_type, udt_name, is_identity
-      INTO identity_data_type, identity_udt_name, identity_is_generated
+    SELECT data_type, udt_name, is_identity, column_default
+      INTO identity_data_type, identity_udt_name, identity_is_generated, identity_column_default
       FROM information_schema.columns
      WHERE table_schema = current_schema()
        AND table_name = 'signals'
        AND column_name = 'identity';
 
-    IF FOUND AND COALESCE(identity_is_generated, 'NO') <> 'YES' THEN
+    IF FOUND AND COALESCE(identity_is_generated, 'NO') <> 'YES'
+       AND identity_column_default IS NULL THEN
         IF identity_data_type IN ('text', 'character varying', 'character') THEN
             UPDATE signals
                SET "identity" = md5(concat_ws('|', COALESCE(module, 'normal'),
