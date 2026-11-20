@@ -602,7 +602,7 @@ class Engine:
                     # Candidate selection already validated this quote; prefer it over
                     # an unvalidated/stale stream cache entry for this signal.
                     snapshots[key] = raw_snapshot
-            needs_rest = [key for key in option_keys if key not in snapshots]
+            needs_rest = [key for key in option_keys if key not in snapshots and key not in candidate_keys]
             # Premium tracking needs a signal-time entry reference. A newly added
             # WebSocket subscription may not have produced its first tick yet, so
             # use the same batched optional REST snapshot as a best-effort fallback.
