@@ -85,6 +85,17 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                WHERE signals.ctid = numbered.ctid"""
         )
         store._run("ALTER TABLE signals ALTER COLUMN signal_id SET NOT NULL")
+        # Reproduce additional pre-repository lifecycle columns. The cycle ID
+        # is backfilled/defaulted by startup reconciliation; price aliases are
+        # populated from the current canonical SL/target values on each insert.
+        store._run("ALTER TABLE signals ADD COLUMN state_cycle_id TEXT")
+        store._run("ALTER TABLE signals ADD COLUMN stop_loss DOUBLE PRECISION")
+        store._run("ALTER TABLE signals ADD COLUMN target1 DOUBLE PRECISION")
+        store._run("ALTER TABLE signals ADD COLUMN target2 DOUBLE PRECISION")
+        store._run("""UPDATE signals SET state_cycle_id='legacy-cycle-' || symbol,
+            stop_loss=sl, target1=tp1, target2=tp2""")
+        for legacy_column in ("state_cycle_id", "stop_loss", "target1", "target2"):
+            store._run(f"ALTER TABLE signals ALTER COLUMN {legacy_column} SET NOT NULL")
 
         store.init()
         initialized = True
@@ -166,9 +177,11 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )[0]
         assert new_identity and new_identity != "legacy-existing"
         assert store._run(
-            "SELECT entry_price FROM signals WHERE id=%s",
+            "SELECT entry_price, stop_loss, target1, target2, state_cycle_id FROM signals WHERE id=%s",
             (legacy_module_signal_id,), "one",
-        )[0] == 100.0
+        )[0] == (100.0, 98.0, 102.0, 104.0, store._run(
+            "SELECT state_cycle_id FROM signals WHERE id=%s", (legacy_id,), "one"
+        )[0])
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
