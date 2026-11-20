@@ -35,7 +35,6 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             """
             CREATE TABLE signals (
                 id BIGSERIAL PRIMARY KEY,
-                module TEXT NOT NULL,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 bar_time TIMESTAMPTZ NOT NULL,
@@ -49,17 +48,17 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 r_result DOUBLE PRECISION,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (module, symbol, side, bar_time)
+                UNIQUE (symbol, side, bar_time)
             )
             """
         )
         legacy_id = store._run(
             """
             INSERT INTO signals
-                (module, symbol, side, bar_time, entry, sl, tp1, tp2,
+                (symbol, side, bar_time, entry, sl, tp1, tp2,
                  score, trig, details, status)
             VALUES
-                ('normal', %s, 'LONG', %s, 100, 98, 102, 104,
+                (%s, 'LONG', %s, 100, 98, 102, 104,
                  91, 'LEGACY_FIXTURE',
                  '{"indicator_snapshot":{"adx":27.0}}'::jsonb, 'OPEN')
             RETURNING id
@@ -84,6 +83,10 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )
         assert migrated[0] == stamp
         assert migrated[1] == today
+        legacy_module = store._run(
+            "SELECT module FROM signals WHERE id=%s", (legacy_id,), "one"
+        )[0]
+        assert legacy_module == "normal"
         legacy_training = next(
             item for item in store.training_rows(today) if item["id"] == legacy_id
         )
