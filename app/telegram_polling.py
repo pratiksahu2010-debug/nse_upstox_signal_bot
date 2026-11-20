@@ -156,9 +156,12 @@ class TelegramPoller:
     def stop(self):
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=5)
-        self._release_leader_lock()
-        self.running = False
+            # getUpdates may block for 25s; let _loop's finally release the
+            # session lock only after the request thread has actually stopped.
+            self.thread.join(timeout=40)
+        if self.thread is None or not self.thread.is_alive():
+            self._release_leader_lock()
+            self.running = False
 
     def _api(self, method):
         return f"https://api.telegram.org/bot{self.token}/{method}"
