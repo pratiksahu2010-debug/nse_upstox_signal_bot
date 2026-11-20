@@ -411,6 +411,19 @@ class PostgresStore(MemoryStore):
                    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
                )"""
         )
+        # Older deployments created schema_migrations with only a version
+        # column. CREATE TABLE IF NOT EXISTS does not evolve an existing table,
+        # so upgrade the ledger in place before any INSERT references its columns.
+        # Keep legacy rows and all business data; no table is dropped or rebuilt.
+        self._run("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS name TEXT")
+        self._run(
+            "ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        )
+        self._run(
+            "UPDATE schema_migrations SET name = 'legacy_' || version::text WHERE name IS NULL"
+        )
+        self._run("ALTER TABLE schema_migrations ALTER COLUMN name SET NOT NULL")
+
         applied_rows = self._run("SELECT version FROM schema_migrations", fetch="all")
         applied = {int(row[0]) for row in applied_rows}
         for version, name, sql in MIGRATIONS:
