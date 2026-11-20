@@ -52,5 +52,18 @@ def test_postgres_store_does_not_reapply_recorded_migrations():
     store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7))
     store.init()
 
-    assert not any(sql in (MIGRATIONS[0][2], MIGRATIONS[1][2], MIGRATIONS[2][2], MIGRATIONS[3][2], MIGRATIONS[4][2], MIGRATIONS[5][2], MIGRATIONS[6][2]) for sql, _, _ in calls)
+    # The baseline SCHEMA is intentionally reconciled once on every startup,
+    # even when migration 1 is recorded, to repair columns missing from legacy
+    # installations. This is not a migration re-application.
+    assert sum(sql == MIGRATIONS[0][2] for sql, _, _ in calls) == 1
+    # Versioned migrations 2-7 must not run again once recorded.
+    assert not any(
+        sql == migration_sql
+        for sql, _, _ in calls
+        for _, _, migration_sql in MIGRATIONS[1:]
+    )
+    assert not any(
+        sql.startswith("INSERT INTO schema_migrations")
+        for sql, _, _ in calls
+    )
     assert calls[-1][0].startswith("DELETE FROM signals")
