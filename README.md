@@ -60,7 +60,8 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 
 ## API
 
-- GET / and GET /health — immediate public liveness; they do not imply the bot is ready to scan.\n- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and (when resolved) the full fixed universe are valid.
+- GET / and GET /health — immediate public liveness; they do not imply the bot is ready to scan.
+- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and (when resolved) the full fixed universe are valid.
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
