@@ -561,7 +561,7 @@ class Engine:
             selected = dict(selected)
             selected.update({
                 "selection_status": status,
-                "atm_reference": "FUTURES_PROXY" if sig.info and sig.info.is_index else "CASH_SPOT",
+                "atm_reference": "FUTURES_PROXY" if getattr(getattr(sig, "info", None), "is_index", False) else "CASH_SPOT",
                 "_candidate_snapshot": raw,
                 **metrics,
             })
