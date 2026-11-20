@@ -14,7 +14,6 @@ from .telegram import send
 log = logging.getLogger("telegram.polling")
 
 
-
 def _classify_telegram_conflict(description):
     """Return a safe conflict category without logging Telegram response data."""
     message = str(description or "").lower()
