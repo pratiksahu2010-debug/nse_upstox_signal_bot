@@ -161,3 +161,28 @@ def test_postgres_training_rows_keep_module_and_symbol_columns_aligned():
     assert row["snapshot"] == {"adx": 25.0}
     assert row["option_tracking"]["instrument_key"] == "NSE_FO|RELIANCE"
     assert row["actual_option_costs"]["total_cost_rupees"] == 12.5
+
+
+def test_telegram_sender_never_logs_bot_token_from_request_exception(monkeypatch, caplog):
+    import logging
+    import requests
+    import app.telegram as telegram
+
+    secret = "test-secret-bot-token"
+    monkeypatch.setattr(telegram, "DRY_RUN", False)
+    monkeypatch.setattr(telegram, "TELEGRAM_TOKEN", secret)
+    monkeypatch.setattr(telegram, "TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setattr(telegram.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(telegram, "_last", [0.0])
+
+    def fail(*args, **kwargs):
+        raise requests.ConnectionError(
+            f"failed URL https://api.telegram.org/bot{secret}/sendMessage"
+        )
+
+    monkeypatch.setattr(telegram.requests, "post", fail)
+    with caplog.at_level(logging.ERROR, logger="telegram"):
+        assert telegram.send("test message") is False
+
+    assert secret not in caplog.text
+    assert "ConnectionError" in caplog.text
