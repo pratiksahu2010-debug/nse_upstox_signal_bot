@@ -10,7 +10,7 @@ def _ready_engine():
     class FakeUniverse:
         ready = True
         configured_symbols = [f"SYMBOL{i}" for i in range(150)]
-        normal = [object() for _ in range(150)]
+        normal = [type("Item", (), {"symbol": f"SYMBOL{i}"})() for i in range(150)]
 
     class FakeEngine:
         client = FakeClient()
@@ -44,6 +44,7 @@ def _configure_ready(monkeypatch):
 
     monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
     monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "configured-upstox-token")
+    monkeypatch.setattr(web.config, "ADMIN_TOKEN", "configured-admin-token")
     monkeypatch.setattr(web.config, "TELEGRAM_TOKEN", "configured-telegram-token")
     monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "123456")
     monkeypatch.setattr(web, "_scheduler_stop", RunningStop())
@@ -339,3 +340,41 @@ def test_readiness_rejects_stale_telegram_connection(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "telegram_connection_stale"}
+
+
+
+def test_readiness_rejects_missing_admin_token(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "ADMIN_TOKEN", "")
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "admin_token_missing"}
+
+
+def test_readiness_rejects_wrong_fixed_universe_count_even_if_flagged_ready(monkeypatch):
+    class WrongCountUniverse:
+        ready = True
+        configured_symbols = ["NIFTY"]
+        normal = [type("Item", (), {"symbol": "NIFTY"})()]
+
+    class EngineWithWrongCount(_ready_engine().__class__):
+        uni = WrongCountUniverse()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", EngineWithWrongCount())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "universe_validation_failed"}
