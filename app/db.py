@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (module, symbol, side, bar_ts)
 );
+-- Some pre-repository production deployments used a legacy signals table
+-- without the current surrogate key. Add a generated id in place; existing
+-- rows are retained and receive stable ids for current application queries.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_id ON signals (id);
 -- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
 -- does not add columns to a table created by an earlier bot release.
 -- The production-era schema used bar_time; current code consistently uses
