@@ -54,7 +54,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             )
             """
         )
-        legacy_id = store._run(
+        store._run(
             """
             INSERT INTO signals
                 (symbol, side, bar_time, entry, sl, tp1, tp2,
@@ -82,6 +82,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             "SELECT id FROM signals WHERE symbol=%s AND side='SHORT' AND bar_ts=%s",
             (legacy_old_symbol, old_stamp), "one",
         )[0]
+        assert legacy_id > 0 and legacy_old_id > 0 and legacy_id != legacy_old_id
 
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
