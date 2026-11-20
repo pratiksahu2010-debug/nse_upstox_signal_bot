@@ -108,6 +108,8 @@ def test_readiness_is_unavailable_before_application_initialization(monkeypatch)
 
 
 def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
     class FakeStore:
         kind = "memory"
 
