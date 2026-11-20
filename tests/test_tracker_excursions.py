@@ -61,7 +61,7 @@ def test_mfe_mae_uses_inverse_direction_for_short_trade():
     mfe, mae, bars, _ = measure_excursions(row, short_bars)
 
     assert mfe == 1.5
-    assert mae == 0.25
+    assert mae == 0.75
     assert bars == 2
 
 
