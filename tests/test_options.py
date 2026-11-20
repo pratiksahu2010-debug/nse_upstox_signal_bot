@@ -73,3 +73,24 @@ def test_snapshot_metrics_parses_iso_timestamp_for_freshness():
         "depth": {"buy": [{"price": 9.9}], "sell": [{"price": 10.1}]},
     }, now)
     assert metrics["quote_age_sec"] == 3.0
+
+
+
+def test_snapshot_metrics_rejects_future_timestamp_as_not_fresh():
+    from datetime import datetime, timezone
+
+    from app.options import snapshot_metrics, validate_option_liquidity
+
+    now = datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc).timestamp()
+    metrics = snapshot_metrics({
+        "last_price": 10.0,
+        "timestamp": (now + 120) * 1000,
+        "volume": 1000,
+        "oi": 5000,
+        "depth": {"buy": [{"price": 9.9}], "sell": [{"price": 10.1}]},
+    }, now)
+    assert metrics["quote_age_sec"] is None
+    valid, reason = validate_option_liquidity(metrics, 1, 1, 5.0, 20)
+    assert valid is False
+    assert reason == "quote_stale"
+
