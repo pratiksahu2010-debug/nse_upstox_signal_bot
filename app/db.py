@@ -92,9 +92,24 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp1 INTEGER;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp2 INTEGER;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS option_tracking JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS actual_option_costs JSONB NOT NULL DEFAULT '{}'::jsonb;
--- The pre-module unique key (symbol, side, bar_time) survives the
--- timestamp rename, but the current insert conflict target includes module.
--- Add the matching unique index in place for the current writer.
+-- Replace the pre-module uniqueness rule (symbol, side, bar_time).
+-- Keeping it would incorrectly block a second, distinct module on the same
+-- candle. Drop only that exact legacy constraint; signal rows are untouched.
+DO $dedupe$
+DECLARE legacy_constraint TEXT;
+BEGIN
+    FOR legacy_constraint IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = 'signals'::regclass
+           AND contype = 'u'
+           AND regexp_replace(pg_get_constraintdef(oid), '\\s+', ' ', 'g')
+               = 'UNIQUE (symbol, side, bar_ts)'
+    LOOP
+        EXECUTE format('ALTER TABLE signals DROP CONSTRAINT %I', legacy_constraint);
+    END LOOP;
+END
+$dedupe$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_module_symbol_side_bar_ts
     ON signals (module, symbol, side, bar_ts);
 CREATE INDEX IF NOT EXISTS idx_signals_day ON signals (trade_day, module);
