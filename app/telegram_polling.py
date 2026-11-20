@@ -132,7 +132,7 @@ class TelegramPoller:
             return False
         except Exception:
             try: conn.rollback()
-            finally: self.store.pool.putconn(conn, close=bool(conn.closed))
+            finally: self.store.pool.putconn(conn, close=True)
             raise
 
     def _release_leader_lock(self):
@@ -140,6 +140,7 @@ class TelegramPoller:
         self.leader_lock_acquired = False
         if conn is None:
             return
+        discard = False
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
@@ -147,11 +148,15 @@ class TelegramPoller:
                 cur.fetchone()
             conn.commit()
         except Exception as exc:
+            discard = True
             try: conn.rollback()
             except Exception: pass
-            log.warning("Telegram leader lock release failed (%s)", type(exc).__name__)
+            log.warning("Telegram leader lock release failed (%s); discarding connection",
+                        type(exc).__name__)
         finally:
-            self.store.pool.putconn(conn, close=bool(conn.closed))
+            # If UNLOCK failed, closing the session is the only reliable way
+            # to ensure PostgreSQL releases the session-scoped advisory lock.
+            self.store.pool.putconn(conn, close=discard or bool(conn.closed))
 
     def stop(self):
         self.stop_event.set()
