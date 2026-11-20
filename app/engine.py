@@ -25,7 +25,7 @@ from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_
                      initial_option_tracking, update_option_tracking)
 from .telegram import format_signal, send
 from .tracker import measure_excursions, measure_target_times, simulate
-from .universe import Universe, build_universe, pick_option
+from .universe import Universe, build_universe, pick_option, nearby_options
 
 log = logging.getLogger("engine")
 MODULES = {"normal": (mod_normal, NORMAL)}
@@ -509,6 +509,64 @@ class Engine:
                 continue
             prepared.append(sig)
 
+        # Compare nearby strikes using one batched quote request. The first
+        # candidate is the nearest-ATM fallback and remains eligible if quotes fail.
+        candidate_keys = list(dict.fromkeys(
+            candidate.get("_key")
+            for sig in prepared
+            for candidate in (sig.option.get("_candidates") or [])
+            if candidate.get("_key")
+        ))
+        candidate_quotes = {}
+        if candidate_keys:
+            try:
+                candidate_quotes = self.client.full_quotes(candidate_keys) or {}
+            except Exception as exc:
+                log.warning("optional nearby-strike quote batch failed: %s", type(exc).__name__)
+        for sig in prepared:
+            candidates = sig.option.pop("_candidates", None)
+            if not candidates:
+                continue
+            evaluated = []
+            atm = candidates[0]
+            atm_raw = None
+            for candidate in candidates:
+                raw = candidate_quotes.get(candidate["_key"])
+                if raw is None:
+                    raw = next((value for value in candidate_quotes.values()
+                                if isinstance(value, dict)
+                                and value.get("instrument_token") == candidate["_key"]), None)
+                if candidate is atm:
+                    atm_raw = raw
+                metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
+                valid, reason = validate_option_liquidity(
+                    metrics, OPTION_MIN_VOLUME, OPTION_MIN_OI,
+                    OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC,
+                )
+                if valid:
+                    distance = abs(float(candidate["strike"]) - float(sig.entry))
+                    evaluated.append((metrics.get("spread_pct", 999.0),
+                                      -int(metrics.get("volume") or 0),
+                                      -int(metrics.get("oi") or 0), distance,
+                                      candidate, raw, metrics))
+                else:
+                    d["rejects"][f"strike_{reason}"] += 1
+            if evaluated:
+                _spread, _volume, _oi, _distance, selected, raw, metrics = min(evaluated, key=lambda item: item[:4])
+                status = "LIQUIDITY_VERIFIED"
+            else:
+                selected, raw = atm, atm_raw
+                metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
+                status = "ATM_FALLBACK_UNVERIFIED"
+            selected = dict(selected)
+            selected.update({
+                "selection_status": status,
+                "atm_reference": "FUTURES_PROXY" if sig.info and sig.info.is_index else "CASH_SPOT",
+                "_candidate_snapshot": raw,
+                **metrics,
+            })
+            sig.option = selected
+
         # Apply all lazily selected option subscriptions in one reconnect per scan,
         # not one reconnect per candidate contract.
         self._sync_market_stream_keys()
@@ -525,6 +583,11 @@ class Engine:
                     raw_snapshot = stream_quote_snapshot(self.market_stream.quote(key))
                     if raw_snapshot:
                         snapshots[key] = raw_snapshot
+            for sig in prepared:
+                key = sig.option.get("_key")
+                raw_snapshot = sig.option.pop("_candidate_snapshot", None)
+                if key and raw_snapshot is not None and key not in snapshots:
+                    snapshots[key] = raw_snapshot
             needs_rest = [key for key in option_keys if key not in snapshots]
             # Premium tracking needs a signal-time entry reference. A newly added
             # WebSocket subscription may not have produced its first tick yet, so
@@ -759,16 +822,21 @@ class Engine:
             return None
         # Keep the instrument key internal until all candidate contracts are
         # collected and quoted in one optional batch request.
-        if rec.key and self.market_stream is not None:
-            if rec.key not in self._stream_keys:
-                self._stream_keys.append(rec.key)
-                base_keys = [item.key for item in self.uni.normal if item.key]
-                base_set = set(base_keys)
-                option_keys = [key for key in self._stream_keys if key not in base_set][-1000:]
-                self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
-                self._stream_keys_dirty = True
-        return {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
-                "ltp": None, "_key": rec.key}
+        candidates = nearby_options(
+            self.uni, sig.info.underlying, sig.entry, sig.side, now, candidate_count=5,
+        )
+        if not candidates:
+            return None
+        atm = candidates[0]
+        return {
+            "tsym": atm.tsym, "lot": atm.lot, "strike": atm.strike,
+            "ltp": None, "_key": atm.key,
+            "_candidates": [
+                {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
+                 "ltp": None, "_key": rec.key}
+                for rec in candidates
+            ],
+        }
 
     def _sync_market_stream_keys(self):
         if self.market_stream is not None and self._stream_keys_dirty:
