@@ -51,6 +51,9 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert "ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'OPEN'" in sql_calls[schema_reconcile]
     assert "ADD COLUMN IF NOT EXISTS id BIGSERIAL" in sql_calls[schema_reconcile]
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_id ON signals (id)" in sql_calls[schema_reconcile]
+    assert "DO $identity_compat$" in sql_calls[schema_reconcile]
+    assert "ALTER COLUMN \"identity\" SET DEFAULT md5(random()::text || clock_timestamp()::text)" in sql_calls[schema_reconcile]
+    assert "WHERE \"identity\" IS NULL" in sql_calls[schema_reconcile]
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
