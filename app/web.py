@@ -199,6 +199,17 @@ def readiness():
     if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
         return unavailable("telegram_not_configured")
 
+    scheduler_thread = getattr(_scheduler_stop, "thread", None)
+    if _scheduler_stop is None or scheduler_thread is None or not scheduler_thread.is_alive():
+        return unavailable("scheduler_not_running")
+
+    poller = _telegram_poller
+    poller_thread = getattr(poller, "thread", None) if poller is not None else None
+    if poller is None or not bool(getattr(poller, "running", False)) or poller_thread is None or not poller_thread.is_alive():
+        return unavailable("telegram_poller_not_running")
+    if bool(getattr(poller, "auth_failed", False)):
+        return unavailable("telegram_auth_rejected")
+
     client = getattr(engine, "client", None)
     if bool(getattr(client, "auth_failed", False)):
         return unavailable("upstox_auth_rejected")
@@ -228,9 +239,14 @@ def readiness():
     return {
         "ready": True,
         "initialized": True,
-        "scheduler": "enabled",
+        "scheduler": {"enabled": True, "running": True},
         "upstox": {"token_configured": True, "auth_failed": False},
-        "telegram": {"credentials_configured": True},
+        "telegram": {
+            "credentials_configured": True,
+            "poller_running": True,
+            "auth_failed": False,
+            "last_success_at": getattr(poller, "last_success_at", None),
+        },
         "universe": {
             "validated": universe is not None,
             "configured_symbols": len(getattr(universe, "configured_symbols", [])) if universe else 0,
