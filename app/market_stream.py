@@ -7,6 +7,7 @@ Ticks are never treated as completed candles and cannot create early signals.
 import asyncio
 import json
 import logging
+import math
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -191,9 +192,15 @@ class UpstoxMarketStream:
             else:
                 continue
 
+            ltp = float(ltpc.ltp)
+            exchange_ts_ms = int(ltpc.ltt)
+            # A protobuf default (0) or non-finite price is not a real quote.
+            # It must not make the feed look fresh to /ready or option tracking.
+            if not math.isfinite(ltp) or ltp <= 0 or exchange_ts_ms <= 0:
+                continue
             quote = {
-                "ltp": float(ltpc.ltp),
-                "exchange_ts_ms": int(ltpc.ltt),
+                "ltp": ltp,
+                "exchange_ts_ms": exchange_ts_ms,
                 "received_at": now,
                 "volume": None,
                 "oi": None,
@@ -226,12 +233,10 @@ class UpstoxMarketStream:
                 previous = self._quotes.get(key)
                 previous_ts = int(previous.get("exchange_ts_ms") or 0) if previous else 0
                 incoming_ts = int(quote.get("exchange_ts_ms") or 0)
-                # Upstox WebSocket delivery can be reordered. Do not let an
-                # older exchange tick roll the cached quote backwards. A zero
-                # timestamp is treated as unknown for backward compatibility.
-                if previous_ts > 0 and (incoming_ts <= 0 or incoming_ts < previous_ts):
-                    # An unknown timestamp cannot establish that this update is newer.
-                    # Preserve the last quote whose exchange ordering is known.
+                # Upstox WebSocket delivery can be reordered or duplicated.
+                # Only a strictly newer exchange timestamp refreshes quote
+                # freshness; duplicate ticks must not keep a dead feed alive.
+                if previous_ts > 0 and incoming_ts <= previous_ts:
                     continue
                 self._quotes[key] = quote
                 accepted += 1
