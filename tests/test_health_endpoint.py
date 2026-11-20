@@ -21,7 +21,7 @@ def _ready_engine():
 
 
 def _configure_ready(monkeypatch):
-    import threading
+    from datetime import datetime
 
     class RunningThread:
         def is_alive(self):
@@ -34,7 +34,7 @@ def _configure_ready(monkeypatch):
         running = True
         thread = RunningThread()
         auth_failed = False
-        last_success_at = "2026-11-20T10:00:00+05:30"
+        last_success_at = datetime.now(web.IST).isoformat(timespec="seconds")
 
     monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
     monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "configured-upstox-token")
@@ -300,3 +300,27 @@ def test_readiness_rejects_missing_telegram_poller(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "telegram_poller_not_running"}
+
+
+
+def test_readiness_rejects_stale_telegram_connection(monkeypatch):
+    from datetime import timedelta
+
+    class StalePoller:
+        running = True
+        auth_failed = False
+        thread = type("Thread", (), {"is_alive": lambda self: True})()
+        last_success_at = (web.datetime.now(web.IST) - timedelta(minutes=5)).isoformat()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", StalePoller())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_connection_stale"}
