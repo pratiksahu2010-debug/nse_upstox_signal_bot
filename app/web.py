@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import requests
 from fastapi import FastAPI, Request
@@ -182,30 +182,60 @@ def health():
 
 @app.get("/ready")
 def readiness():
-    """Readiness probe: distinguish a live process from an initialized, usable service."""
+    """Readiness probe for the Render router: require working config and persistence.
+
+    /health remains a pure liveness endpoint. This endpoint deliberately fails
+    closed when the scanner could not authenticate or resolve its fixed universe.
+    """
+    def unavailable(reason):
+        return JSONResponse(status_code=503, content={"ready": False, "reason": reason})
+
     if not _started or engine is None or store is None:
-        return JSONResponse(
-            status_code=503,
-            content={"ready": False, "reason": "application_not_initialized"},
-        )
+        return unavailable("application_not_initialized")
+    if not config.RUN_SCHEDULER:
+        return unavailable("scheduler_disabled")
+    if not config.UPSTOX_TOKEN:
+        return unavailable("upstox_token_missing")
+    if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
+        return unavailable("telegram_not_configured")
+
+    client = getattr(engine, "client", None)
+    if bool(getattr(client, "auth_failed", False)):
+        return unavailable("upstox_auth_rejected")
+
+    universe = getattr(engine, "uni", None)
+    if universe is not None and not bool(getattr(universe, "ready", False)):
+        return unavailable("universe_validation_failed")
+    if universe is None:
+        # On trading weekdays the master must be resolved before the normal
+        # session begins. Before 07:30 and on weekends, no universe is expected.
+        now = datetime.now(IST)
+        if now.weekday() < 5 and now.time() >= time(7, 30):
+            if str(getattr(engine, "last_error", "")).startswith("universe:"):
+                return unavailable("universe_load_failed")
+            return unavailable("universe_not_initialized")
+
     persistent = getattr(store, "kind", "") == "postgres"
     if config.REQUIRE_PERSISTENT_DB and not persistent:
-        return JSONResponse(
-            status_code=503,
-            content={"ready": False, "reason": "persistent_database_required"},
-        )
+        return unavailable("persistent_database_required")
     if persistent:
         try:
             store._run("SELECT 1", fetch="one")
         except Exception:
             log.exception("readiness database check failed")
-            return JSONResponse(
-                status_code=503,
-                content={"ready": False, "reason": "database_unavailable"},
-            )
+            return unavailable("database_unavailable")
+
     return {
         "ready": True,
         "initialized": True,
+        "scheduler": "enabled",
+        "upstox": {"token_configured": True, "auth_failed": False},
+        "telegram": {"credentials_configured": True},
+        "universe": {
+            "validated": universe is not None,
+            "configured_symbols": len(getattr(universe, "configured_symbols", [])) if universe else 0,
+            "validated_symbols": len(getattr(universe, "normal", [])) if universe else 0,
+        },
         "database": {"kind": getattr(store, "kind", "unknown"), "persistent": persistent},
     }
 
