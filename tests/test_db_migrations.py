@@ -49,6 +49,8 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert sql_calls[schema_reconcile].index("RENAME COLUMN bar_time TO bar_ts") < sql_calls[schema_reconcile].index("SET trade_day = (bar_ts AT TIME ZONE")
     assert not any(sql.lstrip().upper().startswith("DELETE FROM SIGNALS") for sql, _, _ in calls)
     assert "ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'OPEN'" in sql_calls[schema_reconcile]
+    assert "ADD COLUMN IF NOT EXISTS id BIGSERIAL" in sql_calls[schema_reconcile]
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_id ON signals (id)" in sql_calls[schema_reconcile]
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
