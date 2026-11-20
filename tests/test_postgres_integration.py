@@ -35,6 +35,9 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)"
         )
         store._run("INSERT INTO schema_migrations (version) VALUES (1)")
+        # Reproduce a retired production FK: the current bot does not use
+        # signal_claims, but its legacy identity column once referenced it.
+        store._run("CREATE TABLE signal_claims (identity TEXT PRIMARY KEY)")
         store._run(
             """
             CREATE TABLE signals (
@@ -72,6 +75,13 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             """INSERT INTO signals (symbol, side, bar_time, entry_price, entry, sl, tp1, tp2)
                VALUES (%s, 'SHORT', %s, 200, 200, 202, 198, 196)""",
             (legacy_old_symbol, old_stamp),
+        )
+        # Keep existing legacy identity values valid while adding the FK
+        # that caused production signal inserts to fail.
+        store._run("INSERT INTO signal_claims(identity) VALUES ('legacy-existing')")
+        store._run(
+            "ALTER TABLE signals ADD CONSTRAINT signals_identity_fkey "
+            "FOREIGN KEY (identity) REFERENCES signal_claims(identity)"
         )
         # Existing identity values are present, but the legacy column has no
         # default for new rows. Startup reconciliation must add one safely.
@@ -123,6 +133,13 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             (legacy_old_symbol, old_stamp), "one",
         )[0]
         assert legacy_id > 0 and legacy_old_id > 0 and legacy_id != legacy_old_id
+        # The retired FK is removed, but existing identity data remains intact.
+        assert store._run(
+            """SELECT count(*) FROM pg_constraint
+               WHERE conrelid='signals'::regclass
+                 AND confrelid='signal_claims'::regclass AND contype='f'""",
+            fetch="one",
+        )[0] == 0
         # Existing non-null identities must remain unchanged.
         assert store._run(
             "SELECT identity FROM signals WHERE id=%s", (legacy_id,), "one"
