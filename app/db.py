@@ -103,8 +103,7 @@ BEGIN
           FROM pg_constraint
          WHERE conrelid = 'signals'::regclass
            AND contype = 'u'
-           AND regexp_replace(pg_get_constraintdef(oid), '\\s+', ' ', 'g')
-               = 'UNIQUE (symbol, side, bar_ts)'
+           AND pg_get_constraintdef(oid) = 'UNIQUE (symbol, side, bar_ts)'
     LOOP
         EXECUTE format('ALTER TABLE signals DROP CONSTRAINT %I', legacy_constraint);
     END LOOP;
