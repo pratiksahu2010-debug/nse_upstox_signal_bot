@@ -38,6 +38,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         store._run(
             """
             CREATE TABLE signals (
+                identity TEXT NOT NULL DEFAULT 'legacy-existing',
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 bar_time TIMESTAMPTZ NOT NULL,
@@ -71,6 +72,9 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                VALUES (%s, 'SHORT', %s, 200, 202, 198, 196)""",
             (legacy_old_symbol, old_stamp),
         )
+        # Existing identity values are present, but the legacy column has no
+        # default for new rows. Startup reconciliation must add one safely.
+        store._run('ALTER TABLE signals ALTER COLUMN identity DROP DEFAULT')
         # Reproduce the legacy required signal_id column with no default.
         store._run("ALTER TABLE signals ADD COLUMN signal_id BIGINT")
         store._run(
@@ -92,6 +96,17 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             (legacy_old_symbol, old_stamp), "one",
         )[0]
         assert legacy_id > 0 and legacy_old_id > 0 and legacy_id != legacy_old_id
+        # Existing non-null identities must remain unchanged.
+        assert store._run(
+            "SELECT identity FROM signals WHERE id=%s", (legacy_id,), "one"
+        )[0] == "legacy-existing"
+        identity_default = store._run(
+            """SELECT column_default FROM information_schema.columns
+               WHERE table_schema=current_schema() AND table_name='signals'
+                 AND column_name='identity'""",
+            fetch="one",
+        )[0]
+        assert identity_default and "md5" in identity_default
 
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
@@ -144,6 +159,11 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         assert legacy_module_signal_id is not None
         assert store._run("SELECT signal_id FROM signals WHERE id=%s",
                           (legacy_module_signal_id,), "one")[0] is not None
+        new_identity = store._run(
+            "SELECT identity FROM signals WHERE id=%s",
+            (legacy_module_signal_id,), "one",
+        )[0]
+        assert new_identity and new_identity != "legacy-existing"
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
