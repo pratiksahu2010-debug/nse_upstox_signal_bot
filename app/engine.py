@@ -624,6 +624,10 @@ class Engine:
                 retained.append(sig)
             prepared = retained
 
+        # Never persist the raw broker payload in signal details/training rows.
+        for sig in prepared:
+            sig.option.pop("_candidate_snapshot", None)
+
         quotes = {}
         if OPTION_QUOTE and prepared:
             missing = [sig.option.get("_key") for sig in prepared
@@ -646,6 +650,9 @@ class Engine:
                 )
             else:
                 sig.option_tracking = {"instrument_key": key, "tracking_status": "DISABLED"}
+            if sig.option.get("selection_status"):
+                sig.option_tracking["selection_status"] = sig.option["selection_status"]
+                sig.option_tracking["atm_reference"] = sig.option.get("atm_reference")
 
         accepted = 0
         for sig in prepared:
