@@ -61,7 +61,7 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 ## API
 
 - GET / and GET /health — immediate public liveness; they do not imply the bot is ready to scan.
-- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and (when resolved) the full fixed universe are valid.
+- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and the full fixed universe are valid. During the entry window it also requires a recent successful scan with at least 90% of configured symbols loaded and fresh Upstox REST data. During market hours it requires a connected V3 feed worker and a market message within 120 seconds.
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
@@ -126,7 +126,7 @@ Start command:
 
     gunicorn app.web:app --worker-class uvicorn_worker.UvicornWorker --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
 
-Keep one worker. Multiple workers would create duplicate in-process schedulers and Telegram pollers. /ready is the Render readiness check; /health remains a liveness-only endpoint. The service is not marked ready when required secrets, the scheduler, Neon connectivity, Upstox authentication or the resolved fixed universe are invalid.
+Keep one worker. Multiple workers would create duplicate in-process schedulers and Telegram pollers. /ready is the Render readiness check; /health remains a liveness-only endpoint. The readiness check also verifies recent scan completion, Upstox REST freshness and live-feed freshness during market hours. The existing Render service must have its Dashboard Settings → Health Check Path set to `/ready`; a `healthCheckPath` entry in this repository's `render.yaml` does not retroactively change a manually created service that is not managed by a Render Blueprint. Verify that live setting before relying on Render's deployment health status.
 
 ## Tests and known gaps
 
@@ -136,7 +136,7 @@ Remaining master-prompt work and live-verification gaps:
 1. The exact 150-symbol static list and startup validation are implemented. It contains 144 NSE individual-security underlyings plus six explicitly allowlisted NSE index underlyings. Startup fails closed if the configured list is not exactly 150 unique entries or if all 150 cannot be validated against the Upstox instrument master; unavailable symbols are reported, never silently replaced.
 2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate is opt-in and must be verified with the user's live Analytics Token before enabling.
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
-4. MFE/MAE, bars held, a persistent six-bar time-stop review flag and detailed signal analytics are implemented. Exact time-to-TP1/TP2 and option-premium outcome tracking remain incomplete. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
+4. MFE/MAE, bars held, a persistent six-bar time-stop review flag, time-to-TP1/TP2 and option-premium outcome tracking are implemented. Live quote coverage and cost estimates still require credentialed paper-session validation. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
 5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
 6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. No 15-minute context is calculated or displayed.
 
