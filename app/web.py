@@ -228,6 +228,73 @@ def readiness():
     if bool(getattr(client, "auth_failed", False)):
         return unavailable("upstox_auth_rejected")
 
+    now = datetime.now(IST)
+
+    def age_seconds(value):
+        if not value:
+            return None
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=IST)
+            return max(0.0, (now - stamp.astimezone(IST)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    market_open = (
+        now.weekday() < 5
+        and time(9, 15) <= now.time() <= time(15, 30)
+    )
+    entry_scan_window = (
+        now.weekday() < 5
+        and config.NORMAL.first_signal <= now.time() <= config.NORMAL.last_entry
+    )
+    scanner_health = {
+        "last_cycle_started_at": getattr(engine, "last_cycle_started_at", None),
+        "last_cycle_completed_at": getattr(engine, "last_cycle_completed_at", None),
+        "last_successful_cycle_at": getattr(engine, "last_successful_cycle_at", None),
+        "last_cycle_error": getattr(engine, "last_cycle_error", ""),
+        "last_cycle_result": getattr(engine, "last_cycle_result", {}),
+    }
+
+    if entry_scan_window:
+        if not scanner_health["last_cycle_completed_at"]:
+            return unavailable("scanner_cycle_not_yet_completed")
+        cycle_age = age_seconds(scanner_health["last_cycle_completed_at"])
+        if cycle_age is None:
+            return unavailable("scanner_cycle_timestamp_invalid")
+        if cycle_age > 8 * 60:
+            return unavailable("scanner_cycle_stale")
+        if scanner_health["last_cycle_error"]:
+            return unavailable("scanner_cycle_failed")
+        successful_age = age_seconds(scanner_health["last_successful_cycle_at"])
+        if successful_age is None or successful_age > 8 * 60:
+            return unavailable("scanner_has_no_recent_successful_cycle")
+        normal_result = (scanner_health["last_cycle_result"] or {}).get("normal", {})
+        expected = int(normal_result.get("symbols") or 0)
+        loaded = int(normal_result.get("loaded") or 0)
+        minimum_loaded = max(1, int(expected * 0.90)) if expected else 1
+        if loaded < minimum_loaded:
+            return unavailable("scanner_data_incomplete")
+
+        provider = client.diagnostics() if hasattr(client, "diagnostics") else {}
+        provider_success = provider.get("last_success_at") or getattr(client, "last_success_at", None)
+        provider_age = age_seconds(provider_success)
+        if provider_age is None or provider_age > 8 * 60:
+            return unavailable("upstox_rest_data_stale")
+
+    feed_health = None
+    if market_open and config.UPSTOX_STREAM_ENABLED:
+        feed = getattr(engine, "market_stream", None)
+        if feed is None or not hasattr(feed, "diagnostics"):
+            return unavailable("market_feed_not_started")
+        feed_health = feed.diagnostics()
+        if not feed_health.get("connected") or not feed_health.get("thread_alive"):
+            return unavailable("market_feed_disconnected")
+        feed_age = feed_health.get("last_message_age_sec")
+        if feed_age is None or feed_age > 120:
+            return unavailable("market_feed_stale")
+
     universe = getattr(engine, "uni", None)
     if universe is not None:
         configured_symbols = list(getattr(universe, "configured_symbols", []))
@@ -273,7 +340,19 @@ def readiness():
         "ready": True,
         "initialized": True,
         "scheduler": {"enabled": True, "running": True},
-        "upstox": {"token_configured": True, "auth_failed": False},
+        "scanner": {
+            "last_cycle_started_at": scanner_health["last_cycle_started_at"],
+            "last_cycle_completed_at": scanner_health["last_cycle_completed_at"],
+            "last_successful_cycle_at": scanner_health["last_successful_cycle_at"],
+            "last_cycle_error": scanner_health["last_cycle_error"],
+            "last_cycle_result": scanner_health["last_cycle_result"],
+        },
+        "upstox": {
+            "token_configured": True,
+            "auth_failed": False,
+            "last_success_at": (client.diagnostics().get("last_success_at") if hasattr(client, "diagnostics") else getattr(client, "last_success_at", None)),
+        },
+        "market_feed": feed_health,
         "telegram": {
             "credentials_configured": True,
             "poller_running": True,
