@@ -567,6 +567,18 @@ class Engine:
             })
             sig.option = selected
 
+        # Subscribe only the final selected contract, not every nearby candidate.
+        if self.market_stream is not None:
+            for sig in prepared:
+                key = sig.option.get("_key")
+                if key and key not in self._stream_keys:
+                    self._stream_keys.append(key)
+                    base_keys = [item.key for item in self.uni.normal if item.key] if self.uni else []
+                    base_set = set(base_keys)
+                    option_keys = [item for item in self._stream_keys if item not in base_set][-1000:]
+                    self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
+                    self._stream_keys_dirty = True
+
         # Apply all lazily selected option subscriptions in one reconnect per scan,
         # not one reconnect per candidate contract.
         self._sync_market_stream_keys()
