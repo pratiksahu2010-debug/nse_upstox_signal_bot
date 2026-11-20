@@ -39,6 +39,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             """
             CREATE TABLE signals (
                 identity TEXT NOT NULL DEFAULT 'legacy-existing',
+                entry_price DOUBLE PRECISION NOT NULL,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 bar_time TIMESTAMPTZ NOT NULL,
@@ -58,18 +59,18 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         store._run(
             """
             INSERT INTO signals
-                (symbol, side, bar_time, entry, sl, tp1, tp2,
+                (symbol, side, bar_time, entry_price, entry, sl, tp1, tp2,
                  score, trig, details)
             VALUES
-                (%s, 'LONG', %s, 100, 98, 102, 104,
+                (%s, 'LONG', %s, 100, 100, 98, 102, 104,
                  91, 'LEGACY_FIXTURE',
                  '{"indicator_snapshot":{"adx":27.0}}'::jsonb)
             """,
             (legacy_symbol, stamp),
         )
         store._run(
-            """INSERT INTO signals (symbol, side, bar_time, entry, sl, tp1, tp2)
-               VALUES (%s, 'SHORT', %s, 200, 202, 198, 196)""",
+            """INSERT INTO signals (symbol, side, bar_time, entry_price, entry, sl, tp1, tp2)
+               VALUES (%s, 'SHORT', %s, 200, 200, 202, 198, 196)""",
             (legacy_old_symbol, old_stamp),
         )
         # Existing identity values are present, but the legacy column has no
@@ -164,6 +165,10 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             (legacy_module_signal_id,), "one",
         )[0]
         assert new_identity and new_identity != "legacy-existing"
+        assert store._run(
+            "SELECT entry_price FROM signals WHERE id=%s",
+            (legacy_module_signal_id,), "one",
+        )[0] == 100.0
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
