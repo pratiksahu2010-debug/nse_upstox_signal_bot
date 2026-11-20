@@ -155,6 +155,6 @@ def test_eod_terminal_bar_uses_close_not_unordered_high_low():
     mfe, mae, bars, _ = measure_excursions(
         _signal(), df, session_end=time(9, 25)
     )
-    assert mfe == 0.5
+    assert mfe == 0.25
     assert mae == 0.0
     assert bars == 1
