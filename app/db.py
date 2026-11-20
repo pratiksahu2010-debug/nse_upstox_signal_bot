@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS signals (
 -- The production-era schema used bar_time; current code consistently uses
 -- bar_ts. Rename the legacy column in place so its data and dependent indexes
 --/constraints remain intact. Do this before any backfill references bar_ts.
-DO $
+DO $body$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
@@ -62,7 +62,7 @@ BEGIN
         ALTER TABLE signals RENAME COLUMN bar_time TO bar_ts;
     END IF;
 END
-$;
+$body$;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_day DATE;
 UPDATE signals
    SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date
