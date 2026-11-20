@@ -176,12 +176,17 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             (legacy_module_signal_id,), "one",
         )[0]
         assert new_identity and new_identity != "legacy-existing"
-        assert store._run(
+        legacy_cycle_id = store._run(
+            "SELECT state_cycle_id FROM signals WHERE id=%s", (legacy_id,), "one"
+        )[0]
+        assert legacy_cycle_id == "legacy-cycle-" + legacy_symbol
+        persisted_legacy_aliases = store._run(
             "SELECT entry_price, stop_loss, target1, target2, state_cycle_id FROM signals WHERE id=%s",
             (legacy_module_signal_id,), "one",
-        )[0] == (100.0, 98.0, 102.0, 104.0, store._run(
-            "SELECT state_cycle_id FROM signals WHERE id=%s", (legacy_id,), "one"
-        )[0])
+        )[0]
+        assert persisted_legacy_aliases[:4] == (100.0, 98.0, 102.0, 104.0)
+        assert persisted_legacy_aliases[4]
+        assert persisted_legacy_aliases[4] != legacy_cycle_id
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
