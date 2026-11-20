@@ -98,3 +98,49 @@ def test_market_feed_does_not_replace_timestamped_quote_with_unknown_timestamp()
     assert quote["volume"] == 26000
     assert quote["bid"] == 124.9
     assert quote["ask"] == 125.1
+
+
+
+def test_market_feed_diagnostics_exposes_worker_and_message_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    response = pb.FeedResponse()
+    feed = response.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 123.45
+    feed.ltt = 1795000000000
+    stream._consume(response.SerializeToString())
+
+    health = stream.diagnostics()
+
+    assert health["thread_alive"] is False
+    assert health["connected"] is True
+    assert health["last_message_age_sec"] is not None
+    assert health["last_message_age_sec"] < 5
+
+
+def test_market_feed_start_replaces_dead_worker(monkeypatch):
+    class DeadThread:
+        def is_alive(self):
+            return False
+
+    class StartedThread:
+        def __init__(self, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr("app.market_stream.threading.Thread", StartedThread)
+    stream = UpstoxMarketStream(FakeClient())
+    stream._thread = DeadThread()
+
+    stream.start(["NSE_EQ|TEST"])
+
+    assert isinstance(stream._thread, StartedThread)
+    assert stream._thread.started is True
+    assert stream._stop.is_set() is False
