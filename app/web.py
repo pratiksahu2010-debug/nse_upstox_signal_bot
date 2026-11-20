@@ -212,6 +212,10 @@ def readiness():
     poller_thread = getattr(poller, "thread", None) if poller is not None else None
     if poller is None or not bool(getattr(poller, "running", False)) or poller_thread is None or not poller_thread.is_alive():
         return unavailable("telegram_poller_not_running")
+    if not bool(getattr(poller, "leader_lock_acquired", False)):
+        return unavailable("telegram_poller_standby")
+    if str(getattr(poller, "last_error", "")).startswith("Telegram getUpdates conflict"):
+        return unavailable("telegram_polling_conflict")
     if bool(getattr(poller, "auth_failed", False)):
         return unavailable("telegram_auth_rejected")
     last_telegram_success = getattr(poller, "last_success_at", None)
