@@ -48,6 +48,86 @@ def test_training_export_includes_module_and_underlying_symbol():
     assert row["actual_option_costs"] == '{"total_cost_rupees":12.5}'
 
 
+class _FakeCursor:
+    def __init__(self, acquired=True):
+        self.acquired = acquired
+        self.query = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def execute(self, query, params=None):
+        self.query = query
+
+    def fetchone(self):
+        return (self.acquired,)
+
+
+class _FakeConnection:
+    closed = 0
+
+    def __init__(self, acquired=True):
+        self.cur = _FakeCursor(acquired)
+        self.commits = 0
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        pass
+
+
+class _FakePool:
+    def __init__(self, connection):
+        self.connection = connection
+        self.returned = []
+
+    def getconn(self):
+        return self.connection
+
+    def putconn(self, conn, close=False):
+        self.returned.append((conn, close))
+
+
+def test_telegram_poller_holds_postgres_advisory_lock_until_release():
+    from app.telegram_polling import TelegramPoller
+
+    connection = _FakeConnection(acquired=True)
+    pool = _FakePool(connection)
+    store = type("Store", (), {"kind": "postgres", "pool": pool})()
+    poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
+
+    assert poller._acquire_leader_lock() is True
+    assert poller.leader_lock_acquired is True
+    assert poller._leader_conn is connection
+    assert pool.returned == []
+
+    poller._release_leader_lock()
+    assert poller.leader_lock_acquired is False
+    assert poller._leader_conn is None
+    assert pool.returned == [(connection, False)]
+
+
+def test_telegram_poller_standby_returns_connection_when_lock_is_taken():
+    from app.telegram_polling import TelegramPoller
+
+    connection = _FakeConnection(acquired=False)
+    pool = _FakePool(connection)
+    store = type("Store", (), {"kind": "postgres", "pool": pool})()
+    poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
+
+    assert poller._acquire_leader_lock() is False
+    assert poller.leader_lock_acquired is False
+    assert poller._leader_conn is None
+    assert pool.returned == [(connection, False)]
+
+
 def test_postgres_training_rows_keep_module_and_symbol_columns_aligned():
     from datetime import date, datetime, timezone
 
