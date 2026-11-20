@@ -254,6 +254,18 @@ def readiness():
         except (TypeError, ValueError, OverflowError):
             return None
 
+    # Check durable storage before scanner-cycle details so readiness reports
+    # the infrastructure blocker directly when PostgreSQL is unavailable.
+    persistent = getattr(store, "kind", "") == "postgres"
+    if config.REQUIRE_PERSISTENT_DB and not persistent:
+        return unavailable("persistent_database_required")
+    if persistent:
+        try:
+            store._run("SELECT 1", fetch="one")
+        except Exception:
+            log.exception("readiness database check failed")
+            return unavailable("database_unavailable")
+
     market_open = (
         now.weekday() < 5
         and time(9, 15) <= now.time() <= time(15, 30)
@@ -261,6 +273,12 @@ def readiness():
     entry_scan_window = (
         now.weekday() < 5
         and config.NORMAL.first_signal <= now.time() <= config.NORMAL.last_entry
+    )
+    # Continue checking scanner execution after the last new-entry time because
+    # open signals and armed setups still need tracking through session_end.
+    active_scan_window = (
+        now.weekday() < 5
+        and config.NORMAL.first_signal <= now.time() <= config.NORMAL.session_end
     )
     scanner_health = {
         "last_cycle_started_at": getattr(engine, "last_cycle_started_at", None),
@@ -303,7 +321,7 @@ def readiness():
                 return unavailable("universe_load_failed")
             return unavailable("universe_not_initialized")
 
-    if entry_scan_window:
+    if active_scan_window:
         if not scanner_health["last_cycle_completed_at"]:
             return unavailable("scanner_cycle_not_yet_completed")
         cycle_age = age_seconds(scanner_health["last_cycle_completed_at"])
@@ -313,33 +331,52 @@ def readiness():
             return unavailable("scanner_cycle_stale")
         if scanner_health["last_cycle_error"]:
             return unavailable("scanner_cycle_failed")
-        successful_age = age_seconds(scanner_health["last_successful_cycle_at"])
-        if successful_age is None or successful_age > 8 * 60:
-            return unavailable("scanner_has_no_recent_successful_cycle")
+
         normal_result = (scanner_health["last_cycle_result"] or {}).get("normal", {})
-        try:
-            expected = int(normal_result.get("symbols") or 0)
-            loaded = int(normal_result.get("loaded") or 0)
-        except (AttributeError, TypeError, ValueError):
+        if not isinstance(normal_result, dict):
             return unavailable("scanner_result_invalid")
-        if expected != EXPECTED_UNIVERSE_SIZE:
-            return unavailable("scanner_symbol_count_mismatch")
-        minimum_loaded = max(1, int(expected * 0.90))
-        if loaded < minimum_loaded:
-            return unavailable("scanner_data_incomplete")
 
-        try:
-            provider_health = client.diagnostics() if hasattr(client, "diagnostics") else {}
-        except Exception:
-            log.exception("readiness Upstox diagnostics failed")
-            return unavailable("upstox_diagnostics_unavailable")
-        if not isinstance(provider_health, dict):
-            return unavailable("upstox_diagnostics_invalid")
-        provider_success = provider_health.get("last_success_at") or getattr(client, "last_success_at", None)
-        provider_age = age_seconds(provider_success)
-        if provider_age is None or provider_age > 8 * 60:
-            return unavailable("upstox_rest_data_stale")
+        if entry_scan_window:
+            successful_age = age_seconds(scanner_health["last_successful_cycle_at"])
+            if successful_age is None or successful_age > 8 * 60:
+                return unavailable("scanner_has_no_recent_successful_cycle")
+            try:
+                expected = int(normal_result.get("symbols") or 0)
+                loaded = int(normal_result.get("loaded") or 0)
+            except (AttributeError, TypeError, ValueError):
+                return unavailable("scanner_result_invalid")
+            if expected != EXPECTED_UNIVERSE_SIZE:
+                return unavailable("scanner_symbol_count_mismatch")
+            minimum_loaded = max(1, int(expected * 0.90))
+            if loaded < minimum_loaded:
+                return unavailable("scanner_data_incomplete")
 
+            try:
+                provider_health = client.diagnostics() if hasattr(client, "diagnostics") else {}
+            except Exception:
+                log.exception("readiness Upstox diagnostics failed")
+                return unavailable("upstox_diagnostics_unavailable")
+            if not isinstance(provider_health, dict):
+                return unavailable("upstox_diagnostics_invalid")
+            provider_success = provider_health.get("last_success_at") or getattr(client, "last_success_at", None)
+            provider_age = age_seconds(provider_success)
+            if provider_age is None or provider_age > 8 * 60:
+                return unavailable("upstox_rest_data_stale")
+        else:
+            # After the last entry time, a legitimate cycle may only track
+            # existing signals/armed setups—or be idle when there is nothing
+            # left to track. Do not demand a fresh 150-symbol entry scan.
+            scope = normal_result.get("scope")
+            if scope not in ("tracking", "idle"):
+                return unavailable("scanner_tracking_cycle_invalid")
+            if scope == "tracking":
+                try:
+                    expected = int(normal_result.get("symbols") or 0)
+                    loaded = int(normal_result.get("loaded") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    return unavailable("scanner_result_invalid")
+                if expected <= 0 or loaded < max(1, int(expected * 0.90)):
+                    return unavailable("scanner_tracking_data_incomplete")
     feed_health = None
     if market_open and config.UPSTOX_STREAM_ENABLED:
         feed = getattr(engine, "market_stream", None)
@@ -359,16 +396,6 @@ def readiness():
         feed_age = feed_health.get("last_quote_age_sec")
         if feed_age is None or feed_age > 120:
             return unavailable("market_feed_stale")
-
-    persistent = getattr(store, "kind", "") == "postgres"
-    if config.REQUIRE_PERSISTENT_DB and not persistent:
-        return unavailable("persistent_database_required")
-    if persistent:
-        try:
-            store._run("SELECT 1", fetch="one")
-        except Exception:
-            log.exception("readiness database check failed")
-            return unavailable("database_unavailable")
 
     return {
         "ready": True,
