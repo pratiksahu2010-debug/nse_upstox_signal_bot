@@ -9,6 +9,7 @@ def _ready_engine():
 
     class FakeUniverse:
         ready = True
+        built_on = web.datetime.now(web.IST).strftime("%Y-%m-%d")
         configured_symbols = [f"SYMBOL{i}" for i in range(150)]
         normal = [type("Item", (), {"symbol": f"SYMBOL{i}"})() for i in range(150)]
 
@@ -378,3 +379,30 @@ def test_readiness_rejects_wrong_fixed_universe_count_even_if_flagged_ready(monk
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "universe_validation_failed"}
+
+
+
+def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatch):
+    from datetime import timedelta
+
+    class StaleUniverse:
+        ready = True
+        built_on = (web.datetime.now(web.IST) - timedelta(days=1)).strftime("%Y-%m-%d")
+        configured_symbols = [f"SYMBOL{i}" for i in range(150)]
+        normal = [type("Item", (), {"symbol": f"SYMBOL{i}"})() for i in range(150)]
+
+    class StaleEngine(_ready_engine().__class__):
+        uni = StaleUniverse()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", StaleEngine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+    monkeypatch.setattr(web.datetime, "now", lambda tz=None: web.datetime(2026, 11, 20, 10, 0, tzinfo=web.IST))
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "universe_stale"}
