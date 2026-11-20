@@ -38,7 +38,6 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         store._run(
             """
             CREATE TABLE signals (
-                id BIGSERIAL PRIMARY KEY,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 bar_time TIMESTAMPTZ NOT NULL,
@@ -64,20 +63,25 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                 (%s, 'LONG', %s, 100, 98, 102, 104,
                  91, 'LEGACY_FIXTURE',
                  '{"indicator_snapshot":{"adx":27.0}}'::jsonb)
-            RETURNING id
             """,
             (legacy_symbol, stamp),
-            "one",
-        )[0]
-        legacy_old_id = store._run(
+        )
+        store._run(
             """INSERT INTO signals (symbol, side, bar_time, entry, sl, tp1, tp2)
-               VALUES (%s, 'SHORT', %s, 200, 202, 198, 196) RETURNING id""",
+               VALUES (%s, 'SHORT', %s, 200, 202, 198, 196)""",
             (legacy_old_symbol, old_stamp),
-            "one",
-        )[0]
+        )
 
         store.init()
         initialized = True
+        legacy_id = store._run(
+            "SELECT id FROM signals WHERE symbol=%s AND side='LONG' AND bar_ts=%s",
+            (legacy_symbol, stamp), "one",
+        )[0]
+        legacy_old_id = store._run(
+            "SELECT id FROM signals WHERE symbol=%s AND side='SHORT' AND bar_ts=%s",
+            (legacy_old_symbol, old_stamp), "one",
+        )[0]
 
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
