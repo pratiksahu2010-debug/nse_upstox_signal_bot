@@ -60,7 +60,7 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 
 ## API
 
-- GET / and GET /health — immediate public liveness.
+- GET / and GET /health — immediate public liveness; they do not imply the bot is ready to scan.\n- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and (when resolved) the full fixed universe are valid.
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
@@ -125,7 +125,7 @@ Start command:
 
     gunicorn app.web:app --worker-class uvicorn_worker.UvicornWorker --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
 
-Keep one worker. Multiple workers would create duplicate in-process schedulers and Telegram pollers. /health is the Render liveness check. Initialization fails closed if REQUIRE_PERSISTENT_DB=1 and Neon is not configured.
+Keep one worker. Multiple workers would create duplicate in-process schedulers and Telegram pollers. /ready is the Render readiness check; /health remains a liveness-only endpoint. The service is not marked ready when required secrets, the scheduler, Neon connectivity, Upstox authentication or the resolved fixed universe are invalid.
 
 ## Tests and known gaps
 
