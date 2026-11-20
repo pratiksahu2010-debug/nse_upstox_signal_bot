@@ -71,6 +71,34 @@ BEGIN
     END IF;
 END
 $signal_id_compat$;
+-- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
+-- does not add columns to a table created by an earlier bot release.
+-- The production-era schema used bar_time; current code consistently uses
+-- bar_ts. Rename the legacy column in place so its data and dependent indexes
+--/constraints remain intact. Do this before any backfill references bar_ts.
+DO $body$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'signals'
+           AND column_name = 'bar_time'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'signals'
+           AND column_name = 'bar_ts'
+    ) THEN
+        ALTER TABLE signals RENAME COLUMN bar_time TO bar_ts;
+    END IF;
+END
+$body$;
+-- Older production tables predate the module split. Preserve every row and
+-- classify untagged historical records as the legacy normal signal module.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS module TEXT;
+UPDATE signals SET module = 'normal' WHERE module IS NULL;
+ALTER TABLE signals ALTER COLUMN module SET DEFAULT 'normal';
+ALTER TABLE signals ALTER COLUMN module SET NOT NULL;
 -- Some older production schemas also have a required `identity` column
 -- which current inserts do not populate. Give that legacy column a safe,
 -- type-aware default and backfill only NULL values; never rewrite populated
@@ -122,34 +150,6 @@ BEGIN
     END IF;
 END
 $identity_compat$;
--- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
--- does not add columns to a table created by an earlier bot release.
--- The production-era schema used bar_time; current code consistently uses
--- bar_ts. Rename the legacy column in place so its data and dependent indexes
---/constraints remain intact. Do this before any backfill references bar_ts.
-DO $body$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-         WHERE table_schema = current_schema()
-           AND table_name = 'signals'
-           AND column_name = 'bar_time'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-         WHERE table_schema = current_schema()
-           AND table_name = 'signals'
-           AND column_name = 'bar_ts'
-    ) THEN
-        ALTER TABLE signals RENAME COLUMN bar_time TO bar_ts;
-    END IF;
-END
-$body$;
--- Older production tables predate the module split. Preserve every row and
--- classify untagged historical records as the legacy normal signal module.
-ALTER TABLE signals ADD COLUMN IF NOT EXISTS module TEXT;
-UPDATE signals SET module = 'normal' WHERE module IS NULL;
-ALTER TABLE signals ALTER COLUMN module SET DEFAULT 'normal';
-ALTER TABLE signals ALTER COLUMN module SET NOT NULL;
 -- The deployed pre-module table also predates the lifecycle status field.
 -- Add the complete set of non-key signal fields idempotently so indexes and
 -- runtime queries never assume CREATE TABLE IF NOT EXISTS evolved old tables.
