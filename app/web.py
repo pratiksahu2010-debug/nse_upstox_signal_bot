@@ -209,6 +209,17 @@ def readiness():
         return unavailable("telegram_poller_not_running")
     if bool(getattr(poller, "auth_failed", False)):
         return unavailable("telegram_auth_rejected")
+    last_telegram_success = getattr(poller, "last_success_at", None)
+    if not last_telegram_success:
+        return unavailable("telegram_not_yet_connected")
+    try:
+        telegram_success_at = datetime.fromisoformat(last_telegram_success)
+        if telegram_success_at.tzinfo is None:
+            telegram_success_at = telegram_success_at.replace(tzinfo=IST)
+        if datetime.now(IST) - telegram_success_at > timedelta(seconds=90):
+            return unavailable("telegram_connection_stale")
+    except (TypeError, ValueError):
+        return unavailable("telegram_health_timestamp_invalid")
 
     client = getattr(engine, "client", None)
     if bool(getattr(client, "auth_failed", False)):
