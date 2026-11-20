@@ -98,6 +98,9 @@ class TelegramPoller:
         self.thread = None
         self.offset = int(get_persistent_state(store, "telegram_update_offset", 0) or 0)
         self.running = False
+        self.auth_failed = False
+        self.last_success_at = None
+        self.last_error = ""
 
     def start(self):
         if not self.token or not self.chat_id or self.thread is not None:
@@ -124,20 +127,26 @@ class TelegramPoller:
                     "offset": self.offset, "timeout": 25,
                     "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=35)
                 if response.status_code in (401, 403):
-                    log.error("Telegram polling authentication rejected (%s)", response.status_code)
+                    self.auth_failed = True
+                    self.last_error = f"Telegram authentication rejected ({response.status_code})"
+                    log.error("%s", self.last_error)
                     self.stop_event.wait(60)
                     continue
                 response.raise_for_status()
                 payload = response.json()
                 if not payload.get("ok"):
                     raise RuntimeError("Telegram getUpdates returned ok=false")
+                self.auth_failed = False
+                self.last_error = ""
+                self.last_success_at = datetime.now(IST).isoformat(timespec="seconds")
                 for update in payload.get("result", []):
                     update_id = int(update.get("update_id", 0))
                     self._handle_update(update)
                     self.offset = max(self.offset, update_id + 1)
                     set_persistent_state(self.store, "telegram_update_offset", self.offset)
                 delay = 1.0
-            except Exception:
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                 log.exception("Telegram polling failed; retrying with bounded backoff")
                 self.stop_event.wait(delay)
                 delay = min(30.0, delay * 2)

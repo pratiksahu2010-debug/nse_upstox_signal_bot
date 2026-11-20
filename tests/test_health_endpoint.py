@@ -3,6 +3,55 @@ from fastapi.testclient import TestClient
 from app import web
 
 
+def _ready_engine():
+    class FakeClient:
+        auth_failed = False
+
+    class FakeUniverse:
+        ready = True
+        built_on = web.datetime.now(web.IST).strftime("%Y-%m-%d")
+        configured_symbols = [f"SYMBOL{i}" for i in range(150)]
+        normal = [type("Item", (), {"symbol": f"SYMBOL{i}"})() for i in range(150)]
+
+    class FakeEngine:
+        client = FakeClient()
+        uni = FakeUniverse()
+        last_error = ""
+
+    return FakeEngine()
+
+
+def _configure_ready(monkeypatch):
+    from datetime import datetime
+
+    class RunningThread:
+        def is_alive(self):
+            return True
+
+    class RunningStop:
+        thread = RunningThread()
+
+        def set(self):
+            pass
+
+    class RunningPoller:
+        running = True
+
+        def stop(self):
+            pass
+        thread = RunningThread()
+        auth_failed = False
+        last_success_at = datetime.now(web.IST).isoformat(timespec="seconds")
+
+    monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
+    monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "configured-upstox-token")
+    monkeypatch.setattr(web.config, "ADMIN_TOKEN", "configured-admin-token")
+    monkeypatch.setattr(web.config, "TELEGRAM_TOKEN", "configured-telegram-token")
+    monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "123456")
+    monkeypatch.setattr(web, "_scheduler_stop", RunningStop())
+    monkeypatch.setattr(web, "_telegram_poller", RunningPoller())
+
+
 def test_health_is_immediate_and_does_not_initialize_application(monkeypatch):
     def fail_if_called():
         raise AssertionError("health must not trigger application initialization")
@@ -44,8 +93,9 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     class FakeStore:
         kind = "memory"
 
+    _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
 
@@ -53,19 +103,23 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
         response = client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ready": True,
-        "initialized": True,
-        "database": {"kind": "memory", "persistent": False},
-    }
+    payload = response.json()
+    assert payload["ready"] is True
+    assert payload["scheduler"] == {"enabled": True, "running": True}
+    assert payload["upstox"] == {"token_configured": True, "auth_failed": False}
+    assert payload["telegram"]["credentials_configured"] is True
+    assert payload["telegram"]["poller_running"] is True
+    assert payload["telegram"]["auth_failed"] is False
+    assert payload["database"] == {"kind": "memory", "persistent": False}
 
 
 def test_readiness_rejects_memory_store_when_persistent_database_is_required(monkeypatch):
     class FakeStore:
         kind = "memory"
 
+    _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
@@ -85,8 +139,9 @@ def test_readiness_checks_postgres_connectivity(monkeypatch):
             assert fetch == "one"
             raise RuntimeError("database offline")
 
+    _configure_ready(monkeypatch)
     monkeypatch.setattr(web, "_started", True)
-    monkeypatch.setattr(web, "engine", object())
+    monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", FakeStore())
     monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
 
@@ -95,3 +150,265 @@ def test_readiness_checks_postgres_connectivity(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "database_unavailable"}
+
+
+def test_readiness_rejects_missing_upstox_token(monkeypatch):
+    class FakeStore:
+        kind = "postgres"
+
+        def _run(self, sql, fetch):
+            return (1,)
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "")
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "upstox_token_missing"}
+
+
+def test_readiness_rejects_missing_telegram_configuration(monkeypatch):
+    class FakeStore:
+        kind = "postgres"
+
+        def _run(self, sql, fetch):
+            return (1,)
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "")
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_not_configured"}
+
+
+def test_readiness_rejects_upstox_auth_failure(monkeypatch):
+    class FakeStore:
+        kind = "postgres"
+
+        def _run(self, sql, fetch):
+            return (1,)
+
+    class FakeClient:
+        auth_failed = True
+
+    class FakeEngine:
+        client = FakeClient()
+        uni = None
+        last_error = ""
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", FakeEngine())
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "upstox_auth_rejected"}
+
+
+def test_readiness_rejects_incomplete_universe(monkeypatch):
+    class FakeStore:
+        kind = "postgres"
+
+        def _run(self, sql, fetch):
+            return (1,)
+
+    class FakeUniverse:
+        ready = False
+        configured_symbols = ["NIFTY"]
+        normal = []
+
+    class FakeEngine:
+        client = object()
+        uni = FakeUniverse()
+        last_error = ""
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", FakeEngine())
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "universe_validation_failed"}
+
+
+
+def test_readiness_rejects_stopped_scheduler_thread(monkeypatch):
+    class StoppedThread:
+        def is_alive(self):
+            return False
+
+    class StoppedScheduler:
+        thread = StoppedThread()
+
+        def set(self):
+            pass
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_scheduler_stop", StoppedScheduler())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scheduler_not_running"}
+
+
+def test_readiness_rejects_telegram_auth_failure(monkeypatch):
+    class RejectedPoller:
+        running = True
+        auth_failed = True
+        thread = type("Thread", (), {"is_alive": lambda self: True})()
+
+        def stop(self):
+            pass
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", RejectedPoller())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_auth_rejected"}
+
+
+def test_readiness_rejects_missing_telegram_poller(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", None)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_poller_not_running"}
+
+
+
+def test_readiness_rejects_stale_telegram_connection(monkeypatch):
+    from datetime import timedelta
+
+    class StalePoller:
+        running = True
+        auth_failed = False
+        thread = type("Thread", (), {"is_alive": lambda self: True})()
+        last_success_at = (web.datetime.now(web.IST) - timedelta(minutes=5)).isoformat()
+
+        def stop(self):
+            pass
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_telegram_poller", StalePoller())
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_connection_stale"}
+
+
+
+def test_readiness_rejects_missing_admin_token(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "ADMIN_TOKEN", "")
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "admin_token_missing"}
+
+
+def test_readiness_rejects_wrong_fixed_universe_count_even_if_flagged_ready(monkeypatch):
+    class WrongCountUniverse:
+        ready = True
+        configured_symbols = ["NIFTY"]
+        normal = [type("Item", (), {"symbol": "NIFTY"})()]
+
+    class EngineWithWrongCount(_ready_engine().__class__):
+        uni = WrongCountUniverse()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", EngineWithWrongCount())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "universe_validation_failed"}
+
+
+
+def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatch):
+    from datetime import datetime
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = cls(2026, 11, 20, 10, 0)
+            return current.replace(tzinfo=tz) if tz else current
+
+    class StaleUniverse:
+        ready = True
+        built_on = "2026-11-19"
+        configured_symbols = [f"SYMBOL{i}" for i in range(150)]
+        normal = [type("Item", (), {"symbol": f"SYMBOL{i}"})() for i in range(150)]
+
+    class StaleEngine(_ready_engine().__class__):
+        uni = StaleUniverse()
+
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", StaleEngine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+    monkeypatch.setattr(web, "datetime", FrozenDateTime)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "universe_stale"}

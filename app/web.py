@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import requests
 from fastapi import FastAPI, Request
@@ -22,6 +22,7 @@ from .engine import Engine
 from .telegram import send
 from .telegram_polling import TelegramPoller, get_persistent_state
 from .upstox import UpstoxClient
+from .symbols import EXPECTED_UNIVERSE_SIZE
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -182,30 +183,109 @@ def health():
 
 @app.get("/ready")
 def readiness():
-    """Readiness probe: distinguish a live process from an initialized, usable service."""
+    """Readiness probe for the Render router: require working config and persistence.
+
+    /health remains a pure liveness endpoint. This endpoint deliberately fails
+    closed when the scanner could not authenticate or resolve its fixed universe.
+    """
+    def unavailable(reason):
+        return JSONResponse(status_code=503, content={"ready": False, "reason": reason})
+
     if not _started or engine is None or store is None:
-        return JSONResponse(
-            status_code=503,
-            content={"ready": False, "reason": "application_not_initialized"},
-        )
+        return unavailable("application_not_initialized")
+    if not config.RUN_SCHEDULER:
+        return unavailable("scheduler_disabled")
+    if not config.UPSTOX_TOKEN:
+        return unavailable("upstox_token_missing")
+    if not config.ADMIN_TOKEN:
+        return unavailable("admin_token_missing")
+    if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
+        return unavailable("telegram_not_configured")
+
+    scheduler_thread = getattr(_scheduler_stop, "thread", None)
+    if _scheduler_stop is None or scheduler_thread is None or not scheduler_thread.is_alive():
+        return unavailable("scheduler_not_running")
+
+    poller = _telegram_poller
+    poller_thread = getattr(poller, "thread", None) if poller is not None else None
+    if poller is None or not bool(getattr(poller, "running", False)) or poller_thread is None or not poller_thread.is_alive():
+        return unavailable("telegram_poller_not_running")
+    if bool(getattr(poller, "auth_failed", False)):
+        return unavailable("telegram_auth_rejected")
+    last_telegram_success = getattr(poller, "last_success_at", None)
+    if not last_telegram_success:
+        return unavailable("telegram_not_yet_connected")
+    try:
+        telegram_success_at = datetime.fromisoformat(last_telegram_success)
+        if telegram_success_at.tzinfo is None:
+            telegram_success_at = telegram_success_at.replace(tzinfo=IST)
+        if datetime.now(IST) - telegram_success_at > timedelta(seconds=90):
+            return unavailable("telegram_connection_stale")
+    except (TypeError, ValueError):
+        return unavailable("telegram_health_timestamp_invalid")
+
+    client = getattr(engine, "client", None)
+    if bool(getattr(client, "auth_failed", False)):
+        return unavailable("upstox_auth_rejected")
+
+    universe = getattr(engine, "uni", None)
+    if universe is not None:
+        configured_symbols = list(getattr(universe, "configured_symbols", []))
+        active_symbols = [
+            str(getattr(item, "symbol", "")) for item in getattr(universe, "normal", [])
+        ]
+        if (
+            not bool(getattr(universe, "ready", False))
+            or len(configured_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(active_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(set(configured_symbols)) != EXPECTED_UNIVERSE_SIZE
+            or set(configured_symbols) != set(active_symbols)
+            or "" in active_symbols
+        ):
+            return unavailable("universe_validation_failed")
+        now = datetime.now(IST)
+        if (
+            now.weekday() < 5
+            and now.time() >= time(7, 30)
+            and getattr(universe, "built_on", "") != now.strftime("%Y-%m-%d")
+        ):
+            return unavailable("universe_stale")
+    if universe is None:
+        # On trading weekdays the master must be resolved before the normal
+        # session begins. Before 07:30 and on weekends, no universe is expected.
+        now = datetime.now(IST)
+        if now.weekday() < 5 and now.time() >= time(7, 30):
+            if str(getattr(engine, "last_error", "")).startswith("universe:"):
+                return unavailable("universe_load_failed")
+            return unavailable("universe_not_initialized")
+
     persistent = getattr(store, "kind", "") == "postgres"
     if config.REQUIRE_PERSISTENT_DB and not persistent:
-        return JSONResponse(
-            status_code=503,
-            content={"ready": False, "reason": "persistent_database_required"},
-        )
+        return unavailable("persistent_database_required")
     if persistent:
         try:
             store._run("SELECT 1", fetch="one")
         except Exception:
             log.exception("readiness database check failed")
-            return JSONResponse(
-                status_code=503,
-                content={"ready": False, "reason": "database_unavailable"},
-            )
+            return unavailable("database_unavailable")
+
     return {
         "ready": True,
         "initialized": True,
+        "scheduler": {"enabled": True, "running": True},
+        "upstox": {"token_configured": True, "auth_failed": False},
+        "telegram": {
+            "credentials_configured": True,
+            "poller_running": True,
+            "auth_failed": False,
+            "last_success_at": getattr(poller, "last_success_at", None),
+        },
+        "universe": {
+            "validated": universe is not None,
+            "configured_symbols": len(getattr(universe, "configured_symbols", [])) if universe else 0,
+            "validated_symbols": len(getattr(universe, "normal", [])) if universe else 0,
+            "expected_symbols": EXPECTED_UNIVERSE_SIZE,
+        },
         "database": {"kind": getattr(store, "kind", "unknown"), "persistent": persistent},
     }
 

@@ -85,5 +85,8 @@ def loop(engine: Engine, stop: threading.Event):
 def start(engine: Engine) -> threading.Event:
     stop = threading.Event()
     t = threading.Thread(target=loop, args=(engine, stop), name="scheduler", daemon=True)
+    # Keep the worker handle alongside the existing stop Event so readiness
+    # can detect an unexpectedly terminated scheduler without changing callers.
+    stop.thread = t
     t.start()
     return stop
