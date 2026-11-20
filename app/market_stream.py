@@ -192,7 +192,9 @@ class UpstoxMarketStream:
                 # Upstox WebSocket delivery can be reordered. Do not let an
                 # older exchange tick roll the cached quote backwards. A zero
                 # timestamp is treated as unknown for backward compatibility.
-                if previous_ts > 0 and incoming_ts > 0 and incoming_ts < previous_ts:
+                if previous_ts > 0 and (incoming_ts <= 0 or incoming_ts < previous_ts):
+                    # An unknown timestamp cannot establish that this update is newer.
+                    # Preserve the last quote whose exchange ordering is known.
                     continue
                 self._quotes[key] = quote
             self.ticks += len(updates)
