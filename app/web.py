@@ -257,6 +257,37 @@ def readiness():
         "last_cycle_result": getattr(engine, "last_cycle_result", {}),
     }
 
+    universe = getattr(engine, "uni", None)
+    if universe is not None:
+        configured_symbols = list(getattr(universe, "configured_symbols", []))
+        active_symbols = [
+            str(getattr(item, "symbol", "")) for item in getattr(universe, "normal", [])
+        ]
+        if (
+            not bool(getattr(universe, "ready", False))
+            or len(configured_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(active_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(set(configured_symbols)) != EXPECTED_UNIVERSE_SIZE
+            or set(configured_symbols) != set(active_symbols)
+            or "" in active_symbols
+        ):
+            return unavailable("universe_validation_failed")
+        now = datetime.now(IST)
+        if (
+            now.weekday() < 5
+            and now.time() >= time(7, 30)
+            and getattr(universe, "built_on", "") != now.strftime("%Y-%m-%d")
+        ):
+            return unavailable("universe_stale")
+    if universe is None:
+        # On trading weekdays the master must be resolved before the normal
+        # session begins. Before 07:30 and on weekends, no universe is expected.
+        now = datetime.now(IST)
+        if now.weekday() < 5 and now.time() >= time(7, 30):
+            if str(getattr(engine, "last_error", "")).startswith("universe:"):
+                return unavailable("universe_load_failed")
+            return unavailable("universe_not_initialized")
+
     if entry_scan_window:
         if not scanner_health["last_cycle_completed_at"]:
             return unavailable("scanner_cycle_not_yet_completed")
@@ -294,37 +325,6 @@ def readiness():
         feed_age = feed_health.get("last_message_age_sec")
         if feed_age is None or feed_age > 120:
             return unavailable("market_feed_stale")
-
-    universe = getattr(engine, "uni", None)
-    if universe is not None:
-        configured_symbols = list(getattr(universe, "configured_symbols", []))
-        active_symbols = [
-            str(getattr(item, "symbol", "")) for item in getattr(universe, "normal", [])
-        ]
-        if (
-            not bool(getattr(universe, "ready", False))
-            or len(configured_symbols) != EXPECTED_UNIVERSE_SIZE
-            or len(active_symbols) != EXPECTED_UNIVERSE_SIZE
-            or len(set(configured_symbols)) != EXPECTED_UNIVERSE_SIZE
-            or set(configured_symbols) != set(active_symbols)
-            or "" in active_symbols
-        ):
-            return unavailable("universe_validation_failed")
-        now = datetime.now(IST)
-        if (
-            now.weekday() < 5
-            and now.time() >= time(7, 30)
-            and getattr(universe, "built_on", "") != now.strftime("%Y-%m-%d")
-        ):
-            return unavailable("universe_stale")
-    if universe is None:
-        # On trading weekdays the master must be resolved before the normal
-        # session begins. Before 07:30 and on weekends, no universe is expected.
-        now = datetime.now(IST)
-        if now.weekday() < 5 and now.time() >= time(7, 30):
-            if str(getattr(engine, "last_error", "")).startswith("universe:"):
-                return unavailable("universe_load_failed")
-            return unavailable("universe_not_initialized")
 
     persistent = getattr(store, "kind", "") == "postgres"
     if config.REQUIRE_PERSISTENT_DB and not persistent:
