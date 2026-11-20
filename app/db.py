@@ -41,8 +41,14 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (module, symbol, side, bar_ts)
 );
-CREATE INDEX IF NOT EXISTS idx_signals_day ON signals (trade_day, module);
-CREATE INDEX IF NOT EXISTS idx_signals_open ON signals (status) WHERE status IN ('OPEN', 'TP1');
+-- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
+-- does not add columns to a table created by an earlier bot release.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_day DATE;
+UPDATE signals
+   SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date
+ WHERE trade_day IS NULL AND bar_ts IS NOT NULL;
+ALTER TABLE signals ALTER COLUMN trade_day SET NOT NULL;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'DELIVERED';
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivery_error TEXT;
@@ -50,7 +56,20 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_held INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS time_stop_review_due BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS user_label TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS auto_label TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS net_r DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS cost_r DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_hit TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp1 INTEGER;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp2 INTEGER;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS option_tracking JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS actual_option_costs JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_signals_day ON signals (trade_day, module);
+CREATE INDEX IF NOT EXISTS idx_signals_open ON signals (status) WHERE status IN ('OPEN', 'TP1');
 CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_signals_training ON signals (trade_day, module, status);
 CREATE TABLE IF NOT EXISTS normal_setup_state (trade_day DATE NOT NULL, symbol TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (trade_day, symbol));
 """
 
@@ -423,6 +442,12 @@ class PostgresStore(MemoryStore):
             "UPDATE schema_migrations SET name = 'legacy_' || version::text WHERE name IS NULL"
         )
         self._run("ALTER TABLE schema_migrations ALTER COLUMN name SET NOT NULL")
+
+        # Always reconcile the idempotent signals schema, even when an old
+        # database already recorded the baseline migration. This repairs
+        # pre-migration layouts (for example, a signals table without trade_day)
+        # without dropping or rewriting existing signal records.
+        self._run(SCHEMA)
 
         applied_rows = self._run("SELECT version FROM schema_migrations", fetch="all")
         applied = {int(row[0]) for row in applied_rows}
