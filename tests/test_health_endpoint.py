@@ -140,6 +140,29 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     assert payload["database"] == {"kind": "memory", "persistent": False}
 
 
+def test_readiness_allows_telegram_standby_during_rolling_deploy(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
+    class FakeStore:
+        kind = "memory"
+
+    _configure_ready(monkeypatch)
+    web._telegram_poller.leader_lock_acquired = False
+    web._telegram_poller.last_error = "standby: another instance owns Telegram polling"
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["telegram"]["leader"] is False
+    assert response.json()["telegram"]["state"] == "standby"
+
+
 def test_readiness_rejects_memory_store_when_persistent_database_is_required(monkeypatch):
     class FakeStore:
         kind = "memory"
