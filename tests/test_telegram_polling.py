@@ -186,3 +186,15 @@ def test_telegram_sender_never_logs_bot_token_from_request_exception(monkeypatch
 
     assert secret not in caplog.text
     assert "ConnectionError" in caplog.text
+
+
+def test_telegram_409_conflict_reason_is_classified_without_response_logging():
+    from app.telegram_polling import _classify_telegram_conflict
+
+    assert _classify_telegram_conflict(
+        "Conflict: can't use getUpdates method while webhook is active"
+    ) == "webhook_configured"
+    assert _classify_telegram_conflict(
+        "Conflict: terminated by other getUpdates request"
+    ) == "another_getupdates_consumer"
+    assert _classify_telegram_conflict("Conflict") == "unknown_conflict"
