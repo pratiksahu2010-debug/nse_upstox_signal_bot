@@ -76,39 +76,71 @@ Use Authorization: Bearer ADMIN_TOKEN. The legacy query-token form remains for c
 
 ## Environment
 
-Required production secrets:
-- UPSTOX_ACCESS_TOKEN
-- NEON_DATABASE_URL (use the SSL-enabled Neon connection string)
-- TELEGRAM_BOT_TOKEN
-- TELEGRAM_CHAT_ID
-- ADMIN_TOKEN
+The committed `.env.example` is a **safe template**, not a production environment dump. Copy it to `.env` for local use and enter secrets locally. Never commit a real `.env`, access token, Telegram token, Neon connection string, or admin token. The production values belong in Render Dashboard → **Environment**.
 
-Runtime controls:
-- PYTHON_VERSION: 3.11.9 in Render
-- TZ: Asia/Kolkata
-- AUTOSTART: 1
-- RUN_SCHEDULER: 1
-- UPSTOX_STREAM_ENABLED: 1 (Upstox V3 underlying/selected-option feed)
-- REQUIRE_PERSISTENT_DB: 1
-- KEEPALIVE: 1
-- N_ADX_MIN: 19 (hard floor)
-- N_SL_ATR: 1.2
-- N_TP1_R: 1.5
-- N_TP2_R: 2.0
-- FETCH_DELAY_SEC: 6
-- STALE_MAX_BARS: 1
-- WORKERS: 6
-- OPTION_QUOTE: 0
-- OPTION_MARKET_SNAPSHOT: 0 (attach full option quote data)
-- OPTION_LIQUIDITY_CHECKS: 0 (opt-in fail-closed option liquidity gate)
-- OPTION_MIN_VOLUME: 100
-- OPTION_MIN_OI: 500
-- OPTION_MAX_SPREAD_PCT: 3.0
-- OPTION_MAX_QUOTE_AGE_SEC: 20
-- DRY_RUN: 0
-- TRAINING_COST_R: 0.0 (configured round-trip cost in underlying R units; set from your measured fees/slippage before treating net-R as cost-adjusted)
+### Required Render secrets
 
-Strategy parameters remain frozen unless explicitly approved.
+Set all five variables below. The application fails readiness when required configuration is missing or invalid.
+
+- `UPSTOX_ACCESS_TOKEN` — Upstox Analytics/API access token with the required market-data permissions.
+- `NEON_DATABASE_URL` — Neon PostgreSQL connection string; use the SSL-enabled URL.
+- `TELEGRAM_BOT_TOKEN` — Telegram bot token.
+- `TELEGRAM_CHAT_ID` — destination chat ID allowed by the bot.
+- `ADMIN_TOKEN` — long, random secret used by admin-authenticated endpoints.
+
+`NEON_DATABASE_URL` takes precedence. `DATABASE_URL` is accepted only as a compatibility fallback. Do not set both to different databases.
+
+### Runtime configuration reference
+
+The values below match the committed `.env.example` template and the defaults in `app/config.py`. Render's Dashboard values override the template. Do not change strategy values without explicit approval.
+
+| Variable | Template/default | Purpose |
+|---|---:|---|
+| `TZ` | `Asia/Kolkata` | Process/log timezone; strategy timestamps use IST |
+| `AUTOSTART` | `1` | Initialize the application on startup |
+| `RUN_SCHEDULER` | `1` | Enable scheduled scans |
+| `UPSTOX_STREAM_ENABLED` | `1` | Enable Upstox V3 market-data feed |
+| `REQUIRE_PERSISTENT_DB` | `1` | Fail closed without persistent PostgreSQL |
+| `KEEPALIVE` | `1` | Render keepalive self-ping when URL is available |
+| `LOG_LEVEL` | `INFO` | Application log level |
+| `ENABLE_NORMAL` | `1` | Enable the existing Normal signal module |
+| `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
+| `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
+| `STALE_MAX_BARS` | `1` | Maximum permitted signal-bar age |
+| `WORKERS` | `6` | Internal fetch concurrency; not Gunicorn workers |
+| `RATE_PER_SEC` | `8` | Upstox request pacing per second |
+| `RATE_PER_MIN` | `400` | Upstox request pacing per minute |
+| `RATE_PER_30MIN` | `1700` | Upstox request pacing per 30 minutes |
+| `PREWARM_NSE` | `08:40` | IST prewarm time |
+| `HEARTBEAT_MIN` | `60` | Diagnostics heartbeat interval; 0 disables |
+| `EOD_SUMMARY` | `1` | Enable end-of-day summary |
+| `N_FIRST_SIGNAL` | `09:20` | Earliest signal time (IST) |
+| `N_LAST_ENTRY` | `15:00` | Last entry time (IST) |
+| `N_SESSION_END` | `15:15` | Strategy session end (IST) |
+| `N_ADX_MIN` | `19` | ADX14 minimum; code enforces a hard floor of 19 |
+| `N_SL_ATR` | `1.2` | Stop distance in ATR multiples |
+| `N_TP1_R` | `1.5` | First target in R |
+| `N_TP2_R` | `2.0` | Second target in R |
+| `N_DAILY_CAP` | `1000` | Daily signal cap |
+| `N_PER_CYCLE_TOP` | `1000` | Maximum candidates per scan cycle |
+| `OPTION_MIN_DAYS` | `1` | Minimum days to option expiry |
+| `OPTION_QUOTE` | `0` | Optional option LTP display |
+| `OPTION_MARKET_SNAPSHOT` | `0` | Optional full option quote snapshot |
+| `OPTION_LIQUIDITY_CHECKS` | `0` | Optional fail-closed liquidity validation |
+| `OPTION_MIN_VOLUME` | `100` | Minimum option volume when checks enabled |
+| `OPTION_MIN_OI` | `500` | Minimum option open interest when checks enabled |
+| `OPTION_MAX_SPREAD_PCT` | `3.0` | Maximum spread percentage when checks enabled |
+| `OPTION_MAX_QUOTE_AGE_SEC` | `20` | Maximum option quote age |
+| `OPTION_PREMIUM_TRACKING` | `1` | Descriptive option-premium tracking; does not gate signals |
+| `TRAINING_COST_R` | `0.0` | Configured round-trip cost in underlying R units |
+| `OPTION_EST_ROUND_TRIP_FEE_PCT` | `0.0` | User-supplied estimated round-trip fee percentage |
+| `OPTION_EST_SLIPPAGE_BPS_PER_SIDE` | `0.0` | User-supplied estimated slippage per side in basis points |
+
+The option quote, snapshot and liquidity controls are intentionally off by default. Do not enable quote-dependent gates until access and fresh quote behaviour are verified with the production token. Cost estimates default to zero and are not actual broker charges.
+
+### Render-specific settings
+
+The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS=6` setting controls fetch concurrency and is unrelated to Gunicorn's `--workers 1`.
 
 ## Local setup
 
