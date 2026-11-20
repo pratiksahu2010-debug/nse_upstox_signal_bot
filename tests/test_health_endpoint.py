@@ -19,6 +19,7 @@ def _ready_engine():
             return {
                 "connected": True,
                 "thread_alive": True,
+                "subscribed_symbols": 150,
                 "last_quote_age_sec": 5.0,
             }
 
@@ -535,7 +536,7 @@ def test_readiness_rejects_disconnected_market_feed(monkeypatch):
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
     candidate.market_stream.diagnostics = lambda: {
-        "connected": False, "thread_alive": True, "last_quote_age_sec": 1.0
+        "connected": False, "thread_alive": True, "subscribed_symbols": 150, "last_quote_age_sec": 1.0
     }
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", candidate)
@@ -554,7 +555,7 @@ def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
     candidate.market_stream.diagnostics = lambda: {
-        "connected": True, "thread_alive": True, "last_quote_age_sec": 180.0
+        "connected": True, "thread_alive": True, "subscribed_symbols": 150, "last_quote_age_sec": 180.0
     }
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", candidate)
