@@ -63,6 +63,12 @@ BEGIN
     END IF;
 END
 $body$;
+-- Older production tables predate the module split. Preserve every row and
+-- classify untagged historical records as the legacy normal signal module.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS module TEXT;
+UPDATE signals SET module = 'normal' WHERE module IS NULL;
+ALTER TABLE signals ALTER COLUMN module SET DEFAULT 'normal';
+ALTER TABLE signals ALTER COLUMN module SET NOT NULL;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_day DATE;
 UPDATE signals
    SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date
@@ -86,6 +92,25 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp1 INTEGER;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS bars_to_tp2 INTEGER;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS option_tracking JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS actual_option_costs JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- Replace the pre-module uniqueness rule (symbol, side, bar_time).
+-- Keeping it would incorrectly block a second, distinct module on the same
+-- candle. Drop only that exact legacy constraint; signal rows are untouched.
+DO $dedupe$
+DECLARE legacy_constraint TEXT;
+BEGIN
+    FOR legacy_constraint IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = 'signals'::regclass
+           AND contype = 'u'
+           AND pg_get_constraintdef(oid) = 'UNIQUE (symbol, side, bar_ts)'
+    LOOP
+        EXECUTE format('ALTER TABLE signals DROP CONSTRAINT %I', legacy_constraint);
+    END LOOP;
+END
+$dedupe$;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_module_symbol_side_bar_ts
+    ON signals (module, symbol, side, bar_ts);
 CREATE INDEX IF NOT EXISTS idx_signals_day ON signals (trade_day, module);
 CREATE INDEX IF NOT EXISTS idx_signals_open ON signals (status) WHERE status IN ('OPEN', 'TP1');
 CREATE INDEX IF NOT EXISTS idx_signals_delivery ON signals (delivery_status) WHERE delivery_status = 'PENDING';
