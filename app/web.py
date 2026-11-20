@@ -22,6 +22,7 @@ from .engine import Engine
 from .telegram import send
 from .telegram_polling import TelegramPoller, get_persistent_state
 from .upstox import UpstoxClient
+from .symbols import EXPECTED_UNIVERSE_SIZE
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -196,6 +197,8 @@ def readiness():
         return unavailable("scheduler_disabled")
     if not config.UPSTOX_TOKEN:
         return unavailable("upstox_token_missing")
+    if not config.ADMIN_TOKEN:
+        return unavailable("admin_token_missing")
     if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
         return unavailable("telegram_not_configured")
 
@@ -226,8 +229,20 @@ def readiness():
         return unavailable("upstox_auth_rejected")
 
     universe = getattr(engine, "uni", None)
-    if universe is not None and not bool(getattr(universe, "ready", False)):
-        return unavailable("universe_validation_failed")
+    if universe is not None:
+        configured_symbols = list(getattr(universe, "configured_symbols", []))
+        active_symbols = [
+            str(getattr(item, "symbol", "")) for item in getattr(universe, "normal", [])
+        ]
+        if (
+            not bool(getattr(universe, "ready", False))
+            or len(configured_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(active_symbols) != EXPECTED_UNIVERSE_SIZE
+            or len(set(configured_symbols)) != EXPECTED_UNIVERSE_SIZE
+            or set(configured_symbols) != set(active_symbols)
+            or "" in active_symbols
+        ):
+            return unavailable("universe_validation_failed")
     if universe is None:
         # On trading weekdays the master must be resolved before the normal
         # session begins. Before 07:30 and on weekends, no universe is expected.
@@ -262,6 +277,7 @@ def readiness():
             "validated": universe is not None,
             "configured_symbols": len(getattr(universe, "configured_symbols", [])) if universe else 0,
             "validated_symbols": len(getattr(universe, "normal", [])) if universe else 0,
+            "expected_symbols": EXPECTED_UNIVERSE_SIZE,
         },
         "database": {"kind": getattr(store, "kind", "unknown"), "persistent": persistent},
     }
