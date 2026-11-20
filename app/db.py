@@ -71,6 +71,57 @@ BEGIN
     END IF;
 END
 $signal_id_compat$;
+-- Some older production schemas also have a required `identity` column
+-- which current inserts do not populate. Give that legacy column a safe,
+-- type-aware default and backfill only NULL values; never rewrite populated
+-- identities or rebuild the signals table.
+DO $identity_compat$
+DECLARE
+    identity_data_type TEXT;
+    identity_udt_name TEXT;
+    identity_is_generated TEXT;
+BEGIN
+    SELECT data_type, udt_name, is_identity
+      INTO identity_data_type, identity_udt_name, identity_is_generated
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'signals'
+       AND column_name = 'identity';
+
+    IF FOUND AND COALESCE(identity_is_generated, 'NO') <> 'YES' THEN
+        IF identity_data_type IN ('text', 'character varying', 'character') THEN
+            UPDATE signals
+               SET "identity" = md5(concat_ws('|', COALESCE(module, 'normal'),
+                   COALESCE(symbol, ''), COALESCE(side, ''),
+                   COALESCE(bar_ts::text, ''), ctid::text))
+             WHERE "identity" IS NULL;
+            ALTER TABLE signals ALTER COLUMN "identity"
+                SET DEFAULT md5(random()::text || clock_timestamp()::text);
+        ELSIF identity_udt_name = 'uuid' THEN
+            UPDATE signals
+               SET "identity" = md5(concat_ws('|', COALESCE(module, 'normal'),
+                   COALESCE(symbol, ''), COALESCE(side, ''),
+                   COALESCE(bar_ts::text, ''), ctid::text))::uuid
+             WHERE "identity" IS NULL;
+            ALTER TABLE signals ALTER COLUMN "identity"
+                SET DEFAULT (md5(random()::text || clock_timestamp()::text)::uuid);
+        ELSIF identity_data_type IN ('smallint', 'integer', 'bigint', 'numeric') THEN
+            CREATE SEQUENCE IF NOT EXISTS signals_identity_compat_seq;
+            PERFORM setval('signals_identity_compat_seq',
+                GREATEST(COALESCE((SELECT MAX("identity")::BIGINT FROM signals), 0) + 1, 1), FALSE);
+            UPDATE signals SET "identity" = nextval('signals_identity_compat_seq')
+             WHERE "identity" IS NULL;
+            PERFORM setval('signals_identity_compat_seq',
+                GREATEST(COALESCE((SELECT MAX("identity")::BIGINT FROM signals), 0) + 1, 1), FALSE);
+            ALTER TABLE signals ALTER COLUMN "identity"
+                SET DEFAULT nextval('signals_identity_compat_seq');
+        ELSE
+            RAISE EXCEPTION 'Unsupported legacy signals.identity type: % (%)',
+                identity_data_type, identity_udt_name;
+        END IF;
+    END IF;
+END
+$identity_compat$;
 -- Evolve older signals tables in place. CREATE TABLE IF NOT EXISTS alone
 -- does not add columns to a table created by an earlier bot release.
 -- The production-era schema used bar_time; current code consistently uses
