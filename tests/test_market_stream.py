@@ -65,3 +65,36 @@ def test_market_feed_does_not_replace_newer_quote_with_out_of_order_tick():
     assert quote["bid"] == 124.9
     assert quote["ask"] == 125.1
     assert stream.diagnostics()["ticks"] == 2
+
+
+def test_market_feed_does_not_replace_timestamped_quote_with_unknown_timestamp():
+    stream = UpstoxMarketStream(FakeClient())
+
+    known = pb.FeedResponse()
+    market = known.feeds["NSE_EQ|TEST"].fullFeed.marketFF
+    market.ltpc.ltp = 125.0
+    market.ltpc.ltt = 1795000002000
+    market.vtt = 26000
+    market.oi = 1100
+    depth = market.marketLevel.bidAskQuote.add()
+    depth.bidP = 124.9
+    depth.askP = 125.1
+    stream._consume(known.SerializeToString())
+
+    unknown = pb.FeedResponse()
+    market = unknown.feeds["NSE_EQ|TEST"].fullFeed.marketFF
+    market.ltpc.ltp = 99.0
+    # Protobuf's default zero represents an absent/unknown exchange timestamp.
+    market.vtt = 1
+    market.oi = 1
+    depth = market.marketLevel.bidAskQuote.add()
+    depth.bidP = 98.9
+    depth.askP = 99.1
+    stream._consume(unknown.SerializeToString())
+
+    quote = stream.quote("NSE_EQ|TEST")
+    assert quote["ltp"] == 125.0
+    assert quote["exchange_ts_ms"] == 1795000002000
+    assert quote["volume"] == 26000
+    assert quote["bid"] == 124.9
+    assert quote["ask"] == 125.1
