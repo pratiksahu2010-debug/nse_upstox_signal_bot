@@ -688,7 +688,7 @@ class PostgresStore(MemoryStore):
             "actual_option_costs": json.dumps({}),
         }
         legacy_aliases = {
-                "entry_price": s.get("entry"),
+            "entry_price": s.get("entry"),
             "stop_loss": s.get("sl"),
             "target1": s.get("tp1"),
             "target2": s.get("tp2"),
