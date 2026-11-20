@@ -567,3 +567,41 @@ def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "market_feed_stale"}
+
+
+
+def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": True,
+        "thread_alive": True,
+        "subscribed_symbols": 149,
+        "last_quote_age_sec": 1.0,
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "market_feed_subscription_incomplete"}
+
+
+def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "ENABLE_NORMAL", False)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "normal_strategy_disabled"}
