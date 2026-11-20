@@ -616,15 +616,24 @@ class PostgresStore(MemoryStore):
         if getattr(bar_ts, "tzinfo", None) is not None:
             bar_ts = bar_ts.astimezone(timezone.utc)
         lock_key = chr(31).join((s["module"], s["symbol"], bar_ts.isoformat()))
-        insert_sql = """INSERT INTO signals (module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, details, cost_r, option_tracking, actual_option_costs)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
-                        ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id"""
-        params = (
-            s["module"], s["symbol"], s["side"], s["bar_ts"], s["trade_day"],
-            s["entry"], s["sl"], s["tp1"], s["tp2"], s["score"], s["trig"],
-            json.dumps(s.get("details", {})), float(s.get("cost_r") or 0.0),
-            json.dumps(s.get("option_tracking") or {}), json.dumps({}),
-        )
+        from psycopg2 import sql as pg_sql
+
+        # Canonical current columns plus known legacy aliases. Older production
+        # tables can retain NOT NULL columns from a previous bot schema; map
+        # equivalent values explicitly instead of weakening their constraints.
+        values_by_column = {
+            "module": s["module"], "symbol": s["symbol"], "side": s["side"],
+            "bar_ts": bar_ts, "trade_day": s["trade_day"],
+            "entry": s["entry"], "sl": s["sl"], "tp1": s["tp1"], "tp2": s["tp2"],
+            "score": s["score"], "trig": s["trig"],
+            "details": json.dumps(s.get("details", {})),
+            "cost_r": float(s.get("cost_r") or 0.0),
+            "option_tracking": json.dumps(s.get("option_tracking") or {}),
+            "actual_option_costs": json.dumps({}),
+        }
+        legacy_aliases = {
+            "entry_price": s.get("entry"),
+        }
         for attempt in range(2):
             conn = self.pool.getconn()
             discard = False
@@ -638,11 +647,50 @@ class PostgresStore(MemoryStore):
                     )
                     cur.execute(
                         "SELECT id FROM signals WHERE module=%s AND symbol=%s AND bar_ts=%s LIMIT 1",
-                        (s["module"], s["symbol"], s["bar_ts"]),
+                        (s["module"], s["symbol"], bar_ts),
                     )
                     if cur.fetchone():
                         conn.commit()
                         return None
+
+                    # Inspect the live table shape so legacy aliases are supplied
+                    # only when that column actually exists. Fail clearly on any
+                    # other required legacy column rather than discovering them
+                    # one failed signal at a time.
+                    cur.execute(
+                        """SELECT column_name, is_nullable, column_default,
+                                  is_identity, is_generated
+                             FROM information_schema.columns
+                            WHERE table_schema=current_schema()
+                              AND table_name='signals'"""
+                    )
+                    metadata = cur.fetchall()
+                    present = {item[0] for item in metadata}
+                    for name, value in legacy_aliases.items():
+                        if name in present:
+                            values_by_column[name] = value
+
+                    missing_required = [
+                        name for name, nullable, default, identity, generated in metadata
+                        if nullable == "NO" and default is None
+                        and identity != "YES" and generated == "NEVER"
+                        and name not in values_by_column
+                    ]
+                    if missing_required:
+                        raise RuntimeError(
+                            "signals table has unsupported required legacy columns: "
+                            + ", ".join(sorted(missing_required))
+                        )
+
+                    columns = list(values_by_column)
+                    insert_sql = pg_sql.SQL(
+                        "INSERT INTO signals ({}) VALUES ({}) "
+                        "ON CONFLICT (module, symbol, side, bar_ts) DO NOTHING RETURNING id"
+                    ).format(
+                        pg_sql.SQL(", ").join(pg_sql.Identifier(name) for name in columns),
+                        pg_sql.SQL(", ").join(pg_sql.Placeholder() for _ in columns),
+                    )
+                    params = tuple(values_by_column[name] for name in columns)
                     cur.execute(insert_sql, params)
                     row = cur.fetchone()
                 conn.commit()
