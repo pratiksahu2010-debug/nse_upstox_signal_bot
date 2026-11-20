@@ -586,7 +586,9 @@ class Engine:
             for sig in prepared:
                 key = sig.option.get("_key")
                 raw_snapshot = sig.option.pop("_candidate_snapshot", None)
-                if key and raw_snapshot is not None and key not in snapshots:
+                if key and raw_snapshot is not None:
+                    # Candidate selection already validated this quote; prefer it over
+                    # an unvalidated/stale stream cache entry for this signal.
                     snapshots[key] = raw_snapshot
             needs_rest = [key for key in option_keys if key not in snapshots]
             # Premium tracking needs a signal-time entry reference. A newly added
@@ -613,7 +615,7 @@ class Engine:
                     continue
                 metrics = snapshot_metrics(raw, now.timestamp())
                 sig.option.update(metrics)
-                if OPTION_LIQUIDITY_CHECKS:
+                if OPTION_LIQUIDITY_CHECKS and sig.option.get("selection_status") != "ATM_FALLBACK_UNVERIFIED":
                     valid, reason = validate_option_liquidity(
                         metrics, OPTION_MIN_VOLUME, OPTION_MIN_OI,
                         OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC,
