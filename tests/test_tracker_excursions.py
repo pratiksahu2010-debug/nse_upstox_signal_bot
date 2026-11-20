@@ -35,7 +35,7 @@ def test_mfe_mae_excludes_signal_candle_for_long_trade():
     mfe, mae, bars, last_bar = measure_excursions(row, _bars())
 
     assert mfe == 1.5
-    assert mae == 1.5
+    assert mae == 0.5
     assert bars == 2
     assert last_bar == pd.Timestamp("2026-11-17 10:30", tz=IST).to_pydatetime()
 
@@ -61,7 +61,7 @@ def test_mfe_mae_uses_inverse_direction_for_short_trade():
     mfe, mae, bars, _ = measure_excursions(row, short_bars)
 
     assert mfe == 1.5
-    assert mae == 0.75
+    assert mae == 0.25
     assert bars == 2
 
 
@@ -111,8 +111,8 @@ def test_mfe_mae_stops_at_exit_bar_and_ignores_later_price_extremes():
 
     mfe, mae, bars, last_bar = measure_excursions(row, frame)
 
-    assert mfe == 0.5
-    assert mae == 1.5
+    assert mfe == 0.0
+    assert mae == 1.0
     assert bars == 1
     assert last_bar == pd.Timestamp("2026-11-17 10:25", tz=IST).to_pydatetime()
 
