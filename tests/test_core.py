@@ -443,3 +443,21 @@ def test_dispatch_batches_optional_option_quotes_once(monkeypatch):
     assert set(quote_calls[0]) == {"NSE_FO|AAACE", "NSE_FO|BBBCE"}
     assert len(sent) == 2
     assert all("LTP" in message for message in sent)
+
+
+
+def test_run_boundary_marks_empty_tracking_cycle_successful():
+    from types import SimpleNamespace
+
+    now = datetime(2026, 11, 20, 15, 5, tzinfo=IST)
+    engine = Engine(SimpleNamespace(auth_failed=False), MemoryStore())
+    engine.ensure_universe = lambda _now: None
+    engine.cycle = lambda _module, _now, force=False: {
+        "scope": "idle", "symbols": 0, "loaded": 0, "signals": 0
+    }
+
+    result = engine.run_boundary(now)
+
+    assert result["normal"]["scope"] == "idle"
+    assert engine.last_successful_cycle_at is not None
+    assert engine.last_cycle_error == ""
