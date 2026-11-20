@@ -119,9 +119,9 @@ def measure_excursions(
 ):
     """Return (MFE_R, MAE_R, completed_bars_held, last_bar_ts) after entry.
 
-    The signal candle is excluded. Replay stops at the first bar that closes the trade
-    under the same conservative SL/TP1/BE/TP2/EOD ordering used by simulate(), so
-    post-exit bars are never included in excursion metrics.
+    Completed candles before exit contribute their full range. The terminal candle
+    contributes only the known exit barrier (or its close for EOD): OHLC cannot tell
+    whether the opposite extreme occurred before or after the exit.
     """
     risk = abs(float(row["entry"]) - float(row["sl"]))
     if risk <= 0:
@@ -134,47 +134,80 @@ def measure_excursions(
     side = 1 if row["side"] == "LONG" else -1
     entry = float(row["entry"])
     sl, tp1, tp2 = float(row["sl"]), float(row["tp1"]), float(row["tp2"])
+    r1, r2 = abs(tp1 - entry) / risk, abs(tp2 - entry) / risk
     stage = "OPEN"
     exit_ts = None
+    terminal_mfe = terminal_mae = 0.0
+
     for ts, bar in after.iterrows():
         low, high, close = float(bar["low"]), float(bar["high"]), float(bar["close"])
         bar_end = (ts + pd.Timedelta(minutes=candle_min)).time()
+        eod = session_end is not None and bar_end >= session_end
         if stage == "OPEN":
             hit_sl = low <= sl if side > 0 else high >= sl
             hit_tp1 = high >= tp1 if side > 0 else low <= tp1
             if hit_sl:
+                # The stop price is known; the other extreme's timing is not.
+                terminal_mae = 1.0
                 exit_ts = ts
                 break
             if hit_tp1:
                 stage = "TP1"
                 hit_be = low <= entry if side > 0 else high >= entry
                 hit_tp2 = high >= tp2 if side > 0 else low <= tp2
-                if hit_be or hit_tp2 or (session_end is not None and bar_end >= session_end):
+                if hit_be:
+                    terminal_mfe = r1
                     exit_ts = ts
                     break
-            elif session_end is not None and bar_end >= session_end:
+                if hit_tp2:
+                    terminal_mfe = r2
+                    exit_ts = ts
+                    break
+                if eod:
+                    terminal_mfe = max(r1, side * (close - entry) / risk, 0.0)
+                    terminal_mae = max(-side * (close - entry) / risk, 0.0)
+                    exit_ts = ts
+                    break
+            elif eod:
+                terminal_mfe = max(side * (close - entry) / risk, 0.0)
+                terminal_mae = max(-side * (close - entry) / risk, 0.0)
                 exit_ts = ts
                 break
         else:
             hit_be = low <= entry if side > 0 else high >= entry
             hit_tp2 = high >= tp2 if side > 0 else low <= tp2
-            if hit_be or hit_tp2 or (session_end is not None and bar_end >= session_end):
+            if hit_be:
+                terminal_mfe = r1
+                exit_ts = ts
+                break
+            if hit_tp2:
+                terminal_mfe = r2
+                exit_ts = ts
+                break
+            if eod:
+                terminal_mfe = max(r1, side * (close - entry) / risk, 0.0)
+                terminal_mae = max(-side * (close - entry) / risk, 0.0)
                 exit_ts = ts
                 break
 
+    terminal_count = 0
     if exit_ts is not None:
-        after = after.loc[:exit_ts]
-    if after.empty:
-        return 0.0, 0.0, 0, None
-
-    if side > 0:
-        favourable = (after["high"].astype(float) - entry) / risk
-        adverse = (entry - after["low"].astype(float)) / risk
+        terminal_count = 1
+        completed = after.loc[after.index < exit_ts]
     else:
-        favourable = (entry - after["low"].astype(float)) / risk
-        adverse = (after["high"].astype(float) - entry) / risk
+        completed = after
 
-    mfe_r = max(0.0, float(favourable.max()))
-    mae_r = max(0.0, float(adverse.max()))
-    last_bar = after.index[-1].to_pydatetime()
-    return mfe_r, mae_r, int(len(after)), last_bar
+    if completed.empty:
+        mfe_r = mae_r = 0.0
+    elif side > 0:
+        mfe_r = max(0.0, float(((completed["high"].astype(float) - entry) / risk).max()))
+        mae_r = max(0.0, float(((entry - completed["low"].astype(float)) / risk).max()))
+    else:
+        mfe_r = max(0.0, float(((entry - completed["low"].astype(float)) / risk).max()))
+        mae_r = max(0.0, float(((completed["high"].astype(float) - entry) / risk).max()))
+
+    mfe_r = max(mfe_r, terminal_mfe)
+    mae_r = max(mae_r, terminal_mae)
+    counted = len(completed) + terminal_count
+    last_bar = (exit_ts if exit_ts is not None else completed.index[-1]).to_pydatetime() if counted else None
+    return mfe_r, mae_r, int(counted), last_bar
