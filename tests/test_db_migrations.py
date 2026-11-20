@@ -41,6 +41,10 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     read_versions = sql_calls.index("SELECT version FROM schema_migrations")
     assert add_name < backfill < enforce_not_null < read_versions
     assert add_applied_at < read_versions
+    schema_reconcile = next(i for i, sql in enumerate(sql_calls) if sql == MIGRATIONS[0][2])
+    assert "UPDATE signals" in sql_calls[schema_reconcile]
+    assert "SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date" in sql_calls[schema_reconcile]
+    assert "ADD COLUMN IF NOT EXISTS trade_day DATE" in sql_calls[schema_reconcile]
     assert calls[-1][0].startswith("DELETE FROM signals")
 
 
