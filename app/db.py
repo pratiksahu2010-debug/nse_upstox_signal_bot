@@ -69,6 +69,19 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS module TEXT;
 UPDATE signals SET module = 'normal' WHERE module IS NULL;
 ALTER TABLE signals ALTER COLUMN module SET DEFAULT 'normal';
 ALTER TABLE signals ALTER COLUMN module SET NOT NULL;
+-- The deployed pre-module table also predates the lifecycle status field.
+-- Add the complete set of non-key signal fields idempotently so indexes and
+-- runtime queries never assume CREATE TABLE IF NOT EXISTS evolved old tables.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS tp1 DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS tp2 DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS score INTEGER;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS trig TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS details JSONB;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'OPEN';
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS r_result DOUBLE PRECISION;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_day DATE;
 UPDATE signals
    SET trade_day = (bar_ts AT TIME ZONE 'Asia/Kolkata')::date
@@ -504,7 +517,6 @@ class PostgresStore(MemoryStore):
                 "INSERT INTO schema_migrations (version, name) VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",
                 (version, name),
             )
-        self._run("DELETE FROM signals WHERE trade_day < CURRENT_DATE - 180")
 
     def load_normal_states(self, day: date) -> dict:
         rows = self._run("SELECT symbol, state FROM normal_setup_state WHERE trade_day=%s", (day,), "all")

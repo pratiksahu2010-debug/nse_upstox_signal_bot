@@ -47,7 +47,8 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert "ADD COLUMN IF NOT EXISTS trade_day DATE" in sql_calls[schema_reconcile]
     assert "RENAME COLUMN bar_time TO bar_ts" in sql_calls[schema_reconcile]
     assert sql_calls[schema_reconcile].index("RENAME COLUMN bar_time TO bar_ts") < sql_calls[schema_reconcile].index("SET trade_day = (bar_ts AT TIME ZONE")
-    assert calls[-1][0].startswith("DELETE FROM signals")
+    assert not any(sql.lstrip().upper().startswith("DELETE FROM SIGNALS") for sql, _, _ in calls)
+    assert "ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'OPEN'" in sql_calls[schema_reconcile]
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
@@ -68,4 +69,4 @@ def test_postgres_store_does_not_reapply_recorded_migrations():
         sql.startswith("INSERT INTO schema_migrations")
         for sql, _, _ in calls
     )
-    assert calls[-1][0].startswith("DELETE FROM signals")
+    assert not any(sql.lstrip().upper().startswith("DELETE FROM SIGNALS") for sql, _, _ in calls)

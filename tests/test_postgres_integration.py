@@ -5,7 +5,7 @@ This deliberately starts from the production-era schema_migrations and signals
 layouts so startup reconciliation is tested against the real legacy shape.
 """
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -19,11 +19,14 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
     signal_id = None
     legacy_id = None
     legacy_module_signal_id = None
+    legacy_old_id = None
     initialized = False
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     stamp = datetime.now(timezone.utc)
     symbol = "CI_POSTGRES_INTEGRATION"
     legacy_symbol = "CI_LEGACY_BAR_TIME"
+    legacy_old_symbol = "CI_LEGACY_OLD_HISTORY"
+    old_stamp = stamp - timedelta(days=200)
 
     try:
         # Reproduce the old production migration ledger: version only, with
@@ -46,7 +49,6 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                 score INTEGER,
                 trig TEXT,
                 details JSONB,
-                status TEXT NOT NULL DEFAULT 'OPEN',
                 r_result DOUBLE PRECISION,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (symbol, side, bar_time)
@@ -57,14 +59,20 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
             """
             INSERT INTO signals
                 (symbol, side, bar_time, entry, sl, tp1, tp2,
-                 score, trig, details, status)
+                 score, trig, details)
             VALUES
                 (%s, 'LONG', %s, 100, 98, 102, 104,
                  91, 'LEGACY_FIXTURE',
-                 '{"indicator_snapshot":{"adx":27.0}}'::jsonb, 'OPEN')
+                 '{"indicator_snapshot":{"adx":27.0}}'::jsonb)
             RETURNING id
             """,
             (legacy_symbol, stamp),
+            "one",
+        )[0]
+        legacy_old_id = store._run(
+            """INSERT INTO signals (symbol, side, bar_time, entry, sl, tp1, tp2)
+               VALUES (%s, 'SHORT', %s, 200, 202, 198, 196) RETURNING id""",
+            (legacy_old_symbol, old_stamp),
             "one",
         )[0]
 
@@ -84,6 +92,13 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         )
         assert migrated[0] == stamp
         assert migrated[1] == today
+        assert store._run("SELECT status FROM signals WHERE id=%s", (legacy_id,), "one")[0] == "OPEN"
+        # Startup must not prune historical signals merely because they are older than 180 days.
+        old_row = store._run(
+            "SELECT bar_ts, trade_day, status FROM signals WHERE id=%s",
+            (legacy_old_id,), "one",
+        )
+        assert old_row == (old_stamp, old_stamp.astimezone(ZoneInfo("Asia/Kolkata")).date(), "OPEN")
         legacy_module = store._run(
             "SELECT module FROM signals WHERE id=%s", (legacy_id,), "one"
         )[0]
@@ -174,6 +189,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         # The CI database is disposable; remove only records created by this test.
         if legacy_id is not None:
             store._run("DELETE FROM signals WHERE id=%s", (legacy_id,))
+        if legacy_old_id is not None:
+            store._run("DELETE FROM signals WHERE id=%s", (legacy_old_id,))
         if legacy_module_signal_id is not None:
             store._run("DELETE FROM signals WHERE id=%s", (legacy_module_signal_id,))
         if initialized:
