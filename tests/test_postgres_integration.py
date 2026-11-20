@@ -99,6 +99,21 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
 
         store.init()
         initialized = True
+
+        # The Telegram leader lease must coordinate independent poller objects
+        # using ordinary short PostgreSQL transactions (including PgBouncer).
+        from app.telegram_polling import TelegramPoller
+        first_poller = TelegramPoller(None, store, token="ci-token", chat_id="1")
+        second_poller = TelegramPoller(None, store, token="ci-token", chat_id="1")
+        try:
+            assert first_poller._acquire_leader_lock() is True
+            assert second_poller._acquire_leader_lock() is False
+            assert first_poller._renew_leader_lock() is True
+            first_poller._release_leader_lock()
+            assert second_poller._acquire_leader_lock() is True
+        finally:
+            first_poller._release_leader_lock()
+            second_poller._release_leader_lock()
         legacy_id = store._run(
             "SELECT id FROM signals WHERE symbol=%s AND side='LONG' AND bar_ts=%s",
             (legacy_symbol, stamp), "one",

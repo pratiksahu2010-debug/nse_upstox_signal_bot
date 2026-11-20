@@ -48,90 +48,62 @@ def test_training_export_includes_module_and_underlying_symbol():
     assert row["actual_option_costs"] == '{"total_cost_rupees":12.5}'
 
 
-class _FakeCursor:
-    def __init__(self, acquired=True):
-        self.acquired = acquired
-        self.query = None
+class _LeaseFakeStore:
+    kind = "postgres"
 
-    def __enter__(self):
-        return self
+    def __init__(self):
+        self.owner = None
+        self.queries = []
 
-    def __exit__(self, *_):
-        return False
-
-    def execute(self, query, params=None):
-        self.query = query
-
-    def fetchone(self):
-        return (self.acquired,)
-
-
-class _FakeConnection:
-    closed = 0
-
-    def __init__(self, acquired=True):
-        self.cur = _FakeCursor(acquired)
-        self.commits = 0
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self):
-        self.commits += 1
-
-    def rollback(self):
-        pass
+    def _run(self, sql, params=None, fetch="none"):
+        self.queries.append((sql, params, fetch))
+        if "INSERT INTO telegram_polling_leases" in sql:
+            owner = params[1]
+            if self.owner is None:
+                self.owner = owner
+                return (owner,)
+            return None
+        if "UPDATE telegram_polling_leases" in sql:
+            owner = params[2]
+            return (owner,) if self.owner == owner else None
+        if "DELETE FROM telegram_polling_leases" in sql:
+            if self.owner == params[1]:
+                self.owner = None
+        return None
 
 
-class _FakePool:
-    def __init__(self, connection):
-        self.connection = connection
-        self.returned = []
-
-    def getconn(self):
-        return self.connection
-
-    def putconn(self, conn, close=False):
-        self.returned.append((conn, close))
-
-
-def test_telegram_poller_holds_postgres_advisory_lock_until_release():
+def test_telegram_poller_lease_allows_only_one_postgres_consumer():
     from app.telegram_polling import TelegramPoller
 
-    connection = _FakeConnection(acquired=True)
-    pool = _FakePool(connection)
-    store = type("Store", (), {
-        "kind": "postgres", "pool": pool,
-        "_run": staticmethod(lambda *args, **kwargs: None),
-    })()
-    poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
+    store = _LeaseFakeStore()
+    first = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
+    second = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
 
+    assert first._acquire_leader_lock() is True
+    assert first.leader_lock_acquired is True
+    assert second._acquire_leader_lock() is False
+    assert second.leader_lock_acquired is False
+    assert first._renew_leader_lock() is True
+
+    first._release_leader_lock()
+    assert first.leader_lock_acquired is False
+    assert second._acquire_leader_lock() is True
+    second._release_leader_lock()
+    assert store.owner is None
+
+
+def test_telegram_poller_lease_renewal_fails_after_ownership_changes():
+    from app.telegram_polling import TelegramPoller
+
+    store = _LeaseFakeStore()
+    poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
     assert poller._acquire_leader_lock() is True
-    assert poller.leader_lock_acquired is True
-    assert poller._leader_conn is connection
-    assert pool.returned == []
 
+    # Simulate another process taking over after the lease expires.
+    store.owner = "different-process"
+    assert poller._renew_leader_lock() is False
     poller._release_leader_lock()
-    assert poller.leader_lock_acquired is False
-    assert poller._leader_conn is None
-    assert pool.returned == [(connection, False)]
-
-
-def test_telegram_poller_standby_returns_connection_when_lock_is_taken():
-    from app.telegram_polling import TelegramPoller
-
-    connection = _FakeConnection(acquired=False)
-    pool = _FakePool(connection)
-    store = type("Store", (), {
-        "kind": "postgres", "pool": pool,
-        "_run": staticmethod(lambda *args, **kwargs: None),
-    })()
-    poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
-
-    assert poller._acquire_leader_lock() is False
-    assert poller.leader_lock_acquired is False
-    assert poller._leader_conn is None
-    assert pool.returned == [(connection, False)]
+    assert store.owner == "different-process"
 
 
 def test_postgres_training_rows_keep_module_and_symbol_columns_aligned():

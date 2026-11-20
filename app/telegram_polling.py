@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import threading
+import uuid
 from datetime import datetime, timedelta
 
 import requests
@@ -99,7 +100,7 @@ def set_persistent_state(store, key, value):
 
 
 class TelegramPoller:
-    """Single-process Telegram getUpdates consumer with persistent update offset."""
+    """Single Telegram getUpdates consumer coordinated by a DB-backed lease."""
 
     def __init__(self, engine, store, token=None, chat_id=None):
         self.engine, self.store = engine, store
@@ -113,7 +114,9 @@ class TelegramPoller:
         self.last_success_at = None
         self.last_error = ""
         self.leader_lock_acquired = False
-        self._leader_conn = None
+        self._lease_owner = uuid.uuid4().hex
+        self._lease_table_ready = False
+        self._lease_ttl_seconds = 90
 
     def start(self):
         if not self.token or not self.chat_id or self.thread is not None:
@@ -122,52 +125,72 @@ class TelegramPoller:
         self.thread = threading.Thread(target=self._loop, name="telegram-polling", daemon=True)
         self.thread.start()
 
+    def _ensure_lease_table(self):
+        """Create the lease table once; lease operations are transaction-safe on PgBouncer."""
+        if self._lease_table_ready or getattr(self.store, "kind", "") != "postgres":
+            return
+        self.store._run("""CREATE TABLE IF NOT EXISTS telegram_polling_leases (
+            lease_key TEXT PRIMARY KEY,
+            owner_token TEXT NOT NULL,
+            lease_until TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+        self._lease_table_ready = True
+
     def _acquire_leader_lock(self):
-        """Hold a PostgreSQL session lock so overlapping deploy instances cannot poll together."""
+        """Atomically acquire a short DB lease; works with direct and pooled PostgreSQL URLs."""
         if getattr(self.store, "kind", "") != "postgres":
             self.leader_lock_acquired = True
             return True
-        conn = self.store.pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
-                            ("nse_fno_telegram_getupdates",))
-                acquired = bool(cur.fetchone()[0])
-            conn.commit()
-            if acquired:
-                self._leader_conn = conn
-                self.leader_lock_acquired = True
-                log.info("Telegram polling leader lock acquired")
-                return True
-            self.store.pool.putconn(conn)
-            return False
-        except Exception:
-            try: conn.rollback()
-            finally: self.store.pool.putconn(conn, close=True)
-            raise
+        self._ensure_lease_table()
+        row = self.store._run(
+            """INSERT INTO telegram_polling_leases
+                   (lease_key, owner_token, lease_until, updated_at)
+               VALUES (%s, %s, now() + (%s * interval '1 second'), now())
+               ON CONFLICT (lease_key) DO UPDATE
+                   SET owner_token=EXCLUDED.owner_token,
+                       lease_until=EXCLUDED.lease_until,
+                       updated_at=now()
+                 WHERE telegram_polling_leases.lease_until <= now()
+               RETURNING owner_token""",
+            ("telegram_getupdates", self._lease_owner, self._lease_ttl_seconds),
+            "one",
+        )
+        acquired = bool(row and row[0] == self._lease_owner)
+        self.leader_lock_acquired = acquired
+        if acquired:
+            log.info("Telegram polling leader lease acquired")
+        return acquired
+
+    def _renew_leader_lock(self):
+        """Renew only while this process still owns an unexpired lease."""
+        if getattr(self.store, "kind", "") != "postgres":
+            return True
+        row = self.store._run(
+            """UPDATE telegram_polling_leases
+                  SET lease_until=now() + (%s * interval '1 second'), updated_at=now()
+                WHERE lease_key=%s AND owner_token=%s AND lease_until > now()
+                RETURNING owner_token""",
+            (self._lease_ttl_seconds, "telegram_getupdates", self._lease_owner),
+            "one",
+        )
+        return bool(row and row[0] == self._lease_owner)
 
     def _release_leader_lock(self):
-        conn, self._leader_conn = self._leader_conn, None
+        """Release only this instance's lease; safe if ownership has moved."""
+        was_leader = self.leader_lock_acquired
         self.leader_lock_acquired = False
-        if conn is None:
+        if not was_leader or getattr(self.store, "kind", "") != "postgres":
             return
-        discard = False
         try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
-                            ("nse_fno_telegram_getupdates",))
-                cur.fetchone()
-            conn.commit()
+            self.store._run(
+                "DELETE FROM telegram_polling_leases WHERE lease_key=%s AND owner_token=%s",
+                ("telegram_getupdates", self._lease_owner),
+            )
         except Exception as exc:
-            discard = True
-            try: conn.rollback()
-            except Exception: pass
-            log.warning("Telegram leader lock release failed (%s); discarding connection",
+            # The lease expires automatically if the process cannot release it.
+            log.warning("Telegram leader lease release failed (%s); it will expire",
                         type(exc).__name__)
-        finally:
-            # If UNLOCK failed, closing the session is the only reliable way
-            # to ensure PostgreSQL releases the session-scoped advisory lock.
-            self.store.pool.putconn(conn, close=discard or bool(conn.closed))
 
     def stop(self):
         self.stop_event.set()
@@ -187,8 +210,15 @@ class TelegramPoller:
         try:
             while not self.stop_event.is_set():
                 try:
-                    if not self.leader_lock_acquired and not self._acquire_leader_lock():
-                        self.last_error = "standby: another instance owns Telegram polling"
+                    if not self.leader_lock_acquired:
+                        if not self._acquire_leader_lock():
+                            self.last_error = "standby: another instance owns Telegram polling"
+                            self.stop_event.wait(5.0)
+                            continue
+                    elif not self._renew_leader_lock():
+                        self.leader_lock_acquired = False
+                        self.last_error = "standby: another instance owns Telegram polling (lease lost)"
+                        log.warning("Telegram polling lease lost; stopping getUpdates attempts")
                         self.stop_event.wait(5.0)
                         continue
                     response = requests.get(self._api("getUpdates"), params={
