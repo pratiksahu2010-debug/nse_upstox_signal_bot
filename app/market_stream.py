@@ -29,6 +29,7 @@ class UpstoxMarketStream:
         self._quotes = {}
         self.connected = False
         self.last_message_at = None
+        self.last_quote_at = None
         self.last_error = ""
         self.reconnects = 0
         self.ticks = 0
@@ -55,6 +56,10 @@ class UpstoxMarketStream:
         with self._lock:
             changed = new_keys != self._keys
             self._keys = new_keys
+            if changed:
+                # A quote for the previous subscription set must not make a
+                # newly expanded/replaced subscription set look fresh.
+                self.last_quote_at = None
             # The engine rotates option subscriptions during the session. Keep
             # cached quote state only for currently subscribed instruments.
             active_keys = set(new_keys)
@@ -80,21 +85,26 @@ class UpstoxMarketStream:
     def diagnostics(self):
         with self._lock:
             last_message_at = self.last_message_at
+            last_quote_at = self.last_quote_at
             connected = self.connected
             keys = len(self._keys)
             ticks = self.ticks
             reconnects = self.reconnects
             last_error = self.last_error
             cache_size = len(self._quotes)
-        age = None
-        if last_message_at:
+        def age_seconds(value):
+            if not value:
+                return None
             try:
-                stamp = datetime.fromisoformat(last_message_at)
+                stamp = datetime.fromisoformat(value)
                 if stamp.tzinfo is None:
                     stamp = stamp.replace(tzinfo=timezone.utc)
-                age = max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+                return max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
             except (TypeError, ValueError, OverflowError):
-                age = None
+                return None
+
+        message_age = age_seconds(last_message_at)
+        quote_age = age_seconds(last_quote_at)
         return {
             "connected": connected,
             "thread_alive": bool(self._thread and self._thread.is_alive()),
@@ -102,7 +112,9 @@ class UpstoxMarketStream:
             "ticks": ticks,
             "reconnects": reconnects,
             "last_message_at": last_message_at,
-            "last_message_age_sec": round(age, 2) if age is not None else None,
+            "last_message_age_sec": round(message_age, 2) if message_age is not None else None,
+            "last_quote_at": last_quote_at,
+            "last_quote_age_sec": round(quote_age, 2) if quote_age is not None else None,
             "last_error": last_error,
             "quote_cache_size": cache_size,
         }
@@ -209,6 +221,7 @@ class UpstoxMarketStream:
             updates[key] = quote
 
         with self._lock:
+            accepted = 0
             for key, quote in updates.items():
                 previous = self._quotes.get(key)
                 previous_ts = int(previous.get("exchange_ts_ms") or 0) if previous else 0
@@ -221,6 +234,9 @@ class UpstoxMarketStream:
                     # Preserve the last quote whose exchange ordering is known.
                     continue
                 self._quotes[key] = quote
-            self.ticks += len(updates)
+                accepted += 1
+            self.ticks += accepted
             self.last_message_at = now
+            if accepted:
+                self.last_quote_at = now
             self.connected = True
