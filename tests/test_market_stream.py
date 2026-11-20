@@ -161,3 +161,43 @@ def test_market_feed_subscription_change_invalidates_previous_quote_freshness():
     stream.set_keys(["NSE_EQ|NEW"])
 
     assert stream.diagnostics()["last_quote_age_sec"] is None
+
+
+
+def test_market_feed_duplicate_timestamp_does_not_refresh_quote_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    first = pb.FeedResponse()
+    feed = first.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 123.45
+    feed.ltt = 1795000000000
+    stream._consume(first.SerializeToString())
+    first_seen = stream.last_quote_at
+
+    duplicate = pb.FeedResponse()
+    feed = duplicate.feeds["NSE_EQ|TEST"].ltpc
+    feed.ltp = 124.00
+    feed.ltt = 1795000000000
+    stream._consume(duplicate.SerializeToString())
+
+    assert stream.quote("NSE_EQ|TEST")["ltp"] == 123.45
+    assert stream.last_quote_at == first_seen
+    assert stream.diagnostics()["ticks"] == 1
+
+
+def test_market_feed_rejects_empty_or_invalid_quotes_for_freshness():
+    stream = UpstoxMarketStream(FakeClient())
+    response = pb.FeedResponse()
+    zero_price = response.feeds["NSE_EQ|ZERO"].ltpc
+    zero_price.ltp = 0.0
+    zero_price.ltt = 1795000000000
+    missing_time = response.feeds["NSE_EQ|NO_TIME"].ltpc
+    missing_time.ltp = 123.45
+    # ltt intentionally left at protobuf's zero default.
+
+    stream._consume(response.SerializeToString())
+
+    health = stream.diagnostics()
+    assert health["ticks"] == 0
+    assert health["last_quote_age_sec"] is None
+    assert stream.quote("NSE_EQ|ZERO") is None
+    assert stream.quote("NSE_EQ|NO_TIME") is None
