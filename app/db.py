@@ -152,6 +152,62 @@ BEGIN
     END IF;
 END
 $identity_compat$;
+-- Older deployments may retain a required state_cycle_id column from the
+-- previous signal lifecycle schema. Backfill only NULL values and add a
+-- type-aware default for future inserts; existing cycle identifiers remain
+-- unchanged. This keeps the legacy constraint intact without coupling the
+-- current signal engine to the retired lifecycle implementation.
+DO $state_cycle_compat$
+DECLARE
+    cycle_data_type TEXT;
+    cycle_udt_name TEXT;
+    cycle_is_identity TEXT;
+    cycle_is_generated TEXT;
+    cycle_column_default TEXT;
+BEGIN
+    SELECT data_type, udt_name, is_identity, is_generated, column_default
+      INTO cycle_data_type, cycle_udt_name, cycle_is_identity, cycle_is_generated, cycle_column_default
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'signals'
+       AND column_name = 'state_cycle_id';
+
+    IF FOUND AND COALESCE(cycle_is_identity, 'NO') <> 'YES'
+       AND COALESCE(cycle_is_generated, 'NEVER') = 'NEVER'
+       AND cycle_column_default IS NULL THEN
+        IF cycle_data_type IN ('text', 'character varying', 'character') THEN
+            UPDATE signals
+               SET state_cycle_id = md5(concat_ws('|', COALESCE(module, 'normal'),
+                   COALESCE(symbol, ''), COALESCE(side, ''),
+                   COALESCE(bar_ts::text, ''), ctid::text))
+             WHERE state_cycle_id IS NULL;
+            ALTER TABLE signals ALTER COLUMN state_cycle_id
+                SET DEFAULT md5(random()::text || clock_timestamp()::text);
+        ELSIF cycle_udt_name = 'uuid' THEN
+            UPDATE signals
+               SET state_cycle_id = md5(concat_ws('|', COALESCE(module, 'normal'),
+                   COALESCE(symbol, ''), COALESCE(side, ''),
+                   COALESCE(bar_ts::text, ''), ctid::text))::uuid
+             WHERE state_cycle_id IS NULL;
+            ALTER TABLE signals ALTER COLUMN state_cycle_id
+                SET DEFAULT (md5(random()::text || clock_timestamp()::text)::uuid);
+        ELSIF cycle_data_type IN ('smallint', 'integer', 'bigint', 'numeric') THEN
+            CREATE SEQUENCE IF NOT EXISTS signals_state_cycle_compat_seq;
+            PERFORM setval('signals_state_cycle_compat_seq',
+                GREATEST(COALESCE((SELECT MAX(state_cycle_id)::BIGINT FROM signals), 0) + 1, 1), FALSE);
+            UPDATE signals SET state_cycle_id = nextval('signals_state_cycle_compat_seq')
+             WHERE state_cycle_id IS NULL;
+            PERFORM setval('signals_state_cycle_compat_seq',
+                GREATEST(COALESCE((SELECT MAX(state_cycle_id)::BIGINT FROM signals), 0) + 1, 1), FALSE);
+            ALTER TABLE signals ALTER COLUMN state_cycle_id
+                SET DEFAULT nextval('signals_state_cycle_compat_seq');
+        ELSE
+            RAISE EXCEPTION 'Unsupported legacy signals.state_cycle_id type: % (%)',
+                cycle_data_type, cycle_udt_name;
+        END IF;
+    END IF;
+END
+$state_cycle_compat$;
 -- The deployed pre-module table also predates the lifecycle status field.
 -- Add the complete set of non-key signal fields idempotently so indexes and
 -- runtime queries never assume CREATE TABLE IF NOT EXISTS evolved old tables.
@@ -633,6 +689,9 @@ class PostgresStore(MemoryStore):
         }
         legacy_aliases = {
             "entry_price": s.get("entry"),
+            "stop_loss": s.get("sl"),
+            "target1": s.get("tp1"),
+            "target2": s.get("tp2"),
         }
         for attempt in range(2):
             conn = self.pool.getconn()
