@@ -12,6 +12,9 @@ def _ready_engine():
             return {"last_success_at": self.last_success_at}
 
     class FakeFeed:
+        def stop(self):
+            pass
+
         def diagnostics(self):
             return {
                 "connected": True,
