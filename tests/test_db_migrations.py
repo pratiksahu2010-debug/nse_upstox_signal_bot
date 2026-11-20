@@ -31,6 +31,16 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert any(sql == MIGRATIONS[4][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[5][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[6][2] for sql, _, _ in calls)
+    # Existing installations may have a version-only migration ledger.
+    # Bootstrap must add/backfill the metadata columns before reading or writing it.
+    sql_calls = [sql for sql, _, _ in calls]
+    add_name = next(i for i, sql in enumerate(sql_calls) if "ADD COLUMN IF NOT EXISTS name TEXT" in sql)
+    add_applied_at = next(i for i, sql in enumerate(sql_calls) if "ADD COLUMN IF NOT EXISTS applied_at" in sql)
+    backfill = next(i for i, sql in enumerate(sql_calls) if "UPDATE schema_migrations SET name" in sql)
+    enforce_not_null = next(i for i, sql in enumerate(sql_calls) if "ALTER COLUMN name SET NOT NULL" in sql)
+    read_versions = sql_calls.index("SELECT version FROM schema_migrations")
+    assert add_name < backfill < enforce_not_null < read_versions
+    assert add_applied_at < read_versions
     assert calls[-1][0].startswith("DELETE FROM signals")
 
 
