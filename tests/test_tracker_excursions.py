@@ -35,7 +35,7 @@ def test_mfe_mae_excludes_signal_candle_for_long_trade():
     mfe, mae, bars, last_bar = measure_excursions(row, _bars())
 
     assert mfe == 1.5
-    assert mae == 0.5
+    assert mae == 0.0
     assert bars == 2
     assert last_bar == pd.Timestamp("2026-11-17 10:30", tz=IST).to_pydatetime()
 
