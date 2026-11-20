@@ -101,10 +101,11 @@ def send(text: str, silent: bool = False, signal_id: Optional[int] = None) -> bo
                     retry_after = 3.0
                 time.sleep(max(1.0, min(30.0, retry_after)) + 0.5)
                 continue
-            log.error("telegram %s: %s", r.status_code, r.text[:200])
+            log.error("telegram request returned HTTP %s", r.status_code)
             if r.status_code in (400, 401, 403, 404):
                 return False
-        except requests.RequestException as e:
-            log.error("telegram error: %s", e)
+        except requests.RequestException as exc:
+            # requests exception text can contain the complete Bot API URL and token.
+            log.error("telegram request failed (%s)", type(exc).__name__)
             time.sleep(2 * (attempt + 1))
     return False
