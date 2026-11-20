@@ -26,7 +26,7 @@ def test_engine_batches_lazy_option_subscriptions_into_one_stream_update():
 
 
 def test_engine_housekeeping_restarts_dead_market_feed_worker():
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
 
     class DeadFeed:
         def __init__(self):
@@ -44,24 +44,20 @@ def test_engine_housekeeping_restarts_dead_market_feed_worker():
     engine._stream_keys = ["underlying-1"]
     engine.ensure_universe = lambda now: None
 
-    engine.housekeeping(datetime(2026, 11, 20, 10, 0, tzinfo=__import__("datetime").timezone(
-        __import__("datetime").timedelta(hours=5, minutes=30)
-    )))
+    engine.housekeeping(datetime(2026, 11, 20, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))))
 
     assert feed.starts == [["underlying-1"]]
 
 
 def test_run_boundary_records_successful_scan_health():
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     engine = Engine(client=object(), store=MemoryStore())
     engine.ensure_universe = lambda now: None
     engine.cycle = lambda module, now, force=False: {
         "scope": "full", "symbols": 150, "loaded": 150, "signals": 0
     }
-    now = datetime(2026, 11, 20, 10, 0, tzinfo=__import__("datetime").timezone(
-        __import__("datetime").timedelta(hours=5, minutes=30)
-    ))
+    now = datetime(2026, 11, 20, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 
     result = engine.run_boundary(now, only="normal", force=True)
 
@@ -73,7 +69,7 @@ def test_run_boundary_records_successful_scan_health():
 
 
 def test_run_boundary_records_scan_exception_for_readiness():
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
 
     engine = Engine(client=object(), store=MemoryStore())
     engine.ensure_universe = lambda now: None
@@ -82,9 +78,7 @@ def test_run_boundary_records_scan_exception_for_readiness():
         raise RuntimeError("fixture scan failure")
 
     engine.cycle = fail_cycle
-    now = datetime(2026, 11, 20, 10, 0, tzinfo=__import__("datetime").timezone(
-        __import__("datetime").timedelta(hours=5, minutes=30)
-    ))
+    now = datetime(2026, 11, 20, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 
     result = engine.run_boundary(now, only="normal", force=True)
 
