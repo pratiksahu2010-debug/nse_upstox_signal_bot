@@ -58,6 +58,7 @@ def _configure_ready(monkeypatch):
 
     class RunningPoller:
         running = True
+        leader_lock_acquired = True
 
         def stop(self):
             pass
