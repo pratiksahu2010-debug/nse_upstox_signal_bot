@@ -107,7 +107,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
 | `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
 | `STALE_MAX_BARS` | `1` | Maximum permitted signal-bar age |
-| `WORKERS` | `6` | Internal fetch concurrency; not Gunicorn workers |
+| `WORKERS` | `24` (bounded to 16–24) | I/O-bound candle fetch concurrency; Upstox request pacing remains enforced |
 | `RATE_PER_SEC` | `8` | Upstox request pacing per second |
 | `RATE_PER_MIN` | `400` | Upstox request pacing per minute |
 | `RATE_PER_30MIN` | `1700` | Upstox request pacing per 30 minutes |
