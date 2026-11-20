@@ -100,7 +100,10 @@ def test_telegram_poller_holds_postgres_advisory_lock_until_release():
 
     connection = _FakeConnection(acquired=True)
     pool = _FakePool(connection)
-    store = type("Store", (), {"kind": "postgres", "pool": pool})()
+    store = type("Store", (), {
+        "kind": "postgres", "pool": pool,
+        "_run": staticmethod(lambda *args, **kwargs: None),
+    })()
     poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
 
     assert poller._acquire_leader_lock() is True
@@ -119,7 +122,10 @@ def test_telegram_poller_standby_returns_connection_when_lock_is_taken():
 
     connection = _FakeConnection(acquired=False)
     pool = _FakePool(connection)
-    store = type("Store", (), {"kind": "postgres", "pool": pool})()
+    store = type("Store", (), {
+        "kind": "postgres", "pool": pool,
+        "_run": staticmethod(lambda *args, **kwargs: None),
+    })()
     poller = TelegramPoller(engine=None, store=store, token="test-token", chat_id="1")
 
     assert poller._acquire_leader_lock() is False
