@@ -940,6 +940,13 @@ class Engine:
         if now.weekday() >= 5:
             return
         self.ensure_universe(now)
+        if self.market_stream is not None:
+            try:
+                feed_state = self.market_stream.diagnostics()
+                if not feed_state.get("thread_alive"):
+                    self.market_stream.start(self._stream_keys)
+            except Exception:
+                log.exception("market feed worker restart check failed")
         t = now.time()
         if ENGINE.prewarm_nse <= t < time(9, 15):
             self.prewarm(now, "nse")
