@@ -6,6 +6,18 @@ from app import web
 def _ready_engine():
     class FakeClient:
         auth_failed = False
+        last_success_at = web.datetime.now(web.IST).isoformat(timespec="seconds")
+
+        def diagnostics(self):
+            return {"last_success_at": self.last_success_at}
+
+    class FakeFeed:
+        def diagnostics(self):
+            return {
+                "connected": True,
+                "thread_alive": True,
+                "last_message_age_sec": 5.0,
+            }
 
     class FakeUniverse:
         ready = True
@@ -16,7 +28,13 @@ def _ready_engine():
     class FakeEngine:
         client = FakeClient()
         uni = FakeUniverse()
+        market_stream = FakeFeed()
         last_error = ""
+        last_cycle_started_at = web.datetime.now(web.IST).isoformat(timespec="seconds")
+        last_cycle_completed_at = last_cycle_started_at
+        last_successful_cycle_at = last_cycle_started_at
+        last_cycle_error = ""
+        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "signals": 0}}
 
     return FakeEngine()
 
