@@ -13,6 +13,18 @@ from .telegram import send
 
 log = logging.getLogger("telegram.polling")
 
+
+
+def _classify_telegram_conflict(description):
+    """Return a safe conflict category without logging Telegram response data."""
+    message = str(description or "").lower()
+    if "webhook" in message:
+        return "webhook_configured"
+    if "terminated by other getupdates" in message or "other getupdates" in message:
+        return "another_getupdates_consumer"
+    return "unknown_conflict"
+
+
 EXPORT_FIELDS = [
     "id", "module", "symbol", "bar_ts", "side", "score", "trig", "status", "first_hit",
     "gross_r", "net_r", "mfe_r", "mae_r", "bars_held", "bars_to_tp1", "bars_to_tp2", "option_tracking",
@@ -190,8 +202,14 @@ class TelegramPoller:
                         self.stop_event.wait(60)
                         continue
                     if response.status_code == 409:
-                        self.last_error = "Telegram getUpdates conflict (another consumer may be active)"
-                        log.warning("Telegram getUpdates returned HTTP 409; backing off without exposing credentials")
+                        try:
+                            conflict_payload = response.json()
+                            conflict_description = conflict_payload.get("description", "")
+                        except (ValueError, TypeError):
+                            conflict_description = ""
+                        conflict_kind = _classify_telegram_conflict(conflict_description)
+                        self.last_error = f"Telegram getUpdates conflict: {conflict_kind}"
+                        log.warning("Telegram getUpdates returned HTTP 409 (%s); backing off without exposing credentials", conflict_kind)
                         self.stop_event.wait(min(30.0, max(5.0, delay)))
                         delay = min(30.0, delay * 2)
                         continue
