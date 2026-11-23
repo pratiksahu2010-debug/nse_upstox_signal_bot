@@ -122,7 +122,7 @@ class UpstoxClient:
 
     def diagnostics(self) -> dict:
         with self._state_lock:
-            return {
+            state = {
                 "token_configured": bool(self._token),
                 "auth_failed": self.auth_failed,
                 "auth_status": self.auth_status,
@@ -131,15 +131,18 @@ class UpstoxClient:
                 "last_status": self.last_status,
                 "request_count": self.request_count,
                 "failure_count": self.failure_count,
-                "latency": {
-                    "count": self._latency["count"],
-                    "avg_seconds": round(self._latency["total_seconds"] / self._latency["count"], 3)
-                    if self._latency["count"] else 0.0,
-                    "total_seconds": round(self._latency["total_seconds"], 3),
-                    "max_seconds": round(self._latency["max_seconds"], 3),
-                },
                 "optional_data_disabled": sorted(self._optional_data_disabled),
             }
+        with self._latency_lock:
+            count = self._latency["count"]
+            total_seconds = self._latency["total_seconds"]
+            state["latency"] = {
+                "count": count,
+                "avg_seconds": round(total_seconds / count, 3) if count else 0.0,
+                "total_seconds": round(total_seconds, 3),
+                "max_seconds": round(self._latency["max_seconds"], 3),
+            }
+        return state
 
     @staticmethod
     def _retry_after(value, fallback: float) -> float:
