@@ -53,11 +53,13 @@ def score_signal(f: Features, side: int) -> int:
     vwap_distance_atr = side * (f.close - f.vwap) / max(f.atr, 1e-9)
     htf_spread_atr = side * (f.htf_ema9 - f.htf_ema21) / max(f.atr, 1e-9)
 
-    ema_score = 25.0 + 10.0 * clamp(ema_spread_atr / 0.50)
-    htf_score = 15.0 + 5.0 * clamp(htf_spread_atr / 0.50)
-    vwap_score = 10.0 + 5.0 * clamp(vwap_distance_atr / 0.75)
-    adx_score = 15.0 + 5.0 * clamp((f.adx - C.adx_min) / 15.0)
-    rsi_score = 10.0 + 15.0 * clamp((side * (f.rsi - trigger)) / 15.0)
+    # Reward strength progressively rather than awarding nearly all points
+    # merely for passing the hard setup gates. The five components total 100.
+    ema_score = 20.0 + 10.0 * clamp(ema_spread_atr / 1.0)
+    htf_score = 15.0 + 5.0 * clamp(htf_spread_atr / 1.0)
+    vwap_score = 10.0 + 5.0 * clamp(vwap_distance_atr / 1.5)
+    adx_score = 10.0 + 10.0 * clamp((f.adx - C.adx_min) / 25.0)
+    rsi_score = 5.0 + 10.0 * clamp((side * (f.rsi - trigger)) / 20.0)
 
     return int(round(min(100.0, ema_score + htf_score + vwap_score
                          + adx_score + rsi_score)))
