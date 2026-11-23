@@ -20,7 +20,7 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 
-from .config import ENGINE, IST, UPSTOX_TOKEN
+from .config import ENGINE, IST, UPSTOX_TOKEN, UPSTOX_TOKEN_SOURCE
 
 log = logging.getLogger("upstox")
 BASE = "https://api.upstox.com"
@@ -147,6 +147,7 @@ class UpstoxClient:
         with self._state_lock:
             state = {
                 "token_configured": bool(self._token),
+                "token_source": UPSTOX_TOKEN_SOURCE,
                 "auth_failed": self.auth_failed,
                 "auth_status": self.auth_status,
                 "last_success_at": self.last_success_at,
@@ -202,7 +203,10 @@ class UpstoxClient:
         for attempt in range(max(1, retries)):
             self.budget.acquire()
             try:
-                headers = {"Authorization": f"Bearer {token}"}
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                }
                 if api_version:
                     headers["Api-Version"] = api_version
                 request_started = time.monotonic()
