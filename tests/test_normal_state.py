@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 import pandas as pd
 
 from app import mod_normal
@@ -129,14 +131,15 @@ def test_persisted_trigger_enters_existing_four_bar_cooldown_stage():
     assert result == triggered
 
 
-def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch):
+@pytest.mark.parametrize("initial_phase", ["IDLE", "ARMED"])
+def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch, initial_phase):
     now = datetime(2026, 11, 19, 10, 5, 10, tzinfo=timezone(timedelta(hours=5, minutes=30)))
     bar_ts = pd.Timestamp("2026-11-19T10:00:00+05:30")
     info = SymbolInfo("TEST", "NSE_EQ|TEST", "normal", underlying="TEST")
     store = MemoryStore()
     engine = Engine(client=object(), store=store, notify=lambda _message: True)
     state = {
-        "phase": "ARMED", "side": 1,
+        "phase": initial_phase, "side": 1,
         "last_bar": (bar_ts - pd.Timedelta(minutes=5)).isoformat(),
         "cooldown_remaining": 0, "invalidated": False,
     }
@@ -176,7 +179,7 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     engine.cycle("normal", now)
     assert store.load_normal_states(now.date())["TEST"]["phase"] == "IDLE"
 
-    # Reset to ARMED at the preceding candle and simulate a durable signal insert.
+    # Reset to the original lifecycle phase and simulate a durable signal insert.
     armed_again = dict(state)
     store.save_normal_state(now.date(), "TEST", armed_again)
     engine.states[("normal", "TEST")].normal_state = armed_again
