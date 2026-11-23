@@ -304,6 +304,7 @@ class Engine:
         d["scope"] = "full" if full else "tracking"
         d["symbols"] = len(states)
 
+        expected = latest_eligible_bar(now)
         fetch_started = _time.monotonic()
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
@@ -315,7 +316,6 @@ class Engine:
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
         evaluate_started = _time.monotonic()
-        expected = latest_eligible_bar(now)
         cands: list = []
         momentum_candidates: list = []
         pending_trigger_states: dict = {}
@@ -507,9 +507,10 @@ class Engine:
                 log.exception("option premium tracking failed; live signals remain unaffected")
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
-            "scan %s scope=%s symbols=%d loaded=%d candidates=%d sent=%d "
+            "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
             "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
-            module, d["scope"], d["symbols"], d["loaded"], len(cands), d["signals"],
+            module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
+            len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
             d["duration_seconds"], dict(d["rejects"].most_common(6)),
         )
