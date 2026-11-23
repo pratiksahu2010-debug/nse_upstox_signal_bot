@@ -608,25 +608,33 @@ class PostgresStore(MemoryStore):
     def __init__(self, dsn: str):
         import psycopg2.pool
         self.dsn = dsn
-        # Bound both network connection establishment and database lock/query waits.
-        # A blocked DDL migration must fail visibly instead of leaving Render in
-        # an apparently endless startup for many minutes.
+        # Neon transaction-pooler endpoints reject PostgreSQL startup
+        # options such as statement_timeout. Keep connection establishment
+        # bounded here and apply query/lock timeouts with SET LOCAL inside each
+        # transaction instead of passing them in the startup packet.
         self.pool = psycopg2.pool.ThreadedConnectionPool(
             1, 8, dsn, connect_timeout=10,
-            options=(
-                "-c statement_timeout=120000 "
-                "-c lock_timeout=15000 "
-                "-c idle_in_transaction_session_timeout=60000"
-            ),
         )
 
     def _run(self, sql: str, params=None, fetch: str = "none"):
+        # During schema initialization, all migration statements share one
+        # transaction so a transaction-scoped advisory lock remains effective
+        # with Neon/PgBouncer transaction pooling.
+        migration_conn = getattr(self, "_migration_connection", None)
+        if migration_conn is not None:
+            with migration_conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchall() if fetch == "all" else cur.fetchone() if fetch == "one" else None
+
         from psycopg2 import InterfaceError, OperationalError
         for attempt in range(2):
             conn = self.pool.getconn()
             discard = False
             try:
                 with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = 120000")
+                    cur.execute("SET LOCAL lock_timeout = 15000")
+                    cur.execute("SET LOCAL idle_in_transaction_session_timeout = 60000")
                     cur.execute(sql, params)
                     out = cur.fetchall() if fetch == "all" else cur.fetchone() if fetch == "one" else None
                 conn.commit()
@@ -655,24 +663,34 @@ class PostgresStore(MemoryStore):
         self.pool.closeall()
 
     def init(self):
-        """Serialize schema upgrades across Render instances using a session lock."""
+        """Serialize schema upgrades with a transaction lock (pooler-safe)."""
         # Unit tests can exercise the migration body without a real connection pool.
         if not hasattr(self, "pool"):
             return self._init_schema()
 
         from psycopg2 import InterfaceError, OperationalError
         conn = self.pool.getconn()
-        acquired = False
         discard = False
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT pg_try_advisory_lock(%s)", (73190420261123,))
+                # These settings are transaction-local and therefore compatible
+                # with Neon transaction pooling (unlike startup options or
+                # session-scoped advisory locks).
+                cur.execute("SET LOCAL statement_timeout = 120000")
+                cur.execute("SET LOCAL lock_timeout = 15000")
+                cur.execute("SET LOCAL idle_in_transaction_session_timeout = 60000")
+                cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (73190420261123,))
                 row = cur.fetchone()
-                acquired = bool(row and row[0])
-            conn.commit()
-            if not acquired:
+            if not (row and row[0]):
+                conn.rollback()
                 raise RuntimeError("another application instance is applying database migrations")
+
+            # _init_schema delegates each statement to _run. Pin those calls to
+            # this same connection and transaction so the xact lock protects
+            # the complete migration sequence, not just its first statement.
+            self._migration_connection = conn
             self._init_schema()
+            conn.commit()
         except (OperationalError, InterfaceError):
             discard = True
             try:
@@ -687,17 +705,7 @@ class PostgresStore(MemoryStore):
                 discard = True
             raise
         finally:
-            if acquired and not conn.closed:
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT pg_advisory_unlock(%s)", (73190420261123,))
-                    conn.commit()
-                except Exception:
-                    discard = True
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
+            self._migration_connection = None
             self.pool.putconn(conn, close=discard or bool(conn.closed))
 
     def _init_schema(self):
@@ -799,6 +807,9 @@ class PostgresStore(MemoryStore):
             discard = False
             try:
                 with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = 120000")
+                    cur.execute("SET LOCAL lock_timeout = 15000")
+                    cur.execute("SET LOCAL idle_in_transaction_session_timeout = 60000")
                     # Transaction-scoped lock closes the race between the existence
                     # check and INSERT, including overlapping app instances/workers.
                     cur.execute(
