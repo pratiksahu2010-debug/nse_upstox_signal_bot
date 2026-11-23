@@ -33,12 +33,12 @@ class CandidateQuoteClient:
             ATM_KEY: {
                 "last_price": 10.0, "timestamp": self.now.timestamp(),
                 "volume": 500, "oi": 1000,
-                "depth": {"buy": [{"price": 9.9}], "sell": [{"price": 10.1}]},
+                "depth": {"buy": [{"price": 9.9, "quantity": 250}], "sell": [{"price": 10.1, "quantity": 250}]},
             },
             LIQUID_KEY: {
                 "last_price": 12.0, "timestamp": self.now.timestamp(),
                 "volume": 5000, "oi": 8000,
-                "depth": {"buy": [{"price": 11.97}], "sell": [{"price": 12.03}]},
+                "depth": {"buy": [{"price": 11.97, "quantity": 1500}], "sell": [{"price": 12.03, "quantity": 1500}]},
             },
         }
 

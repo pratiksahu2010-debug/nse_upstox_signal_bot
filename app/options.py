@@ -28,6 +28,8 @@ def snapshot_metrics(raw: dict, now_epoch: float = None) -> dict:
 
     bid = _finite_number(best_bid.get("price"))
     ask = _finite_number(best_ask.get("price"))
+    bid_qty = _finite_number(best_bid.get("quantity"))
+    ask_qty = _finite_number(best_ask.get("quantity"))
     ltp = _finite_number(raw.get("last_price"))
     volume = _finite_number(raw.get("volume"))
     oi = _finite_number(raw.get("oi"))
@@ -57,6 +59,8 @@ def snapshot_metrics(raw: dict, now_epoch: float = None) -> dict:
         "ltp": ltp,
         "bid": bid,
         "ask": ask,
+        "bid_qty": int(bid_qty) if bid_qty is not None and bid_qty >= 0 else None,
+        "ask_qty": int(ask_qty) if ask_qty is not None and ask_qty >= 0 else None,
         "volume": int(volume) if volume is not None and volume >= 0 else None,
         "oi": int(oi) if oi is not None and oi >= 0 else None,
         "spread_pct": round(spread_pct, 3) if spread_pct is not None else None,
@@ -90,6 +94,9 @@ def validate_option_liquidity(
     age = metrics.get("quote_age_sec")
     if age is None or age > max_quote_age_sec:
         return False, "quote_stale"
+    bid_qty, ask_qty = metrics.get("bid_qty"), metrics.get("ask_qty")
+    if bid_qty is None or ask_qty is None or bid_qty <= 0 or ask_qty <= 0:
+        return False, "depth_quantity_low"
     return True, "ok"
 
 
@@ -103,8 +110,8 @@ def stream_quote_snapshot(quote: dict):
         "oi": quote.get("oi"),
         "timestamp": quote.get("exchange_ts_ms"),
         "depth": {
-            "buy": [{"price": quote.get("bid")}],
-            "sell": [{"price": quote.get("ask")}],
+            "buy": [{"price": quote.get("bid"), "quantity": quote.get("bid_qty")}],
+            "sell": [{"price": quote.get("ask"), "quantity": quote.get("ask_qty")}],
         },
     }
 
