@@ -500,7 +500,30 @@ class Engine:
                     side=mod.setup_side(f)
                     if side:
                         state.update({"phase":"ARMED","side":side,"armed_bar":f.bar_ts.isoformat(),"cooldown_remaining":0,"invalidated":False})
-                        d["rejects"]["setup_armed"] += 1
+                        # Do not discard an RSI cross that occurs on the same
+                        # completed candle that first establishes the trend setup.
+                        # Requiring a later cross can miss the cleanest breakout bar.
+                        if mod.rsi_triggered(f, side):
+                            try:
+                                sig,why=mod.evaluate(st.info,ind,f,Ctx(ignore_time=force))
+                            except Exception:
+                                sig,why=None,"eval_error"
+                                log.exception("evaluate %s/%s failed",module,sym)
+                            if sig is not None:
+                                sig.indicator_snapshot = {
+                                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                                    for k, v in vars(f).items()
+                                }
+                                cands.append(sig)
+                                state.update({"phase":"TRIGGERED","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                                state["last_bar"] = f.bar_ts.isoformat()
+                                pending_trigger_states[(sym, f.bar_ts.isoformat())] = dict(state)
+                                d["rejects"]["rsi_triggered_same_bar"] += 1
+                            else:
+                                state.update({"phase":"IDLE","side":0,"invalidated":False})
+                                d["rejects"][why or "trigger_rejected"] += 1
+                        else:
+                            d["rejects"]["setup_armed"] += 1
                     else: d["rejects"]["setup_not_armed"] += 1
                 elif phase == "ARMED":
                     current_side=mod.setup_side(f)
