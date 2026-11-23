@@ -907,7 +907,7 @@ class Engine:
             self.last_cycle_result = {
                 name: {
                     key: value for key, value in result.items()
-                    if key in ("scope", "symbols", "loaded", "signals", "watching", "duration_seconds", "error")
+                    if key in ("scope", "symbols", "loaded", "fresh", "signals", "watching", "duration_seconds", "error")
                 }
                 for name, result in out.items() if isinstance(result, dict)
             }
@@ -918,15 +918,16 @@ class Engine:
                 else:
                     expected = int(normal_result.get("symbols") or 0)
                     loaded = int(normal_result.get("loaded") or 0)
+                    fresh = int(normal_result.get("fresh") or 0)
                     minimum_loaded = max(1, int(expected * 0.90)) if expected else 1
                     idle_cycle = normal_result.get("scope") == "idle" and expected == 0
-                    if idle_cycle or (expected > 0 and loaded >= minimum_loaded):
+                    if idle_cycle or (expected > 0 and loaded >= minimum_loaded and fresh >= minimum_loaded):
                         # A tracking-window cycle with no open signals or armed
                         # setups is valid idle work, not a 0/0 data failure.
                         self.last_successful_cycle_at = datetime.now(IST).isoformat(timespec="seconds")
                         self.last_cycle_error = ""
                     else:
-                        self.last_cycle_error = f"normal_scan_incomplete:{loaded}/{expected}"
+                        self.last_cycle_error = f"normal_scan_incomplete:loaded={loaded}/{expected},fresh={fresh}/{expected}"
             elif out:
                 self.last_cycle_error = "normal_scan_not_run"
             return out
