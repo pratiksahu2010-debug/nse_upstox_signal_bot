@@ -256,15 +256,39 @@ async def lifespan(_app: FastAPI):
     yield
     _startup_stop.set()
     if _startup_thread is not None and _startup_thread.is_alive():
-        _startup_thread.join(timeout=2)
+        _startup_thread.join(timeout=30)
+        if _startup_thread.is_alive():
+            log.error("startup worker did not stop within shutdown grace period")
     _keepalive_stop.set()
     if _telegram_poller is not None:
         _telegram_poller.stop()
+
+    scheduler_thread = None
     if _scheduler_stop is not None:
         _scheduler_stop.set()
+        scheduler_thread = getattr(_scheduler_stop, "thread", None)
+        if scheduler_thread is not None and scheduler_thread.is_alive():
+            # A scan may be in flight. Do not close its database pool underneath
+            # it; wait for the bounded REST request/retry cycle to finish first.
+            scheduler_thread.join(timeout=35)
+
+    scheduler_still_running = bool(
+        scheduler_thread is not None and scheduler_thread.is_alive()
+    )
+    if scheduler_still_running:
+        log.error(
+            "scheduler still active after shutdown grace period; leaving database "
+            "pool open until process exit to avoid closing connections in use"
+        )
+
     if engine is not None and getattr(engine, "market_stream", None) is not None:
-        engine.market_stream.stop()
-    if store is not None and hasattr(store, "close"):
+        try:
+            engine.market_stream.stop()
+        except Exception:
+            log.exception("market feed shutdown failed")
+
+    if (not scheduler_still_running and store is not None
+            and hasattr(store, "close")):
         try:
             store.close()
         except Exception:
