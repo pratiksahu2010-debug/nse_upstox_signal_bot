@@ -67,3 +67,39 @@ def test_persistently_stale_candle_does_not_trigger_unbounded_retries(monkeypatc
 
     assert len(calls) == 2
     assert result["ABC"].index[-1] < expected
+
+def test_option_liquidity_gate_defaults_off():
+    env = os.environ.copy()
+    env.pop("OPTION_LIQUIDITY_CHECKS", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.config import OPTION_LIQUIDITY_CHECKS; print(OPTION_LIQUIDITY_CHECKS)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
+
+
+def test_scan_request_budget_defaults_are_bounded():
+    env = os.environ.copy()
+    env.pop("RATE_PER_SEC", None)
+    env.pop("RATE_PER_MIN", None)
+    env.pop("RATE_PER_30MIN", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.config import ENGINE; "
+            "print(ENGINE.rate_per_sec, ENGINE.rate_per_min, ENGINE.rate_per_30min, ENGINE.retry_passes)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "15 450 1800 1"
