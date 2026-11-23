@@ -65,3 +65,20 @@ def test_universe_builder_exception_is_backed_off_and_retried():
     engine.ensure_universe(now + timedelta(minutes=5))
     assert len(calls) == 2
     assert engine.uni.ready is True
+
+def test_fixed_fno_universe_replaces_exiting_underlyings_without_changing_size():
+    from app.symbols import (
+        EXPECTED_UNIVERSE_SIZE,
+        FIXED_FNO_SYMBOLS,
+        FIXED_INDEX_SYMBOLS,
+        FIXED_STOCK_SYMBOLS,
+    )
+
+    assert len(FIXED_STOCK_SYMBOLS) == 144
+    assert len(FIXED_INDEX_SYMBOLS) == 6
+    assert len(FIXED_FNO_SYMBOLS) == EXPECTED_UNIVERSE_SIZE == 150
+    assert len(set(FIXED_FNO_SYMBOLS)) == 150
+    assert "IEX" not in FIXED_FNO_SYMBOLS
+    assert "IREDA" not in FIXED_FNO_SYMBOLS
+    assert "RELIANCE" in FIXED_FNO_SYMBOLS
+    assert "SBIN" in FIXED_FNO_SYMBOLS
