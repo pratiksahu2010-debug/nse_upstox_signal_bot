@@ -618,9 +618,10 @@ def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
     assert response.json() == {"ready": False, "reason": "market_feed_subscription_incomplete"}
 
 
-def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
+def test_readiness_rejects_when_all_strategies_are_disabled(monkeypatch):
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web.config, "ENABLE_NORMAL", False)
+    monkeypatch.setattr(web.config, "ENABLE_MOMENTUM", False)
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
@@ -630,7 +631,7 @@ def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
         response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json() == {"ready": False, "reason": "normal_strategy_disabled"}
+    assert response.json() == {"ready": False, "reason": "all_strategies_disabled"}
 
 
 
