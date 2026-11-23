@@ -234,15 +234,24 @@ class Engine:
             try:
                 self._warm(st, now, module)
             except Exception as e:
+                # A historical warm-up outage must not suppress today's
+                # intraday request. The intraday-only frame is still useful
+                # once it contains enough completed bars for indicator warm-up.
+                # Never combine a prior session's cached frame after a failed
+                # new-day warm-up: that would silently mix stale history.
                 st.err = str(e)[:120]
-                raise
+                log.warning(
+                    "historical warm-up failed for %s; trying intraday-only data: %s",
+                    st.info.symbol, type(e).__name__,
+                )
         if st.disabled:
             return None
         intr = self.client.intraday(st.info.key)
         if len(intr):
             intr = intr[OHLCV]
             intr = intr[intr.index <= latest_eligible_bar(now)]   # closed bars after fetch delay
-        parts = [p for p in (st.hist, intr) if p is not None and len(p)]
+        warm_history = st.hist if st.warm_day == now.date() else None
+        parts = [p for p in (warm_history, intr) if p is not None and len(p)]
         if not parts:
             return pd.DataFrame(columns=OHLCV)
         df = pd.concat(parts)
