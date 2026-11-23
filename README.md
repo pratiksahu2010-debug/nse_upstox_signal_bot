@@ -136,7 +136,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `M_PER_CYCLE_TOP` | `1000` | Maximum Momentum candidates per scan cycle |
 | `OPTION_MIN_DAYS` | `1` | Minimum days to option expiry |
 | `OPTION_QUOTE` | `0` | Optional option LTP display |
-| `OPTION_MARKET_SNAPSHOT` | `1` | Require full option quote snapshot by default |
+| `OPTION_MARKET_SNAPSHOT` | `1` | Fetch optional full quote snapshots for display/tracking |
 | `OPTION_LIQUIDITY_CHECKS` | `0` | Optional strict liquidity gate; disabled by default as approved |
 | `OPTION_MIN_VOLUME` | `100` | Minimum option volume when checks enabled |
 | `OPTION_MIN_OI` | `500` | Minimum option open interest when checks enabled |
@@ -147,7 +147,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `OPTION_EST_ROUND_TRIP_FEE_PCT` | `0.0` | User-supplied estimated round-trip fee percentage |
 | `OPTION_EST_SLIPPAGE_BPS_PER_SIDE` | `0.0` | User-supplied estimated slippage per side in basis points |
 
-Option quote snapshots remain available for display/tracking; strict liquidity validation defaults to off. If the production Analytics Token cannot retrieve fresh depth/volume/OI, signals are suppressed rather than sent with an unverified option contract. An explicit Render environment override can change these defaults, so inspect the variable names (not secret values) before merging. Cost estimates default to zero and are not actual broker charges.
+Option quote snapshots remain available for display/tracking; strict liquidity validation defaults to off. If the production Analytics Token cannot retrieve fresh depth/volume/OI while the gate is off, underlying signals continue and option quote fields remain unavailable. An explicit Render environment override can change these defaults, so inspect the variable names (not secret values) before merging. Cost estimates default to zero and are not actual broker charges.
 
 ### Scanner leadership during rolling deploys
 
