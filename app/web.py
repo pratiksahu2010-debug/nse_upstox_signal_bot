@@ -77,16 +77,16 @@ def _init():
             if not config.UPSTOX_TOKEN:
                 log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
 
-            # Keep worker handles local until every startup component succeeds.
-            # If a later component fails, the exception path can stop these exact
-            # workers before the retry loop attempts another initialization.
+            # Start the Telegram poller before the scheduler so a poller
+            # startup failure cannot leave a live scanner behind during retry.
+            if config.RUN_SCHEDULER and config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
+                candidate_poller = TelegramPoller(candidate, candidate_store)
+                candidate_poller.start()
+
             if config.RUN_SCHEDULER:
                 phase_started = _time.monotonic()
                 candidate_scheduler_stop = scheduler.start(candidate)
                 log.info("startup phase=scheduler_started elapsed_seconds=%.2f", _time.monotonic() - phase_started)
-            if config.RUN_SCHEDULER and config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
-                candidate_poller = TelegramPoller(candidate, candidate_store)
-                candidate_poller.start()
 
             if config.RUN_SCHEDULER:
                 try:
@@ -95,8 +95,12 @@ def _init():
                     log.exception("startup notification failed; scanner remains active")
 
             if config.KEEPALIVE and os.getenv("RENDER_EXTERNAL_URL"):
-                _keepalive_stop.clear()
-                threading.Thread(target=_keepalive, name="keepalive", daemon=True).start()
+                try:
+                    _keepalive_stop.clear()
+                    threading.Thread(target=_keepalive, name="keepalive", daemon=True).start()
+                except Exception:
+                    # Keepalive is optional and must never roll back a healthy scanner.
+                    log.exception("could not start optional keepalive worker")
 
             engine, store = candidate, candidate_store
             _scheduler_stop = candidate_scheduler_stop
@@ -258,7 +262,11 @@ async def lifespan(_app: FastAPI):
     if _startup_thread is not None and _startup_thread.is_alive():
         _startup_thread.join(timeout=30)
         if _startup_thread.is_alive():
-            log.error("startup worker did not stop within shutdown grace period")
+            log.error(
+                "startup worker did not stop within shutdown grace period; "
+                "leaving its resources untouched until process exit"
+            )
+            return
     _keepalive_stop.set()
     if _telegram_poller is not None:
         _telegram_poller.stop()
