@@ -585,7 +585,7 @@ class Engine:
                 cands.clear()
                 momentum_candidates.clear()
                 pending_trigger_states.clear()
-            d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+            d["signals"] = self._dispatch(module, cfg, cands, now, force, d, cycle_started)
             if module == "normal" and ENABLE_MOMENTUM:
                 # Give Normal priority only when its signal is actually present
                 # (new or already deduplicated) in durable storage. If Normal
@@ -598,7 +598,7 @@ class Engine:
                 )
                 if before > len(momentum_candidates):
                     d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
-                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
+                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d, cycle_started)
         finally:
             persisted_candidates = d.pop("_persisted_candidates", set())
             for (sym, bar_ts), triggered_state in pending_trigger_states.items():
@@ -633,7 +633,8 @@ class Engine:
         )
         return d
 
-    def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
+    def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict,
+                  cycle_started: Optional[float] = None) -> int:
         """Persist and deliver eligible signals; fetch optional option quotes in one batch."""
         day = now.date()
         d.setdefault("_persisted_candidates", set())
@@ -860,7 +861,12 @@ class Engine:
             # Fetch/evaluation/option validation may take several minutes. Recheck
             # the candle immediately before persistence so an old candidate can
             # never become a late alert after a slow scan.
-            if not dispatch_bar_is_fresh(sig.bar_ts, datetime.now(IST)):
+            elapsed_since_cycle_start = (
+                max(0.0, _time.monotonic() - cycle_started)
+                if cycle_started is not None else 0.0
+            )
+            dispatch_now = now + timedelta(seconds=elapsed_since_cycle_start)
+            if not dispatch_bar_is_fresh(sig.bar_ts, dispatch_now):
                 d["rejects"]["stale_before_dispatch"] += 1
                 continue
             try:
