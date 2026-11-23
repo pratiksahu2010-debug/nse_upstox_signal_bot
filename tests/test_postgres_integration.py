@@ -110,6 +110,25 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         store.init()
         initialized = True
 
+        # The scanner lease must also coordinate independent Render instances.
+        # Keep the TTL deliberately short here so this real-Postgres test proves
+        # renewal, not merely the in-memory fake's approximation of it.
+        from app.scanner_lease import ScannerLease
+        first_scanner = ScannerLease(store, lease_seconds=1, renew_seconds=0.1)
+        second_scanner = ScannerLease(store, lease_seconds=1, renew_seconds=0.1)
+        try:
+            assert first_scanner.acquire() is True
+            assert second_scanner.acquire() is False
+            first_scanner.start_heartbeat()
+            import time
+            time.sleep(1.25)
+            assert second_scanner.acquire() is False
+            first_scanner.release()
+            assert second_scanner.acquire() is True
+        finally:
+            first_scanner.release()
+            second_scanner.release()
+
         # The Telegram leader lease must coordinate independent poller objects
         # using ordinary short PostgreSQL transactions (including PgBouncer).
         from app.telegram_polling import TelegramPoller
