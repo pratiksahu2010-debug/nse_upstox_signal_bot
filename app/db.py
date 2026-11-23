@@ -608,7 +608,17 @@ class PostgresStore(MemoryStore):
     def __init__(self, dsn: str):
         import psycopg2.pool
         self.dsn = dsn
-        self.pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn, connect_timeout=10)
+        # Bound both network connection establishment and database lock/query waits.
+        # A blocked DDL migration must fail visibly instead of leaving Render in
+        # an apparently endless startup for many minutes.
+        self.pool = psycopg2.pool.ThreadedConnectionPool(
+            1, 8, dsn, connect_timeout=10,
+            options=(
+                "-c statement_timeout=120000 "
+                "-c lock_timeout=15000 "
+                "-c idle_in_transaction_session_timeout=60000"
+            ),
+        )
 
     def _run(self, sql: str, params=None, fetch: str = "none"):
         from psycopg2 import InterfaceError, OperationalError
@@ -645,6 +655,52 @@ class PostgresStore(MemoryStore):
         self.pool.closeall()
 
     def init(self):
+        """Serialize schema upgrades across Render instances using a session lock."""
+        # Unit tests can exercise the migration body without a real connection pool.
+        if not hasattr(self, "pool"):
+            return self._init_schema()
+
+        from psycopg2 import InterfaceError, OperationalError
+        conn = self.pool.getconn()
+        acquired = False
+        discard = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (73190420261123,))
+                row = cur.fetchone()
+                acquired = bool(row and row[0])
+            conn.commit()
+            if not acquired:
+                raise RuntimeError("another application instance is applying database migrations")
+            self._init_schema()
+        except (OperationalError, InterfaceError):
+            discard = True
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                discard = True
+            raise
+        finally:
+            if acquired and not conn.closed:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s)", (73190420261123,))
+                    conn.commit()
+                except Exception:
+                    discard = True
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+            self.pool.putconn(conn, close=discard or bool(conn.closed))
+
+    def _init_schema(self):
         self._run(
             """CREATE TABLE IF NOT EXISTS schema_migrations (
                    version INTEGER PRIMARY KEY,

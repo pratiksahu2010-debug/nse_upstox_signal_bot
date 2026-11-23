@@ -13,17 +13,17 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 
 ## Strategy
 
-Two independent signal modules run on the same fetched 150-symbol universe and the same completed 5-minute candle data.
+One production signal module, Normal only, runs on the fixed 150-symbol universe and completed 5-minute candle data.
 
-**Normal CALL setup:** 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 19, +DI > -DI; the completed 15m trend must also be bullish (close > EMA9 > EMA21 and +DI > -DI); then RSI14 must cross upward through 52.
+**Normal CALL setup:** 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 20; the completed 15m trend must also be bullish (close > EMA9 > EMA21); then RSI14 must cross upward through 52.
 
-**Normal PUT setup:** 5m EMA9 < EMA21, close < session VWAP, ADX14 >= 19, -DI > +DI; the completed 15m trend must also be bearish (close < EMA9 < EMA21 and -DI > +DI); then RSI14 must cross downward through 42.
+**Normal PUT setup:** 5m EMA9 < EMA21, close < session VWAP, ADX14 >= 20; the completed 15m trend must also be bearish (close < EMA9 < EMA21); then RSI14 must cross downward through 42.
 
-15m candles are aggregated from exactly three completed 5m candles. An incomplete 15m bucket is excluded. ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 19 and may be raised with the environment variable. Existing 5m EMA, VWAP, RSI, DI, ADX, ATR, stop and target parameters are unchanged.
+15m candles are aggregated from exactly three completed 5m candles. An incomplete 15m bucket is excluded. ADX uses Wilder smoothing and N_ADX_MIN is hard-floored at 20. The Normal score uses EMA alignment, completed 15m EMA alignment, VWAP distance, ADX and RSI; DI, RVOL and candle-shape factors are not signal gates or score components.
 
 Normal assigns a deterministic 0–100 quality score and applies one final score gate, N_SCORE_MIN (default 72). No separate OI or extra score gates are added.
 
-**Momentum Explosion** is an independent module evaluated in the same scan (no second 150-symbol candle fetch). It identifies BREAKOUT, ACCELERATION, COMPRESSION and EXTREME_IMPULSE paths. It requires aligned 5m and completed 15m direction and applies one final score gate, M_SCORE_MIN (default 78). Momentum alerts use the same database, option contract selection, Telegram delivery, outcome tracking and training pipeline. ENABLE_MOMENTUM controls the module.
+**Momentum Explosion is disabled in production.** The bot emits Normal signals only; the code hard-disables Momentum so a stale Render environment variable cannot re-enable it. Historical Momentum rows remain available for outcome/history compatibility.
 
 ## Risk and state
 
@@ -106,7 +106,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `KEEPALIVE` | `1` | Render keepalive self-ping when URL is available |
 | `LOG_LEVEL` | `INFO` | Application log level |
 | `ENABLE_NORMAL` | `1` | Enable the Normal signal module |
-| `ENABLE_MOMENTUM` | `1` | Enable independent Momentum Explosion module |
+| `ENABLE_MOMENTUM` | `0` | Retired; Momentum is hard-disabled in production |
 | `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
 | `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
 | `STALE_MAX_BARS` | `1` | Legacy compatibility setting; new entries require the exact latest eligible 5m candle |
@@ -120,7 +120,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `N_FIRST_SIGNAL` | `09:20` | Earliest signal time (IST) |
 | `N_LAST_ENTRY` | `15:00` | Last entry time (IST) |
 | `N_SESSION_END` | `15:15` | Strategy session end (IST) |
-| `N_ADX_MIN` | `19` | ADX14 minimum; code enforces a hard floor of 19 |
+| `N_ADX_MIN` | `20` | ADX14 minimum; code enforces a hard floor of 20 |
 | `N_SCORE_MIN` | `72` | Single final Normal quality-score gate |
 | `N_SL_ATR` | `1.2` | Stop distance in ATR multiples |
 | `N_TP1_R` | `1.5` | First target in R |
@@ -185,7 +185,7 @@ Remaining master-prompt work and live-verification gaps:
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
 4. MFE/MAE, bars held, a persistent six-bar time-stop review flag, time-to-TP1/TP2 and option-premium outcome tracking are implemented. Live quote coverage and cost estimates still require credentialed paper-session validation. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
 5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
-6. Normal and Momentum now require completed 15-minute trend alignment. Option-chain OI/PCR context is not yet wired into entry selection. The 528-second scan-duration issue still needs a live-session timing measurement; Momentum shares the same candle fetch to avoid doubling REST load. Actual Telegram delivery and option quote entitlement still need a credentialed paper-session check.
+6. The production signal generator is Normal-only and uses completed 5-minute candles plus completed 15-minute EMA alignment. Option-chain OI/PCR context is not yet wired into entry selection. The historical 528-second scan-duration issue still needs a fresh live-session timing measurement. Actual Telegram delivery and option quote entitlement still need a credentialed paper-session check.
 
 No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
 

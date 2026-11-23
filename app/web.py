@@ -7,6 +7,7 @@ import hmac
 import logging
 import os
 import threading
+import time as _time
 from contextlib import asynccontextmanager
 from datetime import datetime, time, timedelta
 
@@ -65,8 +66,13 @@ def _init():
         try:
             if config.REQUIRE_PERSISTENT_DB and not config.DATABASE_URL:
                 raise RuntimeError("NEON_DATABASE_URL is required; persistent storage is mandatory")
+            phase_started = _time.monotonic()
             candidate_store = make_store(config.DATABASE_URL)
+            log.info("startup phase=database_initialized elapsed_seconds=%.2f", _time.monotonic() - phase_started)
+
+            phase_started = _time.monotonic()
             candidate = Engine(UpstoxClient(), candidate_store)
+            log.info("startup phase=engine_constructed elapsed_seconds=%.2f", _time.monotonic() - phase_started)
             candidate.paused = bool(get_persistent_state(candidate_store, "paused", False))
             if not config.UPSTOX_TOKEN:
                 log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
@@ -75,7 +81,9 @@ def _init():
             # If a later component fails, the exception path can stop these exact
             # workers before the retry loop attempts another initialization.
             if config.RUN_SCHEDULER:
+                phase_started = _time.monotonic()
                 candidate_scheduler_stop = scheduler.start(candidate)
+                log.info("startup phase=scheduler_started elapsed_seconds=%.2f", _time.monotonic() - phase_started)
             if config.RUN_SCHEDULER and config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
                 candidate_poller = TelegramPoller(candidate, candidate_store)
                 candidate_poller.start()

@@ -274,9 +274,13 @@ class Engine:
         expected = latest_eligible_bar(now)
         out: dict = {}
         pending = states
-        for attempt in range(1 + ENGINE.retry_passes):
-            retry = []
-            with ThreadPoolExecutor(ENGINE.workers) as ex:
+        # Reuse one bounded worker pool for retry passes. This preserves each
+        # worker's thread-local requests.Session/keep-alive connections instead
+        # of tearing down and recreating up to 24 HTTP sessions on every retry.
+        with ThreadPoolExecutor(max_workers=ENGINE.workers) as ex:
+            for attempt in range(1 + ENGINE.retry_passes):
+                retry = []
+                pass_started = _time.monotonic()
                 futs = {ex.submit(self._load, st, now, module): st for st in pending}
                 for fu in as_completed(futs):
                     st = futs[fu]
@@ -292,13 +296,18 @@ class Engine:
                     out[st.info.symbol] = df
                     if len(df) == 0 or df.index[-1] < expected:
                         retry.append(st)
-            if not retry or getattr(self.client, "auth_failed", False):
-                break
-            all_empty = all((out.get(s.info.symbol) is None or len(out[s.info.symbol]) == 0) for s in retry)
-            if all_empty and len(retry) >= 0.8 * max(1, len(states)):
-                break     # holiday / outage: do not hammer the API
-            pending = retry
-            _time.sleep(5)
+                if not retry or getattr(self.client, "auth_failed", False):
+                    break
+                all_empty = all((out.get(s.info.symbol) is None or len(out[s.info.symbol]) == 0) for s in retry)
+                if all_empty and len(retry) >= 0.8 * max(1, len(states)):
+                    break     # holiday / outage: do not hammer the API
+                log.warning(
+                    "candle fetch retry pass=%d/%d pending=%d elapsed_seconds=%.2f",
+                    attempt + 1, 1 + ENGINE.retry_passes, len(retry),
+                    _time.monotonic() - pass_started,
+                )
+                pending = retry
+                _time.sleep(5)
         return out
 
     # ------------------------------------------------------------------ cycle

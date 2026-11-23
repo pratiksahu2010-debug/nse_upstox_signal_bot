@@ -121,3 +121,126 @@ def test_make_store_closes_pool_when_schema_initialization_fails(monkeypatch):
         db.make_store("postgresql://test")
 
     assert broken.closed is True
+
+
+def test_postgres_pool_uses_bounded_connection_and_query_timeouts(monkeypatch):
+    import psycopg2.pool
+
+    captured = {}
+
+    class FakePool:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool", FakePool)
+    PostgresStore("postgresql://example")
+
+    assert captured["kwargs"]["connect_timeout"] == 10
+    options = captured["kwargs"]["options"]
+    assert "statement_timeout=120000" in options
+    assert "lock_timeout=15000" in options
+    assert "idle_in_transaction_session_timeout=60000" in options
+
+
+def test_postgres_migration_init_uses_and_releases_session_advisory_lock():
+    events = []
+
+    class FakeCursor:
+        def __init__(self):
+            self.result = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            events.append((sql, params))
+            self.result = (True,)
+
+        def fetchone(self):
+            return self.result
+
+    class FakeConnection:
+        closed = 0
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            events.append(("COMMIT", None))
+
+        def rollback(self):
+            events.append(("ROLLBACK", None))
+
+    class FakePool:
+        def __init__(self):
+            self.connection = FakeConnection()
+            self.returned = None
+
+        def getconn(self):
+            return self.connection
+
+        def putconn(self, conn, close=False):
+            self.returned = (conn, close)
+
+    store = object.__new__(PostgresStore)
+    store.pool = FakePool()
+    migrated = []
+    store._init_schema = lambda: migrated.append(True)
+
+    store.init()
+
+    assert migrated == [True]
+    assert events[0] == ("SELECT pg_try_advisory_lock(%s)", (73190420261123,))
+    assert ("SELECT pg_advisory_unlock(%s)", (73190420261123,)) in events
+    assert store.pool.returned == (store.pool.connection, False)
+
+
+def test_postgres_migration_init_fails_fast_when_another_instance_holds_lock():
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, _params=None):
+            pass
+
+        def fetchone(self):
+            return (False,)
+
+    class FakeConnection:
+        closed = 0
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class FakePool:
+        def __init__(self):
+            self.connection = FakeConnection()
+            self.returned = None
+
+        def getconn(self):
+            return self.connection
+
+        def putconn(self, conn, close=False):
+            self.returned = (conn, close)
+
+    store = object.__new__(PostgresStore)
+    store.pool = FakePool()
+    store._init_schema = lambda: (_ for _ in ()).throw(AssertionError("migration must not run"))
+
+    with pytest.raises(RuntimeError, match="another application instance"):
+        store.init()
+
+    assert store.pool.returned == (store.pool.connection, False)

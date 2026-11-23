@@ -1,5 +1,6 @@
 """Resolve one NSE midcap F&O stock universe plus every supported index derivative."""
 import logging
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
@@ -168,12 +169,20 @@ def nearby_options(uni: Universe, underlying: str, spot: float, side: str,
 
 def build_universe(today: Optional[datetime] = None, nse_rows=None) -> Universe:
     today = today or datetime.now(IST)
-    rows = nse_rows if nse_rows is not None else stream_master("NSE")
-    S.validate_fixed_universe()
-    uni = resolve_nse(
-        rows, today, S.FIXED_STOCK_SYMBOLS, [],
-        index_allowlist=S.FIXED_INDEX_SYMBOLS, require_options=True,
-    )
+    master_started = _time.monotonic()
+    try:
+        rows = nse_rows if nse_rows is not None else stream_master("NSE")
+        S.validate_fixed_universe()
+        uni = resolve_nse(
+            rows, today, S.FIXED_STOCK_SYMBOLS, [],
+            index_allowlist=S.FIXED_INDEX_SYMBOLS, require_options=True,
+        )
+    except Exception:
+        log.exception("NSE instrument-master download/parse/resolve failed after %.2fs",
+                      _time.monotonic() - master_started)
+        raise
+    log.info("NSE instrument-master download/parse/resolve completed in %.2fs",
+             _time.monotonic() - master_started)
     uni.configured_symbols = list(S.FIXED_FNO_SYMBOLS)
     stock_count = sum(not item.is_index for item in uni.normal)
     index_count = sum(item.is_index for item in uni.normal)
