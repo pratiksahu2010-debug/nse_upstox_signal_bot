@@ -392,7 +392,7 @@ class Engine:
                     log.exception("Momentum Explosion evaluation failed for %s", sym)
 
             # Process the Normal lifecycle once per newly completed 5m candle.
-            if module == "normal":
+            if module == "normal" and _on("ENABLE_NORMAL"):
                 state = dict(st.normal_state or {})
                 last_raw = state.get("last_bar")
                 if not last_raw:
@@ -467,14 +467,23 @@ class Engine:
                         log.exception("could not persist Normal state for %s; signal suppressed",sym)
                 if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
                 continue
-            elif sig:
+            elif module == "normal":
+                # Normal can be disabled while the independent Momentum module runs.
+                continue
+            else:
+                try:
+                    sig, why = mod.evaluate(st.info, ind, f, Ctx(ignore_time=force))
+                except Exception:
+                    sig, why = None, "eval_error"
+                    log.exception("evaluate %s/%s failed", module, sym)
+            if module != "normal" and sig is not None:
                 sig.indicator_snapshot = {
                     k: (v.isoformat() if hasattr(v, "isoformat") else v)
                     for k, v in vars(f).items()
                 }
                 cands.append(sig)
-            else:
-                d["rejects"][why] += 1
+            elif module != "normal":
+                d["rejects"][why or "trigger_rejected"] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
         d["watching"] = watching
@@ -914,7 +923,7 @@ class Engine:
         try:
             self.ensure_universe(now)
             t = floor5(now).time()
-            for m, enabled in (("normal", _on("ENABLE_NORMAL")),):
+            for m, enabled in (("normal", _on("ENABLE_NORMAL") or _on("ENABLE_MOMENTUM")),):
                 if only and only != m:
                     continue
                 if not enabled and not force:
