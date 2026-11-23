@@ -44,17 +44,18 @@ def test_normal_setup_state_survives_memory_store_reload():
     assert store.load_normal_states(date(2026, 11, 19)) == {}
 
 
-def test_15m_opposite_or_missing_context_blocks_5m_setup():
-    # A bullish 5m setup cannot pass when 15m directional movement is bearish.
-    assert mod_normal.setup_side(_features(htf_pdi=10.0, htf_mdi=35.0)) == 0
-    # A bearish 5m setup cannot pass when 15m trend remains bullish.
+def test_15m_opposite_or_missing_ema_context_blocks_5m_setup():
+    # A bullish 5m setup cannot pass when completed 15m EMA structure is bearish.
+    assert mod_normal.setup_side(_features(
+        htf_close=99.0, htf_ema9=100.0, htf_ema21=101.0,
+    )) == 0
+    # A bearish 5m setup cannot pass when completed 15m EMA structure is bullish.
     assert mod_normal.setup_side(_features(
         ema9=99.0, ema21=100.0, close=99.0, vwap=100.0,
-        pdi=12.0, mdi=25.0, htf_close=102.0, htf_ema9=101.0,
-        htf_ema21=100.0, htf_pdi=40.0, htf_mdi=8.0,
+        htf_close=102.0, htf_ema9=101.0, htf_ema21=100.0,
     )) == 0
-    # Missing 15m context fails closed.
-    assert mod_normal.setup_side(_features(htf_pdi=None, htf_mdi=None)) == 0
+    # Missing required completed 15m EMA context fails closed.
+    assert mod_normal.setup_side(_features(htf_close=None)) == 0
 
 
 
