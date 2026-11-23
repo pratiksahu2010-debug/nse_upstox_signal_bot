@@ -61,7 +61,7 @@ def _notify_option_quote_access(engine: Engine, now: datetime):
     if last is not None and now - last < timedelta(minutes=5):
         return
     message = (
-        "<b>⚠️ Upstox option quotes unavailable</b>\\n"
+        "<b>⚠️ Upstox option quotes unavailable</b>\n"
         "The full-quotes endpoint rejected the current token. The strict option-liquidity "
         "gate is enabled, so candidate CALL/PUT alerts will be suppressed until quote "
         "access is restored. Check the Upstox token's market-quote permissions. "
