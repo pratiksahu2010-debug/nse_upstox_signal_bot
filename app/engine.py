@@ -179,7 +179,17 @@ class Engine:
             self.store.expire_old(now.date())
         except Exception as e:
             log.warning("expire_old failed: %s", e)
-        log.info("universe ready: stocks=%d indices=%d", sum(not x.is_index for x in uni.normal), sum(x.is_index for x in uni.normal))
+        stock_count = sum(not x.is_index for x in uni.normal)
+        index_count = sum(x.is_index for x in uni.normal)
+        if getattr(uni, "ready", True):
+            log.info("universe ready: stocks=%d indices=%d", stock_count, index_count)
+        else:
+            log.error(
+                "universe incomplete: configured=%d validated=%d stocks=%d indices=%d errors=%s dropped=%s",
+                len(getattr(uni, "configured_symbols", [])), len(uni.normal),
+                stock_count, index_count, getattr(uni, "validation_errors", []),
+                getattr(uni, "dropped", {}),
+            )
 
     def _mod_states(self, module: str) -> list:
         return [st for (m, _), st in self.states.items() if m == module and not st.disabled]
