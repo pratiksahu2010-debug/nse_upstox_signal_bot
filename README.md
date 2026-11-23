@@ -13,7 +13,7 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 
 ## Strategy
 
-Two independent signal modules run on the same fetched 150-symbol universe and the same completed 5-minute candle data.
+One production signal module, Normal only, runs on the fixed 150-symbol universe and completed 5-minute candle data.
 
 **Normal CALL setup:** 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 20; the completed 15m trend must also be bullish (close > EMA9 > EMA21); then RSI14 must cross upward through 52.
 
