@@ -491,6 +491,15 @@ class Engine:
                 d["rejects"][why or "trigger_rejected"] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
+        if momentum_candidates and cands:
+            normal_keys = {(item.symbol, item.bar_ts) for item in cands}
+            before = len(momentum_candidates)
+            momentum_candidates = [
+                item for item in momentum_candidates
+                if (item.symbol, item.bar_ts) not in normal_keys
+            ]
+            if before > len(momentum_candidates):
+                d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
         d["watching"] = watching
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
