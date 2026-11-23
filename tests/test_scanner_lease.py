@@ -104,3 +104,15 @@ def test_heartbeat_renews_lease_during_long_scan():
     first.release()
     assert second.acquire() is True
     second.release()
+
+
+def test_lease_state_resets_between_boundaries():
+    store = FakePostgresStore()
+    lease = ScannerLease(store)
+    assert lease.acquire() is True
+    lease._lost.set()
+    lease.release()
+
+    assert lease.acquire() is True
+    assert lease.lost is False
+    lease.release()
