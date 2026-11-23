@@ -160,7 +160,9 @@ class UpstoxMarketStream:
                     self.last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                     self.reconnects += 1
                 if not self._stop.is_set():
-                    log.warning("Upstox market feed disconnected; reconnecting: %s", type(exc).__name__)
+                    # Include the provider's HTTP status/handshake reason. The
+                    # authorized redirect URI and bearer token are never logged.
+                    log.warning("Upstox market feed disconnected; reconnecting: %s", self.last_error)
                     await asyncio.sleep(delay)
                     delay = min(30.0, delay * 2)
         with self._lock:

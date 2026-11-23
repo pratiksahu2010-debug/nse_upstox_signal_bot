@@ -625,7 +625,7 @@ def test_readiness_rejects_stale_upstox_rest_data(monkeypatch):
     assert response.json() == {"ready": False, "reason": "upstox_rest_data_stale"}
 
 
-def test_readiness_rejects_disconnected_market_feed(monkeypatch):
+def test_readiness_reports_disconnected_optional_market_feed_as_degraded(monkeypatch):
     _freeze_market_time(monkeypatch)
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
@@ -640,11 +640,12 @@ def test_readiness_rejects_disconnected_market_feed(monkeypatch):
     with TestClient(web.app) as client:
         response = client.get("/ready")
 
-    assert response.status_code == 503
-    assert response.json() == {"ready": False, "reason": "market_feed_disconnected"}
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["market_feed"]["degraded"] is True
 
 
-def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
+def test_readiness_reports_stale_optional_market_feed_as_degraded(monkeypatch):
     _freeze_market_time(monkeypatch)
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
@@ -659,12 +660,13 @@ def test_readiness_rejects_stale_market_feed_messages(monkeypatch):
     with TestClient(web.app) as client:
         response = client.get("/ready")
 
-    assert response.status_code == 503
-    assert response.json() == {"ready": False, "reason": "market_feed_stale"}
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["market_feed"]["degraded"] is True
 
 
 
-def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
+def test_readiness_reports_incomplete_optional_market_feed_as_degraded(monkeypatch):
     _freeze_market_time(monkeypatch)
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
@@ -682,8 +684,29 @@ def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
     with TestClient(web.app) as client:
         response = client.get("/ready")
 
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["market_feed"]["degraded"] is True
+
+
+def test_readiness_rejects_degraded_market_feed_when_explicitly_required(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.market_stream.diagnostics = lambda: {
+        "connected": False, "thread_alive": True, "subscribed_symbols": 150, "last_quote_age_sec": 1.0
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_REQUIRED", True)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
     assert response.status_code == 503
-    assert response.json() == {"ready": False, "reason": "market_feed_subscription_incomplete"}
+    assert response.json() == {"ready": False, "reason": "market_feed_degraded"}
 
 
 def test_readiness_rejects_when_all_strategies_are_disabled(monkeypatch):

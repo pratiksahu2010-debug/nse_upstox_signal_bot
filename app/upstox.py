@@ -89,6 +89,7 @@ class UpstoxClient:
         self.last_status = None
         self.request_count = 0
         self.failure_count = 0
+        self.status_counts = {}
         self._latency_lock = threading.Lock()
         self._latency = {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0, "by_endpoint": {}}
         # Optional option-LTP endpoint can reject a token that is valid for
@@ -153,6 +154,7 @@ class UpstoxClient:
                 "last_status": self.last_status,
                 "request_count": self.request_count,
                 "failure_count": self.failure_count,
+                "status_counts": dict(self.status_counts),
                 "optional_data_disabled": sorted(self._optional_data_disabled),
             }
         with self._latency_lock:
@@ -225,6 +227,8 @@ class UpstoxClient:
             with self._state_lock:
                 self.request_count += 1
                 self.last_status = r.status_code
+                status_key = str(r.status_code)
+                self.status_counts[status_key] = self.status_counts.get(status_key, 0) + 1
 
             if r.status_code in (401, 403):
                 with self._state_lock:

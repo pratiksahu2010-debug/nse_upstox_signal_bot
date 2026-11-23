@@ -116,6 +116,7 @@ class Engine:
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
         self.scanner_lease = ScannerLease(store)  # cross-instance protection during rolling deploys
+        self.scanner_lease_standby = False
         self.started = datetime.now(IST)
         self.last_error = ""
         self.last_cycle_started_at = None
@@ -234,15 +235,24 @@ class Engine:
             try:
                 self._warm(st, now, module)
             except Exception as e:
+                # A historical warm-up outage must not suppress today's
+                # intraday request. The intraday-only frame is still useful
+                # once it contains enough completed bars for indicator warm-up.
+                # Never combine a prior session's cached frame after a failed
+                # new-day warm-up: that would silently mix stale history.
                 st.err = str(e)[:120]
-                raise
+                log.warning(
+                    "historical warm-up failed for %s; trying intraday-only data: %s",
+                    st.info.symbol, type(e).__name__,
+                )
         if st.disabled:
             return None
         intr = self.client.intraday(st.info.key)
         if len(intr):
             intr = intr[OHLCV]
             intr = intr[intr.index <= latest_eligible_bar(now)]   # closed bars after fetch delay
-        parts = [p for p in (st.hist, intr) if p is not None and len(p)]
+        warm_history = st.hist if st.warm_day == now.date() else None
+        parts = [p for p in (warm_history, intr) if p is not None and len(p)]
         if not parts:
             return pd.DataFrame(columns=OHLCV)
         df = pd.concat(parts)
@@ -1091,9 +1101,11 @@ class Engine:
         # the PostgreSQL lease additionally prevents overlapping Render
         # instances from running the same expensive 150-symbol scan.
         if not self.scanner_lease.acquire():
+            self.scanner_lease_standby = bool(self.scanner_lease.contended)
             self.last_cycle_busy_count += 1
             self.lock.release()
             return {"busy": True, "scanner_lease": "held_by_another_instance"}
+        self.scanner_lease_standby = False
         started_at = datetime.now(IST)
         self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
         out = {}
