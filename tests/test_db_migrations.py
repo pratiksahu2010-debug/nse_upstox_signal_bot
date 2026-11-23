@@ -123,7 +123,7 @@ def test_make_store_closes_pool_when_schema_initialization_fails(monkeypatch):
     assert broken.closed is True
 
 
-def test_postgres_pool_uses_bounded_connection_and_query_timeouts(monkeypatch):
+def test_postgres_pool_avoids_unsupported_startup_options_for_neon_pooler(monkeypatch):
     import psycopg2.pool
 
     captured = {}
@@ -137,13 +137,10 @@ def test_postgres_pool_uses_bounded_connection_and_query_timeouts(monkeypatch):
     PostgresStore("postgresql://example")
 
     assert captured["kwargs"]["connect_timeout"] == 10
-    options = captured["kwargs"]["options"]
-    assert "statement_timeout=120000" in options
-    assert "lock_timeout=15000" in options
-    assert "idle_in_transaction_session_timeout=60000" in options
+    assert "options" not in captured["kwargs"]
 
 
-def test_postgres_migration_init_uses_and_releases_session_advisory_lock():
+def test_postgres_migration_init_holds_transaction_lock_for_entire_schema():
     events = []
 
     class FakeCursor:
@@ -158,7 +155,8 @@ def test_postgres_migration_init_uses_and_releases_session_advisory_lock():
 
         def execute(self, sql, params=None):
             events.append((sql, params))
-            self.result = (True,)
+            if sql == "SELECT pg_try_advisory_xact_lock(%s)":
+                self.result = (True,)
 
         def fetchone(self):
             return self.result
@@ -188,18 +186,28 @@ def test_postgres_migration_init_uses_and_releases_session_advisory_lock():
 
     store = object.__new__(PostgresStore)
     store.pool = FakePool()
-    migrated = []
-    store._init_schema = lambda: migrated.append(True)
 
+    def fake_init_schema():
+        assert store._migration_connection is store.pool.connection
+        with store._migration_connection.cursor() as cur:
+            cur.execute("MIGRATION_SQL")
+
+    store._init_schema = fake_init_schema
     store.init()
 
-    assert migrated == [True]
-    assert events[0] == ("SELECT pg_try_advisory_lock(%s)", (73190420261123,))
-    assert ("SELECT pg_advisory_unlock(%s)", (73190420261123,)) in events
+    statements = [sql for sql, _ in events]
+    assert statements[:4] == [
+        "SET LOCAL statement_timeout = 120000",
+        "SET LOCAL lock_timeout = 15000",
+        "SET LOCAL idle_in_transaction_session_timeout = 60000",
+        "SELECT pg_try_advisory_xact_lock(%s)",
+    ]
+    assert statements.index("MIGRATION_SQL") < statements.index("COMMIT")
+    assert "SELECT pg_advisory_unlock(%s)" not in statements
     assert store.pool.returned == (store.pool.connection, False)
 
 
-def test_postgres_migration_init_fails_fast_when_another_instance_holds_lock():
+def test_postgres_migration_init_fails_fast_when_another_instance_holds_transaction_lock():
     class FakeCursor:
         def __enter__(self):
             return self
