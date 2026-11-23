@@ -16,9 +16,12 @@ class FakePostgresStore:
         self.owner = None
         self.expires_at = 0.0
         self.table_created = False
+        self.fail_renewal = False
 
     def _run(self, sql, params=None, fetch="none"):
         params = params or ()
+        if "UPDATE scanner_leases" in sql and self.fail_renewal:
+            raise RuntimeError("temporary database outage")
         with self.lock:
             if sql.lstrip().startswith("CREATE TABLE"):
                 self.table_created = True
@@ -115,4 +118,17 @@ def test_lease_state_resets_between_boundaries():
 
     assert lease.acquire() is True
     assert lease.lost is False
+    lease.release()
+
+
+def test_heartbeat_database_error_marks_lease_lost_immediately():
+    store = FakePostgresStore()
+    lease = ScannerLease(store, lease_seconds=5, renew_seconds=0.05)
+
+    assert lease.acquire() is True
+    store.fail_renewal = True
+    lease.start_heartbeat()
+    assert lease._lost.wait(timeout=1.0)
+    assert lease.lost is True
+    assert lease.acquired is False
     lease.release()
