@@ -54,7 +54,10 @@ def test_outcome_write_failure_does_not_abort_new_signal_scan(monkeypatch):
     monkeypatch.setattr(mod_normal, "rsi_triggered", lambda _features, _side: True)
     monkeypatch.setattr(mod_normal, "evaluate", lambda *_args: (signal, None))
 
-    def dispatch(_module, _cfg, candidates, _now, _force, diag):
+    def dispatch(module, _cfg, candidates, _now, _force, diag):
+        if module == "momentum":
+            assert candidates == []
+            return 0
         assert candidates == [signal]
         # Mirror _dispatch's contract: a candidate is marked only after its
         # signal row is persisted (or an existing duplicate row is confirmed).
