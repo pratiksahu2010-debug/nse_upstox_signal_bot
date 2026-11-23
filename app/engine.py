@@ -348,8 +348,10 @@ class Engine:
         fetch_started = _time.monotonic()
         try:
             self._api_diag_before_cycle = self.client.diagnostics()
+            self._api_budget_before_cycle = self.client.budget.usage() if hasattr(self.client, "budget") else {}
         except Exception:
             self._api_diag_before_cycle = {}
+            self._api_budget_before_cycle = {}
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
@@ -363,8 +365,21 @@ class Engine:
             api_before = getattr(self, "_api_diag_before_cycle", {}) or {}
             d["api_requests"] = max(0, int(api_after.get("request_count", 0)) - int(api_before.get("request_count", 0)))
             d["api_failures"] = max(0, int(api_after.get("failure_count", 0)) - int(api_before.get("failure_count", 0)))
-            d["api_latency"] = api_after.get("latency", {})
-            d["api_budget"] = self.client.budget.usage() if hasattr(self.client, "budget") else {}
+            latency_after = api_after.get("latency", {}) or {}
+            latency_before = api_before.get("latency", {}) or {}
+            request_delta = max(0, int(latency_after.get("count", 0)) - int(latency_before.get("count", 0)))
+            latency_total_delta = max(0.0, float(latency_after.get("total_seconds", 0.0)) - float(latency_before.get("total_seconds", 0.0)))
+            d["api_latency"] = {
+                "requests": request_delta,
+                "avg_seconds": round(latency_total_delta / request_delta, 3) if request_delta else 0.0,
+                "max_seconds_process": latency_after.get("max_seconds", 0.0),
+            }
+            budget_after = self.client.budget.usage() if hasattr(self.client, "budget") else {}
+            budget_before = getattr(self, "_api_budget_before_cycle", {}) or {}
+            d["api_budget_wait_seconds"] = round(
+                max(0.0, float(budget_after.get("wait_seconds", 0.0)) - float(budget_before.get("wait_seconds", 0.0))), 3
+            )
+            d["api_budget_wait_count"] = max(0, int(budget_after.get("wait_count", 0)) - int(budget_before.get("wait_count", 0)))
         except Exception:
             d["api_diagnostics_error"] = True
         # Empty/stale responses are not proof of an exchange holiday. Keep the
