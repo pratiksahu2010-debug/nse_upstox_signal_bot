@@ -155,12 +155,15 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     monkeypatch.setattr(mod_normal, "setup_side", lambda _features: 1)
     monkeypatch.setattr(mod_normal, "rsi_triggered", lambda _features, _side: True)
     monkeypatch.setattr(mod_normal, "evaluate", lambda *_args: (signal, None))
+    monkeypatch.setattr(engine_module, "ENABLE_MOMENTUM", False)
 
     persisted = [False]
 
     def dispatch(module, _cfg, candidates, _now, _force, diag):
         if module == "momentum":
             assert candidates == []
+            return 0
+        if not candidates:
             return 0
         assert candidates == [signal]
         if persisted[0]:
@@ -181,3 +184,19 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     persisted_state = store.load_normal_states(now.date())["TEST"]
     assert persisted_state["phase"] == "TRIGGERED"
     assert persisted_state["trigger_bar"] == bar_ts.isoformat()
+    assert persisted_state["last_bar"] == bar_ts.isoformat()
+
+    # The next completed candle must advance to COOLDOWN, not reset on a
+    # false 10-minute gap caused by a stale persisted last_bar.
+    next_bar = bar_ts + pd.Timedelta(minutes=5)
+    next_features = SimpleNamespace(
+        bar_ts=next_bar,
+        bar_end=next_bar + pd.Timedelta(minutes=5),
+        close=100.0,
+    )
+    monkeypatch.setattr(engine_module, "compute_features", lambda _frame: next_features)
+    engine.cycle("normal", now + timedelta(minutes=5))
+    cooldown_state = store.load_normal_states(now.date())["TEST"]
+    assert cooldown_state["phase"] == "COOLDOWN"
+    assert cooldown_state["cooldown_remaining"] == 3
+    assert cooldown_state["last_bar"] == next_bar.isoformat()
