@@ -579,13 +579,14 @@ class Engine:
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
         d["_persisted_candidates"] = set()
+        self._cycle_started_monotonic = cycle_started
         try:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
                 cands.clear()
                 momentum_candidates.clear()
                 pending_trigger_states.clear()
-            d["signals"] = self._dispatch(module, cfg, cands, now, force, d, cycle_started)
+            d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
             if module == "normal" and ENABLE_MOMENTUM:
                 # Give Normal priority only when its signal is actually present
                 # (new or already deduplicated) in durable storage. If Normal
@@ -598,7 +599,7 @@ class Engine:
                 )
                 if before > len(momentum_candidates):
                     d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
-                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d, cycle_started)
+                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
         finally:
             persisted_candidates = d.pop("_persisted_candidates", set())
             for (sym, bar_ts), triggered_state in pending_trigger_states.items():
@@ -611,6 +612,7 @@ class Engine:
                 except Exception:
                     d["rejects"]["trigger_state_storage_error"] += 1
                     log.exception("could not commit trigger lifecycle state for %s", sym)
+            self._cycle_started_monotonic = None
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
@@ -633,8 +635,7 @@ class Engine:
         )
         return d
 
-    def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict,
-                  cycle_started: Optional[float] = None) -> int:
+    def _dispatch(self, module: str, cfg, cands: list, now: datetime, force: bool, d: dict) -> int:
         """Persist and deliver eligible signals; fetch optional option quotes in one batch."""
         day = now.date()
         d.setdefault("_persisted_candidates", set())
@@ -861,14 +862,13 @@ class Engine:
             # Fetch/evaluation/option validation may take several minutes. Recheck
             # the candle immediately before persistence so an old candidate can
             # never become a late alert after a slow scan.
-            elapsed_since_cycle_start = (
-                max(0.0, _time.monotonic() - cycle_started)
-                if cycle_started is not None else 0.0
-            )
-            dispatch_now = now + timedelta(seconds=elapsed_since_cycle_start)
-            if not dispatch_bar_is_fresh(sig.bar_ts, dispatch_now):
-                d["rejects"]["stale_before_dispatch"] += 1
-                continue
+            cycle_started = getattr(self, "_cycle_started_monotonic", None)
+            if cycle_started is not None:
+                elapsed_since_cycle_start = max(0.0, _time.monotonic() - cycle_started)
+                dispatch_now = now + timedelta(seconds=elapsed_since_cycle_start)
+                if not dispatch_bar_is_fresh(sig.bar_ts, dispatch_now):
+                    d["rejects"]["stale_before_dispatch"] += 1
+                    continue
             try:
                 sid = self.store.add_signal(row)
             except Exception:
