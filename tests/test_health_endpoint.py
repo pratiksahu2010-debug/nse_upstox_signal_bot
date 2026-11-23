@@ -50,6 +50,9 @@ def _configure_ready(monkeypatch):
         def is_alive(self):
             return True
 
+        def join(self, timeout=None):
+            pass
+
     class RunningStop:
         thread = RunningThread()
 
@@ -817,7 +820,9 @@ def test_init_rolls_back_partial_workers_and_database_when_startup_fails(monkeyp
     with pytest.raises(RuntimeError, match="poller startup failed"):
         web._init()
 
-    assert fake_stop.stopped is True
+    # The poller now starts before the scheduler, so a poller failure
+    # cannot leave a scanner thread to roll back.
+    assert fake_stop.stopped is False
     assert fake_poller.stopped is True
     assert fake_store.closed is True
     assert web._started is False

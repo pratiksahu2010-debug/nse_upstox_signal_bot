@@ -1,8 +1,7 @@
-"""Single Normal NSE trend strategy using EMA 9/21, VWAP, RSI, ADX and ATR.
+"""Normal-only NSE F&O strategy using completed 5-minute EMA 9/21, VWAP, RSI, ADX and ATR.
 
-All decisions are based on completed 5-minute bars. The 15-minute trend
-confirmation is derived only from completed 15-minute bars and uses the same
-EMA 9/21 trend structure; no additional indicators are used as signal gates.
+No higher-timeframe candles or filters are used. All entry decisions are made
+from completed 5-minute bars; options remain recommendations only.
 """
 import pandas as pd
 
@@ -15,23 +14,12 @@ SHORT_RSI_TRIGGER = 42.0
 
 
 def setup_side(f: Features):
-    """Return direction only when 5m and completed 15m EMA/VWAP trends agree."""
-    htf_values = (
-        getattr(f, "htf_close", None),
-        getattr(f, "htf_ema9", None),
-        getattr(f, "htf_ema21", None),
-    )
-    if any(value is None or pd.isna(value) for value in htf_values):
+    """Return direction from completed 5m EMA/VWAP alignment and ADX floor."""
+    if pd.isna(f.adx) or f.adx < C.adx_min:
         return 0
-
-    htf_bull = f.htf_close > f.htf_ema9 > f.htf_ema21
-    htf_bear = f.htf_close < f.htf_ema9 < f.htf_ema21
-
-    if (htf_bull and f.ema9 > f.ema21 and f.close > f.vwap
-            and f.adx >= C.adx_min):
+    if f.ema9 > f.ema21 and f.close > f.vwap:
         return 1
-    if (htf_bear and f.ema9 < f.ema21 and f.close < f.vwap
-            and f.adx >= C.adx_min):
+    if f.ema9 < f.ema21 and f.close < f.vwap:
         return -1
     return 0
 
@@ -44,44 +32,37 @@ def rsi_triggered(f: Features, side: int) -> bool:
 
 
 def score_signal(f: Features, side: int) -> int:
-    """Single 0-100 quality score using only the selected indicator set."""
+    """Single 0-100 score using only 5m EMA spread/slope, VWAP, ADX and RSI."""
     clamp = lambda value: max(0.0, min(1.0, float(value)))
     trigger = LONG_RSI_TRIGGER if side > 0 else SHORT_RSI_TRIGGER
 
-    # Trend alignment is a hard gate in setup_side; points grade its strength.
     ema_spread_atr = side * (f.ema9 - f.ema21) / max(f.atr, 1e-9)
+    ema_slope_atr = side * f.ema21_slope / max(f.atr, 1e-9)
     vwap_distance_atr = side * (f.close - f.vwap) / max(f.atr, 1e-9)
-    htf_spread_atr = side * (f.htf_ema9 - f.htf_ema21) / max(f.atr, 1e-9)
 
-    # Reward strength progressively rather than awarding nearly all points
-    # merely for passing the hard setup gates. The five components total 100.
-    ema_score = 20.0 + 10.0 * clamp(ema_spread_atr / 1.0)
-    htf_score = 15.0 + 5.0 * clamp(htf_spread_atr / 1.0)
+    # Keep the same 100-point component weights and final score gate while
+    # replacing the removed 15m trend component with 5m EMA21 slope strength.
+    ema_score = 20.0 + 10.0 * clamp(ema_spread_atr)
+    slope_score = 15.0 + 5.0 * clamp(ema_slope_atr)
     vwap_score = 10.0 + 5.0 * clamp(vwap_distance_atr / 1.5)
     adx_score = 10.0 + 10.0 * clamp((f.adx - C.adx_min) / 25.0)
     rsi_score = 5.0 + 10.0 * clamp((side * (f.rsi - trigger)) / 20.0)
 
-    return int(round(min(100.0, ema_score + htf_score + vwap_score
+    return int(round(min(100.0, ema_score + slope_score + vwap_score
                          + adx_score + rsi_score)))
 
 
 def evaluate(info: SymbolInfo, df: pd.DataFrame, f: Features, ctx: Ctx):
-    """Create one Normal signal after trend setup and RSI confirmation."""
+    """Create one Normal signal after 5m trend setup and RSI confirmation."""
     if not C.first_signal <= f.bar_end.time() <= C.last_entry and not ctx.ignore_time:
         return None, "time_window"
 
-    # ADX >= 20 is a hard floor, regardless of environment overrides.
-    if f.adx < C.adx_min:
+    if pd.isna(f.adx) or f.adx < C.adx_min:
         return None, "adx_min"
 
     side = setup_side(f)
     if not side:
-        if getattr(f, "htf_close", None) is None:
-            return None, "htf_data_missing"
-        if not ((f.ema9 > f.ema21 and f.close > f.vwap)
-                or (f.ema9 < f.ema21 and f.close < f.vwap)):
-            return None, "ema_vwap"
-        return None, "completed_15m_trend"
+        return None, "ema_vwap"
 
     if not rsi_triggered(f, side):
         return None, "rsi_cross"
@@ -107,9 +88,8 @@ def evaluate(info: SymbolInfo, df: pd.DataFrame, f: Features, ctx: Ctx):
         return None, "invalid_levels"
 
     reasons = [
-        "5m EMA 9/21 trend aligned",
+        "Completed 5m EMA 9/21 trend aligned",
         "Price confirmed on the correct side of session VWAP",
-        "Completed 15m EMA 9/21 trend aligned",
         f"RSI crossed {LONG_RSI_TRIGGER:.0f}" if side > 0
         else f"RSI crossed below {SHORT_RSI_TRIGGER:.0f}",
         f"ADX {f.adx:.1f} (minimum {C.adx_min:.0f})",

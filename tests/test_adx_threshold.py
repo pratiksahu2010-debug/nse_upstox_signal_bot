@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [
-        ("18", "20.0"),  # stale Render values below the new floor are clamped
+        ("18", "20.0"),  # stale Render values below the approved floor are clamped
         ("19", "20.0"),
         ("20", "20.0"),
         ("25", "25.0"),  # raising the threshold remains supported

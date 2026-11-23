@@ -307,7 +307,13 @@ class Engine:
                     _time.monotonic() - pass_started,
                 )
                 pending = retry
-                _time.sleep(5)
+                # A single short refresh is enough to catch provider publication
+                # lag. Repeating the entire 150-symbol request set multiple times
+                # can exceed the 5-minute candle window and make every candidate
+                # stale before dispatch. Transport retries are already bounded
+                # inside UpstoxClient._get().
+                if attempt < ENGINE.retry_passes:
+                    _time.sleep(2.0)
         return out
 
     # ------------------------------------------------------------------ cycle

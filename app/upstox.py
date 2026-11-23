@@ -326,13 +326,19 @@ class UpstoxClient:
         return df
 
     def intraday(self, key: str, interval: int = 5) -> pd.DataFrame:
-        d = self._get(f"/v3/historical-candle/intraday/{quote(key, safe='')}/minutes/{interval}")
+        # The scanner has one bounded stale-data refresh pass of its own. Keep
+        # per-request transport retries to two attempts to avoid nested 3x3
+        # retry amplification across the 150-symbol universe.
+        d = self._get(
+            f"/v3/historical-candle/intraday/{quote(key, safe='')}/minutes/{interval}",
+            retries=2,
+        )
         return self._frame((d.get("data") or {}).get("candles") or [])
 
     def historical(self, key: str, from_date, to_date, interval: int = 5) -> pd.DataFrame:
         path = (f"/v3/historical-candle/{quote(key, safe='')}/minutes/{interval}/"
                 f"{to_date:%Y-%m-%d}/{from_date:%Y-%m-%d}")
-        d = self._get(path)
+        d = self._get(path, retries=2)
         return self._frame((d.get("data") or {}).get("candles") or [])
 
     def ltp(self, keys: list[str]) -> dict:

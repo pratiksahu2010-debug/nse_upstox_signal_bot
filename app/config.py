@@ -70,12 +70,12 @@ class Engine:
     stale_max_bars: int = _i("STALE_MAX_BARS", 1)     # signal bar must be newest or 1 bar old
     # I/O-bound Upstox candle fetches need enough concurrency to finish a 150-symbol scan inside the 5m cadence. Budget still enforces provider request caps.
     workers: int = max(16, min(24, _i("WORKERS", 24)))
-    retry_passes: int = 2
+    retry_passes: int = 1
     max_bars_kept: int = 900
     # Upstox standard limits: 50/s, 500/min, 2000/30min. We stay well below.
-    rate_per_sec: int = _i("RATE_PER_SEC", 8)
-    rate_per_min: int = _i("RATE_PER_MIN", 400)
-    rate_per_30min: int = _i("RATE_PER_30MIN", 1700)
+    rate_per_sec: int = _i("RATE_PER_SEC", 15)
+    rate_per_min: int = _i("RATE_PER_MIN", 450)
+    rate_per_30min: int = _i("RATE_PER_30MIN", 1800)
     prewarm_nse: time = _t("PREWARM_NSE", "08:40")
     heartbeat_min: int = _i("HEARTBEAT_MIN", 60)      # 0 disables diagnostics heartbeat
     eod_summary: bool = _b("EOD_SUMMARY", "1")
@@ -107,7 +107,7 @@ class NormalCfg:
     first_signal: time = _t("N_FIRST_SIGNAL", "09:20")
     last_entry: time = _t("N_LAST_ENTRY", "15:00")
     session_end: time = _t("N_SESSION_END", "15:15")
-    # ADX 20 is the required hard floor; stale Render values cannot weaken it.
+    # ADX 20 is the current approved hard floor; stale Render values cannot weaken it.
     # Operators may still raise N_ADX_MIN above 20.
     adx_min: float = max(20.0, _f("N_ADX_MIN", 20))
     # One final quality gate; individual indicator thresholds above remain unchanged.
@@ -147,11 +147,10 @@ OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)
 # candle-data tokens receive 401 from the optional v2 quote endpoint.
 # Set OPTION_QUOTE=1 only after verifying quote-endpoint access for the token.
 OPTION_QUOTE = _b("OPTION_QUOTE", "0")
-# Full option quote validation is required before emitting a contract recommendation.
-# If the Analytics Token cannot access fresh depth/volume/OI, suppress the signal
-# rather than silently recommending an unverified ATM contract.
+# Full option quote snapshots support descriptive tracking. Strict liquidity
+# validation is optional and disabled by default; when enabled it fails closed.
 OPTION_MARKET_SNAPSHOT = _b("OPTION_MARKET_SNAPSHOT", "1")
-OPTION_LIQUIDITY_CHECKS = _b("OPTION_LIQUIDITY_CHECKS", "1")
+OPTION_LIQUIDITY_CHECKS = _b("OPTION_LIQUIDITY_CHECKS", "0")
 OPTION_MIN_VOLUME = _i("OPTION_MIN_VOLUME", 100)
 OPTION_MIN_OI = _i("OPTION_MIN_OI", 500)
 OPTION_MAX_SPREAD_PCT = _f("OPTION_MAX_SPREAD_PCT", 3.0)

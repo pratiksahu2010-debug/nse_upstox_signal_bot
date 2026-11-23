@@ -190,5 +190,4 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
         body_frac=(body / rng) if rng > 0 else 0.0,
         close_pos=((float(r.close - r.low)) / rng) if rng > 0 else 0.5,
         range_atr=rng / float(r.atr),
-        **(completed_15m_context(df) or {}),
     )
