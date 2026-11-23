@@ -17,6 +17,8 @@ def test_snapshot_metrics_extracts_best_depth_and_calculates_spread():
     assert metrics["ltp"] == 100.0
     assert metrics["bid"] == 99.5
     assert metrics["ask"] == 100.5
+    assert metrics["bid_qty"] == 10
+    assert metrics["ask_qty"] == 12
     assert metrics["spread_pct"] == 1.0
     assert metrics["volume"] == 1200
     assert metrics["oi"] == 8000
@@ -27,6 +29,8 @@ def test_liquidity_validator_accepts_fresh_tight_and_active_contract():
     metrics = {
         "bid": 99.5,
         "ask": 100.5,
+        "bid_qty": 10,
+        "ask_qty": 12,
         "spread_pct": 1.0,
         "volume": 1200,
         "oi": 8000,
@@ -42,6 +46,8 @@ def test_liquidity_validator_fails_closed_for_missing_or_stale_data():
     stale = {
         "bid": 99.5,
         "ask": 100.5,
+        "bid_qty": 10,
+        "ask_qty": 12,
         "spread_pct": 1.0,
         "volume": 1200,
         "oi": 8000,
@@ -54,6 +60,8 @@ def test_liquidity_validator_rejects_wide_spread_and_low_activity():
     wide = {
         "bid": 98.0,
         "ask": 102.0,
+        "bid_qty": 10,
+        "ask_qty": 10,
         "spread_pct": 4.0,
         "volume": 1200,
         "oi": 8000,
@@ -64,9 +72,33 @@ def test_liquidity_validator_rejects_wide_spread_and_low_activity():
     thin = {
         "bid": 99.5,
         "ask": 100.5,
+        "bid_qty": 10,
+        "ask_qty": 10,
         "spread_pct": 1.0,
         "volume": 20,
         "oi": 200,
         "quote_age_sec": 1.0,
     }
     assert validate_option_liquidity(thin, 100, 500, 3.0, 20) == (False, "volume_low")
+
+
+
+def test_liquidity_validator_rejects_missing_or_zero_top_of_book_quantity():
+    metrics = {
+        "bid": 99.5,
+        "ask": 100.5,
+        "spread_pct": 1.0,
+        "volume": 1200,
+        "oi": 8000,
+        "quote_age_sec": 1.0,
+        "bid_qty": 0,
+        "ask_qty": 12,
+    }
+    assert validate_option_liquidity(metrics, 100, 500, 3.0, 20) == (
+        False, "depth_quantity_low"
+    )
+    metrics["bid_qty"] = 10
+    metrics.pop("ask_qty")
+    assert validate_option_liquidity(metrics, 100, 500, 3.0, 20) == (
+        False, "depth_quantity_low"
+    )
