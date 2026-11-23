@@ -18,9 +18,6 @@ from . import MarketDataFeedV3_pb2 as pb
 
 log = logging.getLogger("upstox.market_stream")
 
-# Upstox Market Data Feed V3 allows at most 100 instrument keys per socket.
-MAX_INSTRUMENT_KEYS_PER_SOCKET = 100
-
 
 class UpstoxMarketStream:
     def __init__(self, client):
@@ -31,7 +28,6 @@ class UpstoxMarketStream:
         self._thread = None
         self._lock = threading.Lock()
         self._quotes = {}
-        self._connected_batches = set()
         self.connected = False
         self.last_message_at = None
         self.last_quote_at = None
@@ -80,7 +76,6 @@ class UpstoxMarketStream:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=4)
         with self._lock:
-            self._connected_batches.clear()
             self.connected = False
 
     def quote(self, instrument_key):
@@ -92,7 +87,7 @@ class UpstoxMarketStream:
         with self._lock:
             last_message_at = self.last_message_at
             last_quote_at = self.last_quote_at
-            connected = bool(self._connected_batches)
+            connected = self.connected
             keys = len(self._keys)
             ticks = self.ticks
             reconnects = self.reconnects
@@ -115,7 +110,6 @@ class UpstoxMarketStream:
             "connected": connected,
             "thread_alive": bool(self._thread and self._thread.is_alive()),
             "subscribed_symbols": keys,
-            "connection_batches": (keys + MAX_INSTRUMENT_KEYS_PER_SOCKET - 1) // MAX_INSTRUMENT_KEYS_PER_SOCKET,
             "ticks": ticks,
             "reconnects": reconnects,
             "last_message_at": last_message_at,
@@ -126,56 +120,23 @@ class UpstoxMarketStream:
             "quote_cache_size": cache_size,
         }
 
-    @staticmethod
-    def _key_batches(keys, batch_size=MAX_INSTRUMENT_KEYS_PER_SOCKET):
-        """Split subscriptions to respect Upstox's 100-key per-socket limit."""
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        return [keys[i:i + batch_size] for i in range(0, len(keys), batch_size)]
-
     async def _run(self):
-        while not self._stop.is_set():
-            with self._lock:
-                keys = list(self._keys)
-            batches = self._key_batches(keys)
-            if not batches:
-                return
-
-            # A single Upstox V3 socket is limited to 100 instruments. Run
-            # independent authorized sockets for larger universes (e.g. 150).
-            tasks = [
-                asyncio.create_task(self._run_batch(batch))
-                for batch in batches
-            ]
-            try:
-                while not self._stop.is_set() and not self._resubscribe.is_set():
-                    await asyncio.sleep(0.2)
-            finally:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                self._resubscribe.clear()
-
-        with self._lock:
-            self._connected_batches.clear()
-            self.connected = False
-
-    async def _run_batch(self, keys):
-        batch_id = tuple(keys)
         delay = 1.0
-        while not self._stop.is_set() and not self._resubscribe.is_set():
+        while not self._stop.is_set():
             try:
-                # Each authorized redirect URI is single-use; obtain a fresh
-                # one for every socket connection and every reconnect.
                 auth = self.client._get("/v3/feed/market-data-feed/authorize", retries=1)
                 uri = (auth.get("data") or {}).get("authorized_redirect_uri")
                 if not uri or not uri.startswith("wss://"):
                     raise RuntimeError("Upstox did not return a valid authorized WebSocket URI")
                 async with websockets.connect(
-                    uri, ping_interval=20, close_timeout=5, max_size=4 * 1024 * 1024
+                    uri,
+                    extra_headers={"Accept": "*/*"},
+                    ping_interval=20,
+                    close_timeout=5,
+                    max_size=4 * 1024 * 1024,
                 ) as ws:
                     with self._lock:
-                        self._connected_batches.add(batch_id)
+                        keys = list(self._keys)
                         self.connected = True
                         self.last_error = ""
                     request = {
@@ -185,7 +146,11 @@ class UpstoxMarketStream:
                     }
                     await ws.send(json.dumps(request).encode("utf-8"))
                     delay = 1.0
-                    while not self._stop.is_set() and not self._resubscribe.is_set():
+                    while not self._stop.is_set():
+                        if self._resubscribe.is_set():
+                            self._resubscribe.clear()
+                            await ws.close()
+                            break
                         try:
                             payload = await asyncio.wait_for(ws.recv(), timeout=1.0)
                         except asyncio.TimeoutError:
@@ -193,21 +158,19 @@ class UpstoxMarketStream:
                         if isinstance(payload, str):
                             payload = payload.encode("utf-8")
                         self._consume(payload)
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:
                 with self._lock:
+                    self.connected = False
                     self.last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                     self.reconnects += 1
-                if not self._stop.is_set() and not self._resubscribe.is_set():
-                    # Never log the signed redirect URI or bearer token.
-                    log.warning("Upstox market feed batch disconnected; reconnecting: %s", self.last_error)
+                if not self._stop.is_set():
+                    # Include the provider's HTTP status/handshake reason. The
+                    # authorized redirect URI and bearer token are never logged.
+                    log.warning("Upstox market feed disconnected; reconnecting: %s", self.last_error)
                     await asyncio.sleep(delay)
                     delay = min(30.0, delay * 2)
-            finally:
-                with self._lock:
-                    self._connected_batches.discard(batch_id)
-                    self.connected = bool(self._connected_batches)
+        with self._lock:
+            self.connected = False
 
     def _consume(self, payload):
         response = pb.FeedResponse()
