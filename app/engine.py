@@ -116,6 +116,7 @@ class Engine:
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
         self.scanner_lease = ScannerLease(store)  # cross-instance protection during rolling deploys
+        self.scanner_lease_standby = False
         self.started = datetime.now(IST)
         self.last_error = ""
         self.last_cycle_started_at = None
@@ -1100,9 +1101,11 @@ class Engine:
         # the PostgreSQL lease additionally prevents overlapping Render
         # instances from running the same expensive 150-symbol scan.
         if not self.scanner_lease.acquire():
+            self.scanner_lease_standby = bool(self.scanner_lease.contended)
             self.last_cycle_busy_count += 1
             self.lock.release()
             return {"busy": True, "scanner_lease": "held_by_another_instance"}
+        self.scanner_lease_standby = False
         started_at = datetime.now(IST)
         self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
         out = {}
