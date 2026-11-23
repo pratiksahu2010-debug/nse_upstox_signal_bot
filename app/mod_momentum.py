@@ -40,25 +40,34 @@ def _score(f, side):
 
 def _path(df, f, side):
     prior20 = df.iloc[-21:-1]
+    prior20_prev = df.iloc[-22:-2]
     prior6 = df.iloc[-7:-1]
     prior3 = df.iloc[-4:-1]
-    if len(prior20) < 20 or len(prior6) < 6 or len(prior3) < 3:
+    prior3_prev = df.iloc[-5:-2]
+    if len(prior20) < 20 or len(prior20_prev) < 20 or len(prior6) < 6 or len(prior3) < 3:
         return None
+    previous_close = float(df["close"].iloc[-2])
     compression = (
         float(prior6["high"].max() - prior6["low"].min()) <= 1.5 * f.atr
         and f.rvol >= 1.3
     )
-    if compression and ((side > 0 and f.close > float(prior6["high"].max()))
-                        or (side < 0 and f.close < float(prior6["low"].min()))):
+    if compression and (
+        (side > 0 and previous_close <= float(prior6["high"].max()) < f.close)
+        or (side < 0 and previous_close >= float(prior6["low"].min()) > f.close)
+    ):
         return "COMPRESSION"
-    if ((side > 0 and f.close > float(prior20["high"].max()))
-            or (side < 0 and f.close < float(prior20["low"].min()))):
+    if (
+        (side > 0 and previous_close <= float(prior20_prev["high"].max()) < f.close)
+        or (side < 0 and previous_close >= float(prior20_prev["low"].min()) > f.close)
+    ):
         return "BREAKOUT"
     accelerating = f.adx >= C.adx_min and f.adx >= f.adx_prev2
     if accelerating and f.rvol >= 1.3:
-        if side > 0 and f.rsi >= 58 and f.close > float(prior3["high"].max()):
+        if (side > 0 and f.rsi >= 58 and previous_close <= float(prior3_prev["high"].max())
+                and f.close > float(prior3["high"].max())):
             return "ACCELERATION"
-        if side < 0 and f.rsi <= 42 and f.close < float(prior3["low"].min()):
+        if (side < 0 and f.rsi <= 42 and previous_close >= float(prior3_prev["low"].min())
+                and f.close < float(prior3["low"].min())):
             return "ACCELERATION"
     if (f.range_atr >= 1.5 and f.body_frac >= 0.70 and f.rvol >= 1.8
             and ((side > 0 and f.close > f.open) or (side < 0 and f.close < f.open))):
