@@ -69,7 +69,7 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
-    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7))
+    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7, 8))
     store.init()
 
     # The expensive compatibility reconciliation is versioned and must not
