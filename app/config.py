@@ -68,10 +68,13 @@ class Engine:
     warm_sessions: int = 6                 # prior sessions kept for indicator warm-up
     fetch_delay_sec: int = _i("FETCH_DELAY_SEC", 6)   # wait after candle close before fetching
     stale_max_bars: int = _i("STALE_MAX_BARS", 1)     # signal bar must be newest or 1 bar old
-    # I/O-bound Upstox candle fetches need enough concurrency to finish a 150-symbol scan inside the 5m cadence. Budget still enforces provider request caps.
-    workers: int = max(16, min(24, _i("WORKERS", 24)))
+    # Bound I/O concurrency for Render's small memory footprint. Upstox pacing
+    # (15 req/s by default) is the throughput ceiling; 24 threads added memory
+    # and socket overhead without increasing the allowed request rate.
+    workers: int = max(8, min(16, _i("WORKERS", 16)))
     retry_passes: int = 1
-    max_bars_kept: int = 900
+    # Six warm sessions (~450 5m bars) plus today's bars fit within this bound.
+    max_bars_kept: int = 600
     # Upstox standard limits: 50/s, 500/min, 2000/30min. We stay well below.
     rate_per_sec: int = _i("RATE_PER_SEC", 15)
     rate_per_min: int = _i("RATE_PER_MIN", 450)
