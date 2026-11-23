@@ -107,6 +107,9 @@ def _init():
             if candidate_scheduler_stop is not None:
                 try:
                     candidate_scheduler_stop.set()
+                    scheduler_thread = getattr(candidate_scheduler_stop, "thread", None)
+                    if scheduler_thread is not None and scheduler_thread.is_alive():
+                        scheduler_thread.join(timeout=5)
                 except Exception:
                     log.exception("failed to stop partially-started scheduler")
             if candidate is not None and getattr(candidate, "market_stream", None) is not None:
