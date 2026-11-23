@@ -374,6 +374,18 @@ class Engine:
                 "avg_seconds": round(latency_total_delta / request_delta, 3) if request_delta else 0.0,
                 "max_seconds_process": latency_after.get("max_seconds", 0.0),
             }
+            endpoint_before = latency_before.get("by_endpoint", {}) or {}
+            endpoint_after = latency_after.get("by_endpoint", {}) or {}
+            d["api_latency_by_endpoint"] = {}
+            for endpoint, metrics in endpoint_after.items():
+                prior = endpoint_before.get(endpoint, {}) or {}
+                count = max(0, int(metrics.get("count", 0)) - int(prior.get("count", 0)))
+                elapsed = max(0.0, float(metrics.get("total_seconds", 0.0)) - float(prior.get("total_seconds", 0.0)))
+                d["api_latency_by_endpoint"][endpoint] = {
+                    "requests": count,
+                    "avg_seconds": round(elapsed / count, 3) if count else 0.0,
+                    "total_seconds": round(elapsed, 3),
+                }
             budget_after = self.client.budget.usage() if hasattr(self.client, "budget") else {}
             budget_before = getattr(self, "_api_budget_before_cycle", {}) or {}
             d["api_budget_wait_seconds"] = round(
@@ -1073,7 +1085,8 @@ class Engine:
                         "momentum_signals", "watching", "duration_seconds",
                         "fetch_seconds", "evaluate_seconds", "dispatch_seconds",
                         "api_requests", "api_failures", "api_latency",
-                        "api_budget_wait_seconds", "api_budget_wait_count", "error",
+                        "api_latency_by_endpoint", "api_budget_wait_seconds",
+                        "api_budget_wait_count", "error",
                     )
                 }
                 for name, result in out.items() if isinstance(result, dict)
