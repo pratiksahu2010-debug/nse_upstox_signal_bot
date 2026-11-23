@@ -107,9 +107,9 @@ class NormalCfg:
     first_signal: time = _t("N_FIRST_SIGNAL", "09:20")
     last_entry: time = _t("N_LAST_ENTRY", "15:00")
     session_end: time = _t("N_SESSION_END", "15:15")
-    # ADX 19 is the approved hard floor; stale Render values cannot weaken it.
-    # Operators may still raise N_ADX_MIN above 19.
-    adx_min: float = max(19.0, _f("N_ADX_MIN", 19))
+    # ADX 20 is the current approved hard floor; stale Render values cannot weaken it.
+    # Operators may still raise N_ADX_MIN above 20.
+    adx_min: float = max(20.0, _f("N_ADX_MIN", 20))
     # One final quality gate; individual indicator thresholds above remain unchanged.
     score_min: int = max(0, min(100, _i("N_SCORE_MIN", 72)))
     sl_atr: float = _f("N_SL_ATR", 1.2)
