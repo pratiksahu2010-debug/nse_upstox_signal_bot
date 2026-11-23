@@ -403,6 +403,8 @@ def test_simple_call_put_levels_are_atr_based():
 
 def test_dispatch_batches_optional_option_quotes_once(monkeypatch):
     monkeypatch.setattr("app.engine.OPTION_QUOTE", True)
+    monkeypatch.setattr("app.engine.OPTION_MARKET_SNAPSHOT", False)
+    monkeypatch.setattr("app.engine.OPTION_LIQUIDITY_CHECKS", False)
     now = datetime(2026, 11, 17, 10, 30, tzinfo=IST)
     infos = [
         SymbolInfo("AAA", "NSE_EQ|AAA", "normal", lot=10, underlying="AAA"),
