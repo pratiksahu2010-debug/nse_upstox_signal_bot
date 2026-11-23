@@ -518,8 +518,8 @@ class Engine:
                 continue
             prepared.append(sig)
 
-        # Compare nearby strikes using one batched quote request. The first
-        # candidate is the nearest-ATM fallback and remains eligible if quotes fail.
+        # Compare nearby strikes using one batched quote request. An unverified
+        # ATM fallback is never emitted when the liquidity hard gate is enabled.
         candidate_keys = list(dict.fromkeys(
             candidate.get("_key")
             for sig in prepared
@@ -568,6 +568,9 @@ class Engine:
                 metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
                 status = "ATM_FALLBACK_UNVERIFIED"
             selected = dict(selected)
+            if OPTION_LIQUIDITY_CHECKS and status != "LIQUIDITY_VERIFIED":
+                d["rejects"]["option_no_liquid_contract"] += 1
+                continue
             selected.update({
                 "selection_status": status,
                 "atm_reference": "FUTURES_PROXY" if getattr(getattr(sig, "info", None), "is_index", False) else "CASH_SPOT",
@@ -592,8 +595,7 @@ class Engine:
         # not one reconnect per candidate contract.
         self._sync_market_stream_keys()
 
-        # Optional full quote snapshots provide bid/ask, volume and OI.
-        # The liquidity hard gate is OFF by default to preserve current alert eligibility.
+        # Quote snapshots provide bid/ask, volume and OI; enabled liquidity gates fail closed.
         if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING or self.market_stream is not None) and prepared:
             option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
@@ -636,7 +638,7 @@ class Engine:
                     continue
                 metrics = snapshot_metrics(raw, now.timestamp())
                 sig.option.update(metrics)
-                if OPTION_LIQUIDITY_CHECKS and sig.option.get("selection_status") != "ATM_FALLBACK_UNVERIFIED":
+                if OPTION_LIQUIDITY_CHECKS:
                     valid, reason = validate_option_liquidity(
                         metrics, OPTION_MIN_VOLUME, OPTION_MIN_OI,
                         OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC,
