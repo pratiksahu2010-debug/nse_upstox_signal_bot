@@ -1,8 +1,8 @@
 """Option market snapshot normalization and configurable liquidity validation.
 
-This module does not alter the underlying CALL/PUT strategy. Production defaults
-enable the hard liquidity gate; missing, stale or illiquid contracts are rejected.
-The gate can be explicitly disabled with OPTION_LIQUIDITY_CHECKS=0.
+This module does not alter the underlying CALL/PUT strategy. Strict option
+liquidity validation is disabled by default; when enabled, missing, stale or
+illiquid contracts are rejected.
 """
 import math
 import time

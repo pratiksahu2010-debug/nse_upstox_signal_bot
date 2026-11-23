@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from . import config, scheduler
 from .config import ADMIN_TOKEN, IST
 from .db import make_store
-from .engine import Engine
+from .engine import Engine, floor5
 from .telegram import send
 from .telegram_polling import TelegramPoller, get_persistent_state
 from .upstox import UpstoxClient
@@ -404,15 +404,19 @@ def readiness():
         now.weekday() < 5
         and time(9, 15) <= now.time() <= time(15, 30)
     )
+    # Match the scheduler/engine's candle-boundary clock. The scan triggered
+    # at 15:00:06 evaluates the candle that closed at 15:00, so it is still the
+    # final eligible entry scan even though wall-clock time is now 15:00:06.
+    scan_close_time = floor5(now).time()
     entry_scan_window = (
         now.weekday() < 5
-        and config.NORMAL.first_signal <= now.time() <= config.NORMAL.last_entry
+        and config.NORMAL.first_signal <= scan_close_time <= config.NORMAL.last_entry
     )
-    # Continue checking scanner execution after the last new-entry time because
-    # open signals and armed setups still need tracking through session_end.
+    # The 15:15 close is also a valid final tracking boundary. Use the same
+    # completed-candle clock here to avoid a false readiness failure at 15:15:06.
     active_scan_window = (
         now.weekday() < 5
-        and config.NORMAL.first_signal <= now.time() <= config.NORMAL.session_end
+        and config.NORMAL.first_signal <= scan_close_time <= config.NORMAL.session_end
     )
     scanner_health = {
         "last_cycle_started_at": getattr(engine, "last_cycle_started_at", None),
