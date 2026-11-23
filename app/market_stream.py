@@ -129,7 +129,11 @@ class UpstoxMarketStream:
                 if not uri or not uri.startswith("wss://"):
                     raise RuntimeError("Upstox did not return a valid authorized WebSocket URI")
                 async with websockets.connect(
-                    uri, ping_interval=20, close_timeout=5, max_size=4 * 1024 * 1024
+                    uri,
+                    extra_headers={"Accept": "*/*"},
+                    ping_interval=20,
+                    close_timeout=5,
+                    max_size=4 * 1024 * 1024,
                 ) as ws:
                     with self._lock:
                         keys = list(self._keys)
