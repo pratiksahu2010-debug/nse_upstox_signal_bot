@@ -102,10 +102,13 @@ class ScannerLease:
                     "one",
                 )
             except Exception:
-                # Keep retrying through a transient DB outage. The database
-                # expiry bounds how long another process must wait.
-                log.exception("scanner lease renewal failed")
-                continue
+                # A renewal error means ownership can no longer be proven.
+                # Fail closed immediately rather than continuing to dispatch
+                # while another instance may acquire the lease after expiry.
+                self._lost.set()
+                self.acquired = False
+                log.exception("scanner lease renewal failed; stopping this scan")
+                return
             if not row or row[0] != self.owner:
                 self._lost.set()
                 self.acquired = False
