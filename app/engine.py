@@ -16,10 +16,10 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from . import mod_normal
+from . import mod_normal, mod_momentum
 from .market_stream import UpstoxMarketStream
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
+from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
 from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_snapshot,
                      initial_option_tracking, update_option_tracking)
@@ -293,6 +293,9 @@ class Engine:
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
+        if module == "normal" and ENABLE_MOMENTUM:
+            for r in self.store.open_signals(day, "momentum"):
+                open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
             states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
             if not states:
@@ -314,6 +317,7 @@ class Engine:
         evaluate_started = _time.monotonic()
         expected = latest_eligible_bar(now)
         cands: list = []
+        momentum_candidates: list = []
         pending_trigger_states: dict = {}
         watching = 0
         for sym, df in data.items():
@@ -327,8 +331,9 @@ class Engine:
                 d["rejects"]["warmup"] += 1
                 continue
             for r in open_rows.get(sym, []):
-                status, rr = simulate(r, ind, cfg.session_end)
-                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
+                outcome_cfg = MOMENTUM if r.get("module") == "momentum" else cfg
+                status, rr = simulate(r, ind, outcome_cfg.session_end)
+                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, outcome_cfg.session_end)
                 bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind)
                 # Do not close a signal until all training metrics for this
                 # replay have been persisted. The row remains OPEN/TP1 on any
@@ -367,7 +372,26 @@ class Engine:
                 d["rejects"]["paused"] += 1
                 continue
 
-            # Process the lifecycle once per newly completed 5m candle.
+            # Evaluate Momentum Explosion on the same fetched completed 5m frame,
+            # so the 150-symbol universe is not fetched a second time.
+            if module == "normal" and ENABLE_MOMENTUM:
+                try:
+                    momentum_signal, momentum_reason = mod_momentum.evaluate(
+                        st.info, ind, f, Ctx(ignore_time=force),
+                    )
+                    if momentum_signal is not None:
+                        momentum_signal.indicator_snapshot = {
+                            k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                            for k, v in vars(f).items()
+                        }
+                        momentum_candidates.append(momentum_signal)
+                    elif momentum_reason:
+                        d["rejects"][f"momentum_{momentum_reason}"] += 1
+                except Exception:
+                    d["rejects"]["momentum_eval_error"] += 1
+                    log.exception("Momentum Explosion evaluation failed for %s", sym)
+
+            # Process the Normal lifecycle once per newly completed 5m candle.
             if module == "normal":
                 state = dict(st.normal_state or {})
                 last_raw = state.get("last_bar")
@@ -459,6 +483,8 @@ class Engine:
         d["_persisted_candidates"] = set()
         try:
             d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
+            if module == "normal" and ENABLE_MOMENTUM:
+                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
         finally:
             persisted_candidates = d.pop("_persisted_candidates", set())
             for (sym, bar_ts), triggered_state in pending_trigger_states.items():
@@ -907,7 +933,7 @@ class Engine:
             self.last_cycle_result = {
                 name: {
                     key: value for key, value in result.items()
-                    if key in ("scope", "symbols", "loaded", "fresh", "signals", "watching", "duration_seconds", "error")
+                    if key in ("scope", "symbols", "loaded", "fresh", "signals", "momentum_signals", "watching", "duration_seconds", "error")
                 }
                 for name, result in out.items() if isinstance(result, dict)
             }
@@ -991,7 +1017,7 @@ class Engine:
         ])
 
     def eod_text(self, day: date, tag: str) -> str:
-        mods = ("normal",)
+        mods = ("normal", "momentum")
         rows = [r for r in self.store.stats(day) if r["module"] in mods]
         if not rows:
             return f"📊 <b>EOD {tag.upper()}: no signals today</b>"
