@@ -491,15 +491,6 @@ class Engine:
                 d["rejects"][why or "trigger_rejected"] += 1
                 if why in NEAR_MISS and len(d["near_miss"]) < 8:
                     d["near_miss"].append(f"{sym}:{why}")
-        if momentum_candidates and cands:
-            normal_keys = {(item.symbol, item.bar_ts) for item in cands}
-            before = len(momentum_candidates)
-            momentum_candidates = [
-                item for item in momentum_candidates
-                if (item.symbol, item.bar_ts) not in normal_keys
-            ]
-            if before > len(momentum_candidates):
-                d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
         d["watching"] = watching
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
@@ -507,6 +498,19 @@ class Engine:
         try:
             d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
             if module == "normal" and ENABLE_MOMENTUM:
+                # Give Normal priority only when its signal is actually present
+                # (new or already deduplicated) in durable storage. If Normal
+                # fails option validation, cooldown or persistence, Momentum
+                # may still use the same candle rather than being silently lost.
+                normal_persisted = set(d.get("_persisted_candidates", set()))
+                before = len(momentum_candidates)
+                momentum_candidates = [
+                    item for item in momentum_candidates
+                    if (item.symbol, item.bar_ts.isoformat()) not in normal_persisted
+                    and (item.symbol, item.bar_ts) not in normal_persisted
+                ]
+                if before > len(momentum_candidates):
+                    d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
                 d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
         finally:
             persisted_candidates = d.pop("_persisted_candidates", set())
