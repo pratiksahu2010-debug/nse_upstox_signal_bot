@@ -22,8 +22,10 @@ def _features(**overrides):
 def test_normal_setup_requires_5m_and_15m_trend_alignment():
     f = _features(htf="neutral")
     assert mod_normal.setup_side(f) == 1
-    assert mod_normal.setup_side(_features(ema9=99, ema21=100, close=99, vwap=100,
-                                           pdi=12, mdi=25, htf="neutral")) == -1
+    assert mod_normal.setup_side(_features(
+        ema9=99, ema21=100, close=99, vwap=100, pdi=12, mdi=25,
+        htf_close=98, htf_ema9=99, htf_ema21=100, htf_pdi=10, htf_mdi=20,
+    )) == -1
 
 
 def test_rsi_cross_thresholds_are_directional_and_exact():
