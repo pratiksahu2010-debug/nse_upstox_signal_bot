@@ -153,7 +153,7 @@ Option quote snapshots and liquidity validation default to on. If the production
 
 Every scan boundary acquires a PostgreSQL-backed, owner-token lease before fetching the 150-symbol universe. The lease is renewed every 20 seconds while a scan runs and expires after 120 seconds if the process dies. A second Render instance or `/force` request cannot start a competing scan while another process owns the lease. Acquisition fails closed when PostgreSQL is unavailable; a process that detects lease loss stops evaluating and suppresses signal dispatch. This complements the in-process mutex and the unique signal key; it does not replace the required single Gunicorn worker.
 
-## Render-specific settings
+### Render-specific settings
 
 The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS` setting controls fetch concurrency (bounded to 16–24) and is unrelated to Gunicorn's `--workers 1`.
 
