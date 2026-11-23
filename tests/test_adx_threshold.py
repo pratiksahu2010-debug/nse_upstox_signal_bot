@@ -69,10 +69,16 @@ def test_normal_setup_side_accepts_adx_19_and_rejects_below(monkeypatch):
         "vwap": 1.0,
         "pdi": 30.0,
         "mdi": 20.0,
+        "htf_close": 2.0,
+        "htf_ema9": 1.8,
+        "htf_ema21": 1.5,
+        "htf_pdi": 30.0,
+        "htf_mdi": 20.0,
     }
     assert mod_normal.setup_side(SimpleNamespace(**common)) == 1
 
-    short = dict(common, ema9=1.0, ema21=2.0, close=1.0, vwap=2.0, pdi=20.0, mdi=30.0)
+    short = dict(common, ema9=1.0, ema21=2.0, close=1.0, vwap=2.0, pdi=20.0, mdi=30.0,
+                 htf_close=1.0, htf_ema9=1.2, htf_ema21=1.5, htf_pdi=20.0, htf_mdi=30.0)
     assert mod_normal.setup_side(SimpleNamespace(**short)) == -1
 
     below = dict(common, adx=18.99)
