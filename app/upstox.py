@@ -35,8 +35,11 @@ class Budget:
         self.hits: deque = deque()
         self.lock = threading.Lock()
         self.total = 0
+        self.wait_seconds = 0.0
+        self.wait_count = 0
 
     def acquire(self):
+        wait_started = time.monotonic()
         while True:
             with self.lock:
                 now = time.monotonic()
@@ -50,6 +53,10 @@ class Budget:
                 if wait <= 0:
                     self.hits.append(now)
                     self.total += 1
+                    waited = max(0.0, now - wait_started)
+                    self.wait_seconds += waited
+                    if waited >= 0.01:
+                        self.wait_count += 1
                     return
             time.sleep(min(wait, 5.0))
 
@@ -60,6 +67,8 @@ class Budget:
                 "last_min": sum(1 for h in self.hits if now - h <= 60),
                 "last_30min": sum(1 for h in self.hits if now - h <= 1800),
                 "total": self.total,
+                "wait_seconds": round(self.wait_seconds, 3),
+                "wait_count": self.wait_count,
             }
 
 
@@ -80,6 +89,8 @@ class UpstoxClient:
         self.last_status = None
         self.request_count = 0
         self.failure_count = 0
+        self._latency_lock = threading.Lock()
+        self._latency = {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0, "by_endpoint": {}}
         # Optional option-LTP endpoint can reject a token that is valid for
         # candle data. Once that happens, stop calling it until a new token is
         # installed; this prevents a warning/request on every scan cycle.
@@ -109,9 +120,31 @@ class UpstoxClient:
             self._ltp_auth_disabled = False
             self._optional_data_disabled.clear()
 
+    def _record_latency(self, path: str, elapsed: float):
+        if "/historical-candle/intraday/" in path:
+            endpoint = "intraday"
+        elif "/historical-candle/" in path:
+            endpoint = "historical"
+        elif "/market-quote/quotes" in path:
+            endpoint = "full_quotes"
+        elif "/option/" in path:
+            endpoint = "options"
+        else:
+            endpoint = "other"
+        with self._latency_lock:
+            self._latency["count"] += 1
+            self._latency["total_seconds"] += elapsed
+            self._latency["max_seconds"] = max(self._latency["max_seconds"], elapsed)
+            item = self._latency["by_endpoint"].setdefault(
+                endpoint, {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+            )
+            item["count"] += 1
+            item["total_seconds"] += elapsed
+            item["max_seconds"] = max(item["max_seconds"], elapsed)
+
     def diagnostics(self) -> dict:
         with self._state_lock:
-            return {
+            state = {
                 "token_configured": bool(self._token),
                 "auth_failed": self.auth_failed,
                 "auth_status": self.auth_status,
@@ -122,6 +155,26 @@ class UpstoxClient:
                 "failure_count": self.failure_count,
                 "optional_data_disabled": sorted(self._optional_data_disabled),
             }
+        with self._latency_lock:
+            count = self._latency["count"]
+            total_seconds = self._latency["total_seconds"]
+            state["latency"] = {
+                "count": count,
+                "avg_seconds": round(total_seconds / count, 3) if count else 0.0,
+                "total_seconds": round(total_seconds, 3),
+                "max_seconds": round(self._latency["max_seconds"], 3),
+                "by_endpoint": {
+                    name: {
+                        "count": item["count"],
+                        "avg_seconds": round(item["total_seconds"] / item["count"], 3)
+                        if item["count"] else 0.0,
+                        "total_seconds": round(item["total_seconds"], 3),
+                        "max_seconds": round(item["max_seconds"], 3),
+                    }
+                    for name, item in self._latency["by_endpoint"].items()
+                },
+            }
+        return state
 
     @staticmethod
     def _retry_after(value, fallback: float) -> float:
@@ -150,11 +203,14 @@ class UpstoxClient:
                 headers = {"Authorization": f"Bearer {token}"}
                 if api_version:
                     headers["Api-Version"] = api_version
+                request_started = time.monotonic()
                 r = self._session().get(
                     url, params=params, headers=headers,
                     timeout=(5, 15),
                 )
             except requests.RequestException as e:
+                elapsed = max(0.0, time.monotonic() - request_started)
+                self._record_latency(path, elapsed)
                 last = UpstoxError(f"network error: {type(e).__name__}")
                 with self._state_lock:
                     self.failure_count += 1
@@ -164,6 +220,8 @@ class UpstoxClient:
                     continue
                 break
 
+            elapsed = max(0.0, time.monotonic() - request_started)
+            self._record_latency(path, elapsed)
             with self._state_lock:
                 self.request_count += 1
                 self.last_status = r.status_code

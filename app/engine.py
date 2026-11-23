@@ -44,6 +44,14 @@ def latest_eligible_bar(now: datetime) -> datetime:
     return eligible_close - timedelta(minutes=ENGINE.candle_min)
 
 
+def dispatch_bar_is_fresh(bar_ts, now: datetime) -> bool:
+    """Only dispatch a signal if its completed 5m candle is still the latest eligible bar."""
+    try:
+        return pd.Timestamp(bar_ts) == pd.Timestamp(latest_eligible_bar(now))
+    except (TypeError, ValueError):
+        return False
+
+
 def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     """Advance the persisted trigger stage on the next completed 5m candle."""
     next_state = dict(state)
@@ -338,12 +346,54 @@ class Engine:
 
         expected = latest_eligible_bar(now)
         fetch_started = _time.monotonic()
+        try:
+            self._api_diag_before_cycle = self.client.diagnostics()
+            self._api_budget_before_cycle = self.client.budget.usage() if hasattr(self.client, "budget") else {}
+        except Exception:
+            self._api_diag_before_cycle = {}
+            self._api_budget_before_cycle = {}
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
+        # Provider timing and pacing diagnostics help separate broker latency
+        # from local rate-limit waiting without changing request limits.
+        try:
+            api_after = self.client.diagnostics()
+            api_before = getattr(self, "_api_diag_before_cycle", {}) or {}
+            d["api_requests"] = max(0, int(api_after.get("request_count", 0)) - int(api_before.get("request_count", 0)))
+            d["api_failures"] = max(0, int(api_after.get("failure_count", 0)) - int(api_before.get("failure_count", 0)))
+            latency_after = api_after.get("latency", {}) or {}
+            latency_before = api_before.get("latency", {}) or {}
+            request_delta = max(0, int(latency_after.get("count", 0)) - int(latency_before.get("count", 0)))
+            latency_total_delta = max(0.0, float(latency_after.get("total_seconds", 0.0)) - float(latency_before.get("total_seconds", 0.0)))
+            d["api_latency"] = {
+                "requests": request_delta,
+                "avg_seconds": round(latency_total_delta / request_delta, 3) if request_delta else 0.0,
+                "max_seconds_process": latency_after.get("max_seconds", 0.0),
+            }
+            endpoint_before = latency_before.get("by_endpoint", {}) or {}
+            endpoint_after = latency_after.get("by_endpoint", {}) or {}
+            d["api_latency_by_endpoint"] = {}
+            for endpoint, metrics in endpoint_after.items():
+                prior = endpoint_before.get(endpoint, {}) or {}
+                count = max(0, int(metrics.get("count", 0)) - int(prior.get("count", 0)))
+                elapsed = max(0.0, float(metrics.get("total_seconds", 0.0)) - float(prior.get("total_seconds", 0.0)))
+                d["api_latency_by_endpoint"][endpoint] = {
+                    "requests": count,
+                    "avg_seconds": round(elapsed / count, 3) if count else 0.0,
+                    "total_seconds": round(elapsed, 3),
+                }
+            budget_after = self.client.budget.usage() if hasattr(self.client, "budget") else {}
+            budget_before = getattr(self, "_api_budget_before_cycle", {}) or {}
+            d["api_budget_wait_seconds"] = round(
+                max(0.0, float(budget_after.get("wait_seconds", 0.0)) - float(budget_before.get("wait_seconds", 0.0))), 3
+            )
+            d["api_budget_wait_count"] = max(0, int(budget_after.get("wait_count", 0)) - int(budget_before.get("wait_count", 0)))
+        except Exception:
+            d["api_diagnostics_error"] = True
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
@@ -529,6 +579,7 @@ class Engine:
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
         d["_persisted_candidates"] = set()
+        self._cycle_started_monotonic = cycle_started
         try:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
@@ -561,6 +612,7 @@ class Engine:
                 except Exception:
                     d["rejects"]["trigger_state_storage_error"] += 1
                     log.exception("could not commit trigger lifecycle state for %s", sym)
+            self._cycle_started_monotonic = None
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
@@ -572,11 +624,14 @@ class Engine:
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
-            "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
+            "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs "
+            "api_requests=%d api_failures=%d api_avg=%.3fs budget_wait=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
             len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
-            d["duration_seconds"], dict(d["rejects"].most_common(6)),
+            d["duration_seconds"], d.get("api_requests", 0), d.get("api_failures", 0),
+            (d.get("api_latency") or {}).get("avg_seconds", 0.0),
+            d.get("api_budget_wait_seconds", 0.0), dict(d["rejects"].most_common(6)),
         )
         return d
 
@@ -804,6 +859,16 @@ class Engine:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
                 break
+            # Fetch/evaluation/option validation may take several minutes. Recheck
+            # the candle immediately before persistence so an old candidate can
+            # never become a late alert after a slow scan.
+            cycle_started = getattr(self, "_cycle_started_monotonic", None)
+            if cycle_started is not None:
+                elapsed_since_cycle_start = max(0.0, _time.monotonic() - cycle_started)
+                dispatch_now = now + timedelta(seconds=elapsed_since_cycle_start)
+                if not dispatch_bar_is_fresh(sig.bar_ts, dispatch_now):
+                    d["rejects"]["stale_before_dispatch"] += 1
+                    continue
             try:
                 sid = self.store.add_signal(row)
             except Exception:
@@ -1021,7 +1086,14 @@ class Engine:
             self.last_cycle_result = {
                 name: {
                     key: value for key, value in result.items()
-                    if key in ("scope", "symbols", "loaded", "fresh", "signals", "momentum_signals", "watching", "duration_seconds", "error")
+                    if key in (
+                        "scope", "symbols", "loaded", "fresh", "signals",
+                        "momentum_signals", "watching", "duration_seconds",
+                        "fetch_seconds", "evaluate_seconds", "dispatch_seconds",
+                        "api_requests", "api_failures", "api_latency",
+                        "api_latency_by_endpoint", "api_budget_wait_seconds",
+                        "api_budget_wait_count", "error",
+                    )
                 }
                 for name, result in out.items() if isinstance(result, dict)
             }

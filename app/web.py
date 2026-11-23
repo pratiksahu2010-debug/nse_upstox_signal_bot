@@ -103,6 +103,22 @@ def _require_engine():
     return engine, None
 
 
+def _cycle_duration_seconds(started_at, completed_at):
+    """Return elapsed scanner-cycle seconds from ISO timestamps, or None if invalid."""
+    if not started_at or not completed_at:
+        return None
+    try:
+        started = datetime.fromisoformat(str(started_at))
+        completed = datetime.fromisoformat(str(completed_at))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=IST)
+        if completed.tzinfo is None:
+            completed = completed.replace(tzinfo=IST)
+        return max(0.0, (completed - started).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _recent_signals(limit: int = 20):
     if store is None:
         return []
@@ -334,6 +350,15 @@ def readiness():
             return unavailable("scanner_cycle_timestamp_invalid")
         if cycle_age > 8 * 60:
             return unavailable("scanner_cycle_stale")
+        cycle_duration = _cycle_duration_seconds(
+            scanner_health["last_cycle_started_at"],
+            scanner_health["last_cycle_completed_at"],
+        )
+        if cycle_duration is None:
+            return unavailable("scanner_cycle_duration_unavailable")
+        scanner_health["duration_seconds"] = round(cycle_duration, 2)
+        if cycle_duration > config.ENGINE.candle_min * 60:
+            return unavailable("scanner_cycle_over_budget")
         if scanner_health["last_cycle_error"]:
             return unavailable("scanner_cycle_failed")
 
@@ -419,6 +444,7 @@ def readiness():
             "last_cycle_completed_at": scanner_health["last_cycle_completed_at"],
             "last_successful_cycle_at": scanner_health["last_successful_cycle_at"],
             "last_cycle_error": scanner_health["last_cycle_error"],
+            "duration_seconds": scanner_health.get("duration_seconds"),
             "last_cycle_result": scanner_health["last_cycle_result"],
             "paused": scanner_health["paused"],
             "strategy_enabled": True,
