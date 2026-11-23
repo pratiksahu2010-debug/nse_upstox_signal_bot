@@ -23,6 +23,7 @@ class ScannerLease:
         self.renew_seconds = int(renew_seconds or self.RENEW_SECONDS)
         self.owner = uuid.uuid4().hex
         self.acquired = False
+        self.contended = False
         self._table_ready = False
         self._stop = threading.Event()
         self._lost = threading.Event()
@@ -51,6 +52,7 @@ class ScannerLease:
             return False
         self._lost.clear()
         self._stop.clear()
+        self.contended = False
         if getattr(self.store, "kind", "") != "postgres":
             self.acquired = True
             return True
@@ -71,9 +73,11 @@ class ScannerLease:
                 "one",
             )
             self.acquired = bool(row and row[0] == self.owner)
+            self.contended = not self.acquired
             return self.acquired
         except Exception:
             self.acquired = False
+            self.contended = False
             log.exception("scanner leader lease acquisition failed; scan skipped")
             return False
 
