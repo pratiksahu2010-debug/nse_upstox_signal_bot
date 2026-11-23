@@ -569,6 +569,7 @@ def readiness():
             "duration_seconds": scanner_health.get("duration_seconds"),
             "last_cycle_result": scanner_health["last_cycle_result"],
             "paused": scanner_health["paused"],
+            "standby_during_rolling_deploy": scanner_health["scanner_standby"],
             "strategy_enabled": True,
         },
         "upstox": {
