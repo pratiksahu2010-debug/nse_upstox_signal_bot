@@ -107,6 +107,8 @@ class NormalCfg:
     # 19 is the approved hard floor: stale Render values below 19 cannot weaken the gate.
     # Operators may still raise N_ADX_MIN above 19.
     adx_min: float = max(19.0, _f("N_ADX_MIN", 19))
+    # One final quality gate; individual indicator thresholds above remain unchanged.
+    score_min: int = max(0, min(100, _i("N_SCORE_MIN", 72)))
     sl_atr: float = _f("N_SL_ATR", 1.2)
     tp1_r: float = _f("N_TP1_R", 1.5)
     tp2_r: float = _f("N_TP2_R", 2.0)
