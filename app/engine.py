@@ -353,6 +353,9 @@ class Engine:
         pending_trigger_states: dict = {}
         watching = 0
         for sym, df in data.items():
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             st = self.states[(module, sym)]
             if df is None or len(df) < 50:
                 d["rejects"]["no_data"] += 1
@@ -527,6 +530,11 @@ class Engine:
         dispatch_started = _time.monotonic()
         d["_persisted_candidates"] = set()
         try:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                cands.clear()
+                momentum_candidates.clear()
+                pending_trigger_states.clear()
             d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
             if module == "normal" and ENABLE_MOMENTUM:
                 # Give Normal priority only when its signal is actually present
@@ -578,6 +586,9 @@ class Engine:
         d.setdefault("_persisted_candidates", set())
         cands.sort(key=lambda s: -s.score)
         sent = 0
+        if self.scanner_lease.lost:
+            d["rejects"]["scanner_lease_lost"] += 1
+            return 0
         self._deliver_pending(d, now)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
@@ -764,6 +775,9 @@ class Engine:
 
         accepted = 0
         for sig in prepared:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             if already + accepted >= cfg.daily_cap:
                 d["rejects"]["daily_cap"] += 1
                 continue
@@ -787,6 +801,9 @@ class Engine:
                     "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
                                "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
                                "option": dict(sig.option or {}), "telegram_text": message}}
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             try:
                 sid = self.store.add_signal(row)
             except Exception:
@@ -1124,6 +1141,7 @@ class Engine:
             "last_cycle_error": self.last_cycle_error,
             "last_cycle_result": dict(self.last_cycle_result),
             "last_cycle_busy_count": self.last_cycle_busy_count,
+            "scanner_lease_lost": self.scanner_lease.lost,
         }
 
     def diag_json(self) -> dict:
