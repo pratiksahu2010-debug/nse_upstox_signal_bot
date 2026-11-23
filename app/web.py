@@ -198,8 +198,8 @@ def readiness():
         return unavailable("application_not_initialized")
     if not config.RUN_SCHEDULER:
         return unavailable("scheduler_disabled")
-    if not config.ENABLE_NORMAL:
-        return unavailable("normal_strategy_disabled")
+    if not (config.ENABLE_NORMAL or config.ENABLE_MOMENTUM):
+        return unavailable("all_strategies_disabled")
     if not config.UPSTOX_TOKEN:
         return unavailable("upstox_token_missing")
     if not config.ADMIN_TOKEN:
