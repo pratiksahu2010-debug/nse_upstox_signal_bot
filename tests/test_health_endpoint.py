@@ -38,7 +38,7 @@ def _ready_engine():
         last_cycle_completed_at = last_cycle_started_at
         last_successful_cycle_at = last_cycle_started_at
         last_cycle_error = ""
-        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "signals": 0}}
+        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "fresh": 150, "signals": 0}}
 
     return FakeEngine()
 
@@ -524,7 +524,7 @@ def test_readiness_rejects_incomplete_150_symbol_scan(monkeypatch):
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
     candidate.last_cycle_result = {
-        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "signals": 0}
+        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "fresh": 120, "signals": 0}
     }
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", candidate)
@@ -670,3 +670,37 @@ def test_readiness_accepts_completed_idle_cycle_after_last_entry(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["ready"] is True
+
+    
+def test_readiness_rejects_nonempty_but_stale_symbol_frames(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "full", "symbols": 150, "loaded": 150, "fresh": 120, "signals": 0}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_fresh_data_incomplete"}
+
+
+def test_readiness_rejects_persistent_conflict_for_active_telegram_leader(monkeypatch):
+    _configure_ready(monkeypatch)
+    web._telegram_poller.last_error = "Telegram getUpdates conflict: another getUpdates request"
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_polling_conflict"}
