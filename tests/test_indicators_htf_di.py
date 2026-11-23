@@ -17,7 +17,7 @@ def _frame(index):
 
 
 def test_features_include_completed_15m_context():
-    index = pd.date_range("2026-11-18 09:15", periods=60, freq="5min", tz=IST)
+    index = pd.date_range("2026-11-18 09:15", periods=150, freq="5min", tz=IST)
     features = compute_features(add_indicators(_frame(index)))
 
     assert features is not None
@@ -35,7 +35,7 @@ def test_features_include_completed_15m_context():
 
 
 def test_15m_context_ignores_incomplete_current_15m_bucket():
-    index = pd.date_range("2026-11-18 09:15", periods=60, freq="5min", tz=IST)
+    index = pd.date_range("2026-11-18 09:15", periods=150, freq="5min", tz=IST)
     original = compute_features(add_indicators(_frame(index)))
     extended_index = index.append(pd.DatetimeIndex([index[-1] + pd.Timedelta(minutes=5)]))
     extended = compute_features(add_indicators(_frame(extended_index)))
