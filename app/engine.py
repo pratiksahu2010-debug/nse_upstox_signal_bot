@@ -44,6 +44,14 @@ def latest_eligible_bar(now: datetime) -> datetime:
     return eligible_close - timedelta(minutes=ENGINE.candle_min)
 
 
+def dispatch_bar_is_fresh(bar_ts, now: datetime) -> bool:
+    """Only dispatch a signal if its completed 5m candle is still the latest eligible bar."""
+    try:
+        return pd.Timestamp(bar_ts) == pd.Timestamp(latest_eligible_bar(now))
+    except (TypeError, ValueError):
+        return False
+
+
 def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     """Advance the persisted trigger stage on the next completed 5m candle."""
     next_state = dict(state)
@@ -338,12 +346,27 @@ class Engine:
 
         expected = latest_eligible_bar(now)
         fetch_started = _time.monotonic()
+        try:
+            self._api_diag_before_cycle = self.client.diagnostics()
+        except Exception:
+            self._api_diag_before_cycle = {}
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
+        # Provider timing and pacing diagnostics help separate broker latency
+        # from local rate-limit waiting without changing request limits.
+        try:
+            api_after = self.client.diagnostics()
+            api_before = getattr(self, "_api_diag_before_cycle", {}) or {}
+            d["api_requests"] = max(0, int(api_after.get("request_count", 0)) - int(api_before.get("request_count", 0)))
+            d["api_failures"] = max(0, int(api_after.get("failure_count", 0)) - int(api_before.get("failure_count", 0)))
+            d["api_latency"] = api_after.get("latency", {})
+            d["api_budget"] = self.client.budget.usage() if hasattr(self.client, "budget") else {}
+        except Exception:
+            d["api_diagnostics_error"] = True
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
 
@@ -804,6 +827,12 @@ class Engine:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
                 break
+            # Fetch/evaluation/option validation may take several minutes. Recheck
+            # the candle immediately before persistence so an old candidate can
+            # never become a late alert after a slow scan.
+            if not dispatch_bar_is_fresh(sig.bar_ts, datetime.now(IST)):
+                d["rejects"]["stale_before_dispatch"] += 1
+                continue
             try:
                 sid = self.store.add_signal(row)
             except Exception:
