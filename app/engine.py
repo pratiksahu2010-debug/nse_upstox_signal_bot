@@ -610,11 +610,14 @@ class Engine:
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
-            "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs rejects=%s",
+            "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs "
+            "api_requests=%d api_failures=%d api_avg=%.3fs budget_wait=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
             len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
-            d["duration_seconds"], dict(d["rejects"].most_common(6)),
+            d["duration_seconds"], d.get("api_requests", 0), d.get("api_failures", 0),
+            (d.get("api_latency") or {}).get("avg_seconds", 0.0),
+            d.get("api_budget_wait_seconds", 0.0), dict(d["rejects"].most_common(6)),
         )
         return d
 
@@ -1065,7 +1068,13 @@ class Engine:
             self.last_cycle_result = {
                 name: {
                     key: value for key, value in result.items()
-                    if key in ("scope", "symbols", "loaded", "fresh", "signals", "momentum_signals", "watching", "duration_seconds", "error")
+                    if key in (
+                        "scope", "symbols", "loaded", "fresh", "signals",
+                        "momentum_signals", "watching", "duration_seconds",
+                        "fetch_seconds", "evaluate_seconds", "dispatch_seconds",
+                        "api_requests", "api_failures", "api_latency",
+                        "api_budget_wait_seconds", "api_budget_wait_count", "error",
+                    )
                 }
                 for name, result in out.items() if isinstance(result, dict)
             }
