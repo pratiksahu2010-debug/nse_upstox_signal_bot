@@ -40,7 +40,16 @@ def _pair(name, default):
 # --------------------------------------------------------------------------- #
 # Secrets / infrastructure
 # --------------------------------------------------------------------------- #
-UPSTOX_TOKEN = _env("UPSTOX_ACCESS_TOKEN", "")          # Analytics token works (1 year)
+# Prefer the dedicated long-lived read-only Analytics Token. Keep the old variable
+# as a backwards-compatible fallback so existing deployments do not break.
+UPSTOX_ANALYTICS_TOKEN = _env("UPSTOX_ANALYTICS_TOKEN", "").strip()
+UPSTOX_LEGACY_ACCESS_TOKEN = _env("UPSTOX_ACCESS_TOKEN", "").strip()
+UPSTOX_TOKEN = UPSTOX_ANALYTICS_TOKEN or UPSTOX_LEGACY_ACCESS_TOKEN
+UPSTOX_TOKEN_SOURCE = (
+    "analytics_token" if UPSTOX_ANALYTICS_TOKEN
+    else "legacy_access_token" if UPSTOX_LEGACY_ACCESS_TOKEN
+    else "missing"
+)
 TELEGRAM_TOKEN = _env("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID", "")
 DATABASE_URL = _env("NEON_DATABASE_URL", _env("DATABASE_URL", ""))  # Neon PostgreSQL; DATABASE_URL remains a compatibility alias
