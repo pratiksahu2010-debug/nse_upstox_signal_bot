@@ -496,16 +496,34 @@ def test_readiness_rejects_yesterdays_universe_during_weekday_session(monkeypatc
 
 
 
-def _freeze_market_time(monkeypatch, hour=10, minute=0):
+def _freeze_market_time(monkeypatch, hour=10, minute=0, second=0):
     from datetime import datetime
 
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            current = cls(2026, 11, 20, hour, minute)
+            current = cls(2026, 11, 20, hour, minute, second)
             return current.replace(tzinfo=tz) if tz else current
 
     monkeypatch.setattr(web, "datetime", FrozenDateTime)
+
+
+def test_readiness_accepts_final_entry_boundary_scan_after_candle_close(monkeypatch):
+    # The scheduler runs at 15:00:06 for the candle that closed at 15:00.
+    # Readiness must classify this as an entry scan, not a post-entry tracking scan.
+    _freeze_market_time(monkeypatch, hour=15, minute=0, second=6)
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
 
 
 def test_readiness_rejects_no_completed_scan_during_entry_window(monkeypatch):
