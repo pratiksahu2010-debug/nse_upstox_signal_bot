@@ -123,6 +123,7 @@ def _init():
                 except Exception:
                     log.exception("failed to close partially-initialized database pool")
 
+            _keepalive_stop.set()
             engine = None
             store = None
             _scheduler_stop = None

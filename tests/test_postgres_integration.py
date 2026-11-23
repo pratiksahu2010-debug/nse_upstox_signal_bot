@@ -174,7 +174,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
         versions = store._run("SELECT version FROM schema_migrations ORDER BY version", fetch="all")
-        assert [row[0] for row in versions] == list(range(1, 8))
+        assert [row[0] for row in versions] == list(range(1, 9))
 
         # The legacy timestamp and signal row must survive the in-place rename.
         migrated = store._run(

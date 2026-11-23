@@ -608,7 +608,7 @@ class PostgresStore(MemoryStore):
     def __init__(self, dsn: str):
         import psycopg2.pool
         self.dsn = dsn
-        self.pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn)
+        self.pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn, connect_timeout=10)
 
     def _run(self, sql: str, params=None, fetch: str = "none"):
         from psycopg2 import InterfaceError, OperationalError
@@ -665,14 +665,34 @@ class PostgresStore(MemoryStore):
         )
         self._run("ALTER TABLE schema_migrations ALTER COLUMN name SET NOT NULL")
 
-        # Always reconcile the idempotent signals schema, even when an old
-        # database already recorded the baseline migration. This repairs
-        # pre-migration layouts (for example, a signals table without trade_day)
-        # without dropping or rewriting existing signal records.
-        self._run(SCHEMA)
-
         applied_rows = self._run("SELECT version FROM schema_migrations", fetch="all")
         applied = {int(row[0]) for row in applied_rows}
+
+        # The compatibility reconciliation contains several ALTER/UPDATE
+        # statements. Run it once per database, not on every Render restart.
+        # Version 8 repairs legacy databases that recorded baseline 1 while
+        # still having a partially-evolved schema.
+        if 1 not in applied:
+            self._run(SCHEMA)
+            self._run(
+                "INSERT INTO schema_migrations (version, name) VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",
+                (1, "baseline"),
+            )
+            applied.add(1)
+            schema_reconciled = True
+        elif 8 not in applied:
+            self._run(SCHEMA)
+            schema_reconciled = True
+        else:
+            schema_reconciled = False
+
+        if schema_reconciled:
+            self._run(
+                "INSERT INTO schema_migrations (version, name) VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",
+                (8, "schema_reconciliation"),
+            )
+            applied.add(8)
+
         for version, name, sql in MIGRATIONS:
             if version in applied:
                 continue
@@ -963,12 +983,20 @@ class PostgresStore(MemoryStore):
 
 def make_store(dsn: str):
     if dsn:
+        st = None
         try:
             st = PostgresStore(dsn)
             st.init()
             log.info("using Postgres")
             return st
         except Exception:
+            # Close a pool opened before schema initialization failed. The caller
+            # never receives this object and cannot include it in startup rollback.
+            if st is not None:
+                try:
+                    st.close()
+                except Exception:
+                    log.exception("failed to close Postgres pool after initialization failure")
             log.exception("Postgres unavailable; refusing volatile fallback because DATABASE_URL is configured")
             raise
     st = MemoryStore()
