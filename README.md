@@ -15,11 +15,11 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 
 One production signal module, Normal only, runs on the fixed 150-symbol universe and completed 5-minute candle data.
 
-**Normal CALL setup:** 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 20; the completed 15m trend must also be bullish (close > EMA9 > EMA21); then RSI14 must cross upward through 52.
+**Normal CALL setup:** completed 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 20, then RSI14 crosses upward through 52.
 
-**Normal PUT setup:** 5m EMA9 < EMA21, close < session VWAP, ADX14 >= 20; the completed 15m trend must also be bearish (close < EMA9 < EMA21); then RSI14 must cross downward through 42.
+**Normal PUT setup:** completed 5m EMA9 < EMA21, close < session VWAP, ADX14 >= 20, then RSI14 crosses downward through 42.
 
-15m candles are aggregated from exactly three completed 5m candles. An incomplete 15m bucket is excluded. ADX uses Wilder smoothing and N_ADX_MIN is hard-floored at 20. The Normal score uses EMA alignment, completed 15m EMA alignment, VWAP distance, ADX and RSI; DI, RVOL and candle-shape factors are not signal gates or score components.
+No 15m candles or higher-timeframe context are used in signal generation. ADX uses Wilder smoothing and N_ADX_MIN is hard-floored at 20. The 0–100 Normal score grades 5m EMA9/21 spread, 5m EMA21 slope, VWAP distance, ADX and RSI; DI, RVOL and candle-shape factors are not signal gates or score components.
 
 Normal assigns a deterministic 0–100 quality score and applies one final score gate, N_SCORE_MIN (default 72). No separate OI or extra score gates are added.
 
@@ -38,7 +38,7 @@ The first completed candle observed after startup is a baseline. A qualifying se
 
 The bot uses an exactly 150-entry static universe in app/symbols.py: 144 selected NSE F&O stock underlyings and six explicitly named NSE index underlyings. IEX and IREDA are excluded ahead of their 25 Nov 2026 F&O exit under NSE circular NSE/FAOP/76497; RELIANCE and SBIN are included as liquid replacements. No runtime discovery, symbol rotation or silent substitution is performed. Every configured entry is checked against the Upstox instrument master; unavailable entries are reported in /symbols and /status. An incomplete universe remains fail-closed but is retried with a five-minute backoff.
 
-The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. Full quote snapshots remain available for display/tracking; strict liquidity validation is disabled by default. A contract must pass fresh bid/ask depth, spread, volume, OI and quote-age checks; if no candidate passes, no option recommendation or signal alert is emitted. There is no unverified ATM fallback when the liquidity gate is enabled. Verify that the production Analytics Token can access the quote endpoint before merging; otherwise the bot will correctly suppress recommendations until quote access is fixed. The Upstox V3 WebSocket feed is started for validated underlying instruments and selected option contracts are added lazily to its bounded subscription set.
+The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. Full quote snapshots remain available for display/tracking; strict liquidity validation is disabled by default. When OPTION_LIQUIDITY_CHECKS=1, a contract must pass fresh bid/ask depth, spread, volume, OI and quote-age checks; if no candidate passes, no option recommendation or signal alert is emitted. There is no unverified ATM fallback when the liquidity gate is enabled. Verify that the production Analytics Token can access the quote endpoint before merging; otherwise the bot will correctly suppress recommendations until quote access is fixed. The Upstox V3 WebSocket feed is started for validated underlying instruments and selected option contracts are added lazily to its bounded subscription set.
 
 ## Telegram commands
 
@@ -120,7 +120,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `N_FIRST_SIGNAL` | `09:20` | Earliest signal time (IST) |
 | `N_LAST_ENTRY` | `15:00` | Last entry time (IST) |
 | `N_SESSION_END` | `15:15` | Strategy session end (IST) |
-| `N_ADX_MIN` | `19` | ADX14 minimum; code enforces a hard floor of 19 |
+| `N_ADX_MIN` | `20` | ADX14 minimum; code enforces a hard floor of 20 |
 | `N_SCORE_MIN` | `72` | Single final Normal quality-score gate |
 | `N_SL_ATR` | `1.2` | Stop distance in ATR multiples |
 | `N_TP1_R` | `1.5` | First target in R |
