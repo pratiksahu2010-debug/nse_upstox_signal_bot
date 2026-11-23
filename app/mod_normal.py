@@ -1,6 +1,6 @@
 """Normal NSE trend strategy: 5m EMA/VWAP/DI/ADX setup with completed 15m trend confirmation."""
 import pandas as pd
-from .common import Ctx, Signal, SymbolInfo, round_tick, scale
+from .common import Ctx, Signal, SymbolInfo, round_tick
 from .config import NORMAL as C
 from .indicators import Features
 
