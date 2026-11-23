@@ -11,17 +11,19 @@ Signal-only NSE F&O application. It does not place, modify or execute broker ord
 - Neon PostgreSQL is the production persistent store. NEON_DATABASE_URL is preferred; DATABASE_URL remains a compatibility alias. The database bootstrap is tracked through an idempotent schema_migrations version table.
 - Telegram Bot API getUpdates long polling; no webhook. Missing or rejected Upstox credentials trigger throttled Telegram alerts; after replacing a Render secret, restart the service to reconnect with the new token.
 
-## Strategy — preserved current implementation
+## Strategy
 
-There is one active strategy module: Normal NSE F&O. The existing strategy logic in app/mod_normal.py is retained; the approved 5-minute ADX minimum is 19.
+Two independent signal modules run on the same fetched 150-symbol universe and the same completed 5-minute candle data.
 
-CALL setup: EMA9 > EMA21, close > session VWAP, ADX14 >= 19, +DI > -DI, followed by RSI14 crossing upward through 52.
+**Normal CALL setup:** 5m EMA9 > EMA21, close > session VWAP, ADX14 >= 19, +DI > -DI; the completed 15m trend must also be bullish (close > EMA9 > EMA21 and +DI > -DI); then RSI14 must cross upward through 52.
 
-PUT setup: EMA9 < EMA21, close < session VWAP, ADX14 >= 19, -DI > +DI, followed by RSI14 crossing downward through 42.
+**Normal PUT setup:** 5m EMA9 < EMA21, close < session VWAP, ADX14 >= 19, -DI > +DI; the completed 15m trend must also be bearish (close < EMA9 < EMA21 and -DI > +DI); then RSI14 must cross downward through 42.
 
-ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 19 and may be raised with the environment variable. The strategy uses completed 5-minute candles only; no higher-timeframe context is calculated.
+15m candles are aggregated from exactly three completed 5m candles. An incomplete 15m bucket is excluded. ADX uses Wilder smoothing. N_ADX_MIN is hard-floored at 19 and may be raised with the environment variable. Existing 5m EMA, VWAP, RSI, DI, ADX, ATR, stop and target parameters are unchanged.
 
-Proposed higher-timeframe context and other strategy changes are not silently applied because the existing strategy was explicitly locked. The current 5-minute DI gate, RSI-cross trigger, universe resolver and ATR target parameters remain unchanged.
+Normal assigns a deterministic 0–100 quality score and applies one final score gate, N_SCORE_MIN (default 72). No separate OI or extra score gates are added.
+
+**Momentum Explosion** is an independent module evaluated in the same scan (no second 150-symbol candle fetch). It identifies BREAKOUT, ACCELERATION, COMPRESSION and EXTREME_IMPULSE paths. It requires aligned 5m and completed 15m direction and applies one final score gate, M_SCORE_MIN (default 78). Momentum alerts use the same database, option contract selection, Telegram delivery, outcome tracking and training pipeline. ENABLE_MOMENTUM controls the module.
 
 ## Risk and state
 
@@ -36,7 +38,7 @@ The first completed candle observed after startup is a baseline. A qualifying se
 
 The bot uses an exactly 150-entry static universe in app/symbols.py: 144 individual-security underlyings and six explicitly named NSE index underlyings. The equity list is pinned from the NSE official derivatives-underlying list checked on 19 Nov 2026. No runtime discovery, symbol rotation or automatic replacement is performed. Every configured entry is checked against the Upstox instrument master; unavailable entries are reported in /symbols and /status and are not silently replaced. The configured count and duplicate check are enforced at startup.
 
-The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. The optional full-quote snapshot can attach bid/ask, spread, volume, OI and quote age to alerts. OPTION_LIQUIDITY_CHECKS=1 enables a fail-closed validation gate; it is disabled by default until the real Analytics Token has been verified. The Upstox V3 WebSocket feed is started for validated underlying instruments and selected option contracts are added lazily to its bounded subscription set. Fresh V3 option quotes are used when present; optional REST full quotes are a fallback controlled by OPTION_MARKET_SNAPSHOT / OPTION_LIQUIDITY_CHECKS.
+The option resolver selects the nearest eligible expiry and closest strike to the underlying spot for the required CE or PE. OPTION_QUOTE controls optional LTP display and defaults to off. Full quote snapshots and liquidity validation default to enabled. A contract must pass fresh bid/ask depth, spread, volume, OI and quote-age checks; if no candidate passes, no option recommendation or signal alert is emitted. There is no unverified ATM fallback when the liquidity gate is enabled. Verify that the production Analytics Token can access the quote endpoint before merging; otherwise the bot will correctly suppress recommendations until quote access is fixed. The Upstox V3 WebSocket feed is started for validated underlying instruments and selected option contracts are added lazily to its bounded subscription set.
 
 ## Telegram commands
 
@@ -61,7 +63,7 @@ Pause suppresses new signal decisions while existing signal outcome tracking con
 ## API
 
 - GET / and GET /health — immediate public liveness; they do not imply the bot is ready to scan.
-- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and the full fixed universe are valid. During the entry window it also requires a recent successful scan with at least 90% of configured symbols loaded and fresh Upstox REST data. During market hours it requires a connected V3 feed worker, all 150 underlying subscriptions, and an actual accepted market quote within 120 seconds (empty WebSocket frames do not count as fresh quotes).
+- GET /ready — Render readiness probe; returns 200 only after required Upstox/Telegram configuration, scheduler, persistent database connectivity and the full fixed universe are valid. During the entry window it also requires a recent successful scan with at least 90% of configured symbols ending on the exact latest eligible completed 5m candle. A non-empty but stale dataframe does not count as fresh coverage. An active Telegram polling leader with a persistent getUpdates 409 conflict fails readiness. During market hours it requires a connected V3 feed worker, all 150 underlying subscriptions, and an actual accepted market quote within 120 seconds (empty WebSocket frames do not count as fresh quotes).
 - GET /status — admin-authenticated scanner, Upstox, database and feed status.
 - GET /diag and GET /diagnostics — admin-authenticated scanner diagnostics.
 - GET /signals?limit=20 — admin-authenticated recent signals.
@@ -92,7 +94,7 @@ Set all five variables below. The application fails readiness when required conf
 
 ### Runtime configuration reference
 
-The values below match the committed `.env.example` template and the defaults in `app/config.py`. Render's Dashboard values override the template. Do not change strategy values without explicit approval.
+The values below match the committed `.env.example` template and the defaults in `app/config.py`. Render's Dashboard values override the template. The strategy defaults in this PR are documented for review; no Render environment settings are changed by this PR.
 
 | Variable | Template/default | Purpose |
 |---|---:|---|
@@ -103,7 +105,8 @@ The values below match the committed `.env.example` template and the defaults in
 | `REQUIRE_PERSISTENT_DB` | `1` | Fail closed without persistent PostgreSQL |
 | `KEEPALIVE` | `1` | Render keepalive self-ping when URL is available |
 | `LOG_LEVEL` | `INFO` | Application log level |
-| `ENABLE_NORMAL` | `1` | Enable the existing Normal signal module |
+| `ENABLE_NORMAL` | `1` | Enable the Normal signal module |
+| `ENABLE_MOMENTUM` | `1` | Enable independent Momentum Explosion module |
 | `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
 | `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
 | `STALE_MAX_BARS` | `1` | Maximum permitted signal-bar age |
@@ -118,15 +121,23 @@ The values below match the committed `.env.example` template and the defaults in
 | `N_LAST_ENTRY` | `15:00` | Last entry time (IST) |
 | `N_SESSION_END` | `15:15` | Strategy session end (IST) |
 | `N_ADX_MIN` | `19` | ADX14 minimum; code enforces a hard floor of 19 |
+| `N_SCORE_MIN` | `72` | Single final Normal quality-score gate |
 | `N_SL_ATR` | `1.2` | Stop distance in ATR multiples |
 | `N_TP1_R` | `1.5` | First target in R |
 | `N_TP2_R` | `2.0` | Second target in R |
 | `N_DAILY_CAP` | `1000` | Daily signal cap |
 | `N_PER_CYCLE_TOP` | `1000` | Maximum candidates per scan cycle |
+| `M_FIRST_SIGNAL` | `09:20` | Earliest Momentum entry time (IST) |
+| `M_LAST_ENTRY` | `15:00` | Last Momentum entry time (IST) |
+| `M_SESSION_END` | `15:15` | Momentum outcome-tracking session end (IST) |
+| `M_SCORE_MIN` | `78` | Single final Momentum quality-score gate |
+| `M_COOLDOWN_BARS` | `2` | Same-direction Momentum signal cooldown |
+| `M_DAILY_CAP` | `1000` | Daily Momentum signal cap |
+| `M_PER_CYCLE_TOP` | `1000` | Maximum Momentum candidates per scan cycle |
 | `OPTION_MIN_DAYS` | `1` | Minimum days to option expiry |
 | `OPTION_QUOTE` | `0` | Optional option LTP display |
-| `OPTION_MARKET_SNAPSHOT` | `0` | Optional full option quote snapshot |
-| `OPTION_LIQUIDITY_CHECKS` | `0` | Optional fail-closed liquidity validation |
+| `OPTION_MARKET_SNAPSHOT` | `1` | Require full option quote snapshot by default |
+| `OPTION_LIQUIDITY_CHECKS` | `1` | Require fail-closed liquidity validation by default |
 | `OPTION_MIN_VOLUME` | `100` | Minimum option volume when checks enabled |
 | `OPTION_MIN_OI` | `500` | Minimum option open interest when checks enabled |
 | `OPTION_MAX_SPREAD_PCT` | `3.0` | Maximum spread percentage when checks enabled |
@@ -136,7 +147,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `OPTION_EST_ROUND_TRIP_FEE_PCT` | `0.0` | User-supplied estimated round-trip fee percentage |
 | `OPTION_EST_SLIPPAGE_BPS_PER_SIDE` | `0.0` | User-supplied estimated slippage per side in basis points |
 
-The option quote, snapshot and liquidity controls are intentionally off by default. Do not enable quote-dependent gates until access and fresh quote behaviour are verified with the production token. Cost estimates default to zero and are not actual broker charges.
+Option quote snapshots and liquidity validation default to on. If the production Analytics Token cannot retrieve fresh depth/volume/OI, signals are suppressed rather than sent with an unverified option contract. An explicit Render environment override can change these defaults, so inspect the variable names (not secret values) before merging. Cost estimates default to zero and are not actual broker charges.
 
 ### Render-specific settings
 
@@ -170,7 +181,7 @@ Remaining master-prompt work and live-verification gaps:
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
 4. MFE/MAE, bars held, a persistent six-bar time-stop review flag, time-to-TP1/TP2 and option-premium outcome tracking are implemented. Live quote coverage and cost estimates still require credentialed paper-session validation. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
 5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
-6. The existing 5-minute +DI/-DI direction remains a hard gate because the current strategy was explicitly locked. No 15-minute context is calculated or displayed.
+6. Normal and Momentum now require completed 15-minute trend alignment. Option-chain OI/PCR context is not yet wired into entry selection. The 528-second scan-duration issue still needs a live-session timing measurement; Momentum shares the same candle fetch to avoid doubling REST load. Actual Telegram delivery and option quote entitlement still need a credentialed paper-session check.
 
 No automatic order execution is implemented. No strategy thresholds are automatically tuned or deployed. A green CI run does not certify live Upstox, Neon or Telegram connectivity; those require real credentials and a paper-session check.
 
