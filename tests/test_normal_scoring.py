@@ -7,7 +7,7 @@ from app.common import SymbolInfo
 
 def _strong_features(**overrides):
     values = dict(
-        bar_ts=None, bar_end=None, open=100.0, high=106.0, low=99.0,
+        bar_ts=pd.Timestamp("2026-11-20 10:00:00+05:30"), bar_end=pd.Timestamp("2026-11-20 10:05:00+05:30"), open=100.0, high=106.0, low=99.0,
         close=105.0, volume=1000.0, ema9=104.0, ema21=102.0,
         ema21_slope=1.0, vwap=103.0, rsi=66.0, rsi_prev=51.0,
         adx=35.0, adx_prev2=32.0, adx_max10=36.0, pdi=32.0, mdi=10.0,
