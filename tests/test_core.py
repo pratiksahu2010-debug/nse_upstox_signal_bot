@@ -138,6 +138,7 @@ def _always_normal_signal(info, df, f, ctx):
 
 
 def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
+    monkeypatch.setattr("app.engine.OPTION_LIQUIDITY_CHECKS", False)
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
@@ -245,6 +246,7 @@ def test_memory_store_notification_outbox_retries_until_delivered():
 
 
 def test_engine_retries_failed_telegram_delivery_without_duplicate_signal(monkeypatch):
+    monkeypatch.setattr("app.engine.OPTION_LIQUIDITY_CHECKS", False)
     df, t = _find_signal_case()
     monkeypatch.setattr(mod_normal, "evaluate", _always_normal_signal)
     monkeypatch.setattr(mod_normal, "setup_side", lambda f: 1)
