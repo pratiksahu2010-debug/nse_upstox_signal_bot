@@ -121,3 +121,23 @@ def test_make_store_closes_pool_when_schema_initialization_fails(monkeypatch):
         db.make_store("postgresql://test")
 
     assert broken.closed is True
+
+
+def test_postgres_pool_uses_bounded_connection_and_query_timeouts(monkeypatch):
+    import psycopg2.pool
+
+    captured = {}
+
+    class FakePool:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool", FakePool)
+    PostgresStore("postgresql://example")
+
+    assert captured["kwargs"]["connect_timeout"] == 10
+    options = captured["kwargs"]["options"]
+    assert "statement_timeout=120000" in options
+    assert "lock_timeout=15000" in options
+    assert "idle_in_transaction_session_timeout=60000" in options
