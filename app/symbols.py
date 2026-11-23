@@ -1,11 +1,10 @@
 """Fixed, approved NSE F&O universe.
 
-The 144 equity symbols are the first 144 individual-security underlyings on the
-NSE official derivatives-underlying list checked 2026-11-19. Six index underlyings
-are separately enumerated below. This is a static list: no runtime discovery,
-rotation, or replacement is permitted.
-
-Source: NSE India, List of Underlyings and Information.
+The 144 stock underlyings are a curated static subset of currently eligible NSE
+F&O securities. IEX and IREDA are excluded following NSE circular NSE/FAOP/76497,
+which ends their F&O contracts from 2026-11-25; RELIANCE and SBIN are included
+as liquid replacements. Six index underlyings are separately enumerated below.
+This is a static list: no runtime discovery, rotation, or silent replacement.
 """
 FIXED_STOCK_SYMBOLS = [
     "360ONE",
@@ -103,10 +102,10 @@ FIXED_STOCK_SYMBOLS = [
     "IDFCFIRSTB",
     "ITC",
     "INDIANB",
-    "IEX",
+    "RELIANCE",
     "IOC",
     "IRFC",
-    "IREDA",
+    "SBIN",
     "INDUSTOWER",
     "INDUSINDBK",
     "NAUKRI",

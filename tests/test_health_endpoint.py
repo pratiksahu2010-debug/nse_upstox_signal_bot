@@ -140,6 +140,32 @@ def test_readiness_accepts_initialized_memory_store_when_persistence_is_optional
     assert payload["database"] == {"kind": "memory", "persistent": False}
 
 
+def test_readiness_rejects_disabled_full_quotes_when_liquidity_gate_is_required(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
+    monkeypatch.setattr(web.config, "OPTION_LIQUIDITY_CHECKS", True)
+
+    class FakeStore:
+        kind = "memory"
+
+    _configure_ready(monkeypatch)
+    engine = _ready_engine()
+    engine.client.diagnostics = lambda: {
+        "last_success_at": engine.client.last_success_at,
+        "optional_data_disabled": ["full_quotes"],
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", engine)
+    monkeypatch.setattr(web, "store", FakeStore())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "option_quote_endpoint_unavailable"}
+
+
 def test_readiness_allows_telegram_standby_during_rolling_deploy(monkeypatch):
     _freeze_market_time(monkeypatch)
     monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)

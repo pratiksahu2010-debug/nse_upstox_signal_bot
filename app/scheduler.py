@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from .config import ENGINE, IST, UPSTOX_TOKEN
+from .config import ENGINE, IST, OPTION_LIQUIDITY_CHECKS, UPSTOX_TOKEN
 from .engine import Engine, floor5
 
 log = logging.getLogger("scheduler")
@@ -38,6 +38,43 @@ def _notify_auth_state(engine: Engine, now: datetime):
     log.error("Upstox authentication problem: %s", reason)
 
 
+def _notify_option_quote_access(engine: Engine, now: datetime):
+    """Warn when strict option-liquidity checks cannot access full market quotes."""
+    if not OPTION_LIQUIDITY_CHECKS:
+        return
+    diagnostics = getattr(engine.client, "diagnostics", None)
+    if not callable(diagnostics):
+        return
+    try:
+        health = diagnostics()
+    except Exception:
+        log.exception("could not inspect optional Upstox quote endpoint state")
+        return
+    disabled = health.get("optional_data_disabled", []) if isinstance(health, dict) else []
+    if "full_quotes" not in disabled:
+        return
+    alerts = getattr(engine, "last_heartbeat", None)
+    if not isinstance(alerts, dict):
+        return
+    key = "alert:option_quote_access"
+    last = alerts.get(key)
+    if last is not None and now - last < timedelta(minutes=5):
+        return
+    message = (
+        "<b>⚠️ Upstox option quotes unavailable</b>\n"
+        "The full-quotes endpoint rejected the current token. The strict option-liquidity "
+        "gate is enabled, so candidate CALL/PUT alerts will be suppressed until quote "
+        "access is restored. Check the Upstox token's market-quote permissions. "
+        "No broker orders are placed."
+    )
+    try:
+        engine.notify(message)
+    except Exception:
+        log.exception("could not send Upstox option-quote access warning")
+    alerts[key] = now
+    log.error("Upstox full-quotes endpoint disabled while option liquidity checks are enabled")
+
+
 def _next_due(now: datetime) -> datetime:
     return floor5(now) + timedelta(minutes=ENGINE.candle_min, seconds=ENGINE.fetch_delay_sec)
 
@@ -48,6 +85,7 @@ def loop(engine: Engine, stop: threading.Event):
     while not stop.is_set():
         now = datetime.now(IST)
         _notify_auth_state(engine, now)
+        _notify_option_quote_access(engine, now)
         try:
             engine.housekeeping(now)
         except Exception:

@@ -366,6 +366,9 @@ def readiness():
                 return unavailable("upstox_diagnostics_unavailable")
             if not isinstance(provider_health, dict):
                 return unavailable("upstox_diagnostics_invalid")
+            disabled_optional = set(provider_health.get("optional_data_disabled") or [])
+            if config.OPTION_LIQUIDITY_CHECKS and "full_quotes" in disabled_optional:
+                return unavailable("option_quote_endpoint_unavailable")
             provider_success = provider_health.get("last_success_at") or getattr(client, "last_success_at", None)
             provider_age = age_seconds(provider_success)
             if provider_age is None or provider_age > 8 * 60:
