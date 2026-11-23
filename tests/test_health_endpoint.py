@@ -731,3 +731,98 @@ def test_readiness_rejects_persistent_conflict_for_active_telegram_leader(monkey
 
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "telegram_polling_conflict"}
+
+
+
+def test_startup_retry_loop_recovers_after_transient_initialization_failure(monkeypatch):
+    class RetryStop:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    attempts = []
+
+    def flaky_init():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary database outage")
+        monkeypatch.setattr(web, "_started", True)
+
+    monkeypatch.setattr(web, "_startup_stop", RetryStop())
+    monkeypatch.setattr(web, "_started", False)
+    monkeypatch.setattr(web, "_init", flaky_init)
+
+    web._startup_retry_loop()
+
+    assert len(attempts) == 2
+    assert web._started is True
+
+
+def test_init_rolls_back_partial_workers_and_database_when_startup_fails(monkeypatch):
+    class FakeStore:
+        kind = "postgres"
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeStop:
+        stopped = False
+
+        def set(self):
+            self.stopped = True
+
+    class FakeEngine:
+        market_stream = None
+        paused = False
+
+    class FailingPoller:
+        stopped = False
+
+        def __init__(self, *_args):
+            pass
+
+        def start(self):
+            raise RuntimeError("poller startup failed")
+
+        def stop(self):
+            self.stopped = True
+
+    fake_store = FakeStore()
+    fake_stop = FakeStop()
+    fake_poller = FailingPoller()
+
+    monkeypatch.setattr(web, "_started", False)
+    monkeypatch.setattr(web, "engine", None)
+    monkeypatch.setattr(web, "store", None)
+    monkeypatch.setattr(web, "_scheduler_stop", None)
+    monkeypatch.setattr(web, "_telegram_poller", None)
+    monkeypatch.setattr(web, "_startup_error", "")
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", True)
+    monkeypatch.setattr(web.config, "DATABASE_URL", "postgresql://test")
+    monkeypatch.setattr(web.config, "RUN_SCHEDULER", True)
+    monkeypatch.setattr(web.config, "TELEGRAM_TOKEN", "telegram-token")
+    monkeypatch.setattr(web.config, "TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setattr(web.config, "UPSTOX_TOKEN", "upstox-token")
+    monkeypatch.setattr(web.config, "KEEPALIVE", False)
+    monkeypatch.setattr(web, "make_store", lambda _dsn: fake_store)
+    monkeypatch.setattr(web, "Engine", lambda *_args: FakeEngine())
+    monkeypatch.setattr(web, "get_persistent_state", lambda *_args: False)
+    monkeypatch.setattr(web.scheduler, "start", lambda _engine: fake_stop)
+    monkeypatch.setattr(web, "TelegramPoller", lambda *_args: fake_poller)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="poller startup failed"):
+        web._init()
+
+    assert fake_stop.stopped is True
+    assert fake_poller.stopped is True
+    assert fake_store.closed is True
+    assert web._started is False
+    assert web.engine is None
+    assert web.store is None
+    assert web._scheduler_stop is None
+    assert web._telegram_poller is None
+    assert "poller startup failed" in web._startup_error

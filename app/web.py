@@ -35,6 +35,9 @@ _start_lock = threading.Lock()
 _scheduler_stop = None
 _telegram_poller = None
 _keepalive_stop = threading.Event()
+_startup_stop = threading.Event()
+_startup_thread = None
+_startup_error = ""
 
 
 def _auth(request: Request) -> bool:
@@ -49,10 +52,16 @@ def _auth(request: Request) -> bool:
 
 
 def _init():
-    global engine, store, _started, _scheduler_stop, _telegram_poller
+    """Initialize the service transactionally; failed partial starts are fully rolled back."""
+    global engine, store, _started, _scheduler_stop, _telegram_poller, _startup_error
     with _start_lock:
         if _started:
             return
+
+        candidate_store = None
+        candidate = None
+        candidate_scheduler_stop = None
+        candidate_poller = None
         try:
             if config.REQUIRE_PERSISTENT_DB and not config.DATABASE_URL:
                 raise RuntimeError("NEON_DATABASE_URL is required; persistent storage is mandatory")
@@ -61,27 +70,79 @@ def _init():
             candidate.paused = bool(get_persistent_state(candidate_store, "paused", False))
             if not config.UPSTOX_TOKEN:
                 log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
+
+            # Keep worker handles local until every startup component succeeds.
+            # If a later component fails, the exception path can stop these exact
+            # workers before the retry loop attempts another initialization.
             if config.RUN_SCHEDULER:
-                _scheduler_stop = scheduler.start(candidate)
-            engine, store = candidate, candidate_store
+                candidate_scheduler_stop = scheduler.start(candidate)
             if config.RUN_SCHEDULER and config.TELEGRAM_TOKEN and config.TELEGRAM_CHAT_ID:
-                _telegram_poller = TelegramPoller(candidate, candidate_store)
-                _telegram_poller.start()
+                candidate_poller = TelegramPoller(candidate, candidate_store)
+                candidate_poller.start()
+
             if config.RUN_SCHEDULER:
                 try:
                     send(f"<b>✅ Normal F&amp;O signal bot started {datetime.now(IST):%d %b %H:%M} IST · store {candidate_store.kind}</b>", silent=True)
                 except Exception:
                     log.exception("startup notification failed; scanner remains active")
+
             if config.KEEPALIVE and os.getenv("RENDER_EXTERNAL_URL"):
+                _keepalive_stop.clear()
                 threading.Thread(target=_keepalive, name="keepalive", daemon=True).start()
+
+            engine, store = candidate, candidate_store
+            _scheduler_stop = candidate_scheduler_stop
+            _telegram_poller = candidate_poller
+            _startup_error = ""
             _started = True
             log.info("application initialized; store=%s scheduler=%s", candidate_store.kind, config.RUN_SCHEDULER)
-        except Exception:
+        except Exception as exc:
+            # A scheduler/poller may already be running if a later startup step
+            # failed. Stop all partially-created resources before allowing retry.
+            if candidate_poller is not None:
+                try:
+                    candidate_poller.stop()
+                except Exception:
+                    log.exception("failed to stop partially-started Telegram poller")
+            if candidate_scheduler_stop is not None:
+                try:
+                    candidate_scheduler_stop.set()
+                except Exception:
+                    log.exception("failed to stop partially-started scheduler")
+            if candidate is not None and getattr(candidate, "market_stream", None) is not None:
+                try:
+                    candidate.market_stream.stop()
+                except Exception:
+                    log.exception("failed to stop partially-started market feed")
+            if candidate_store is not None and hasattr(candidate_store, "close"):
+                try:
+                    candidate_store.close()
+                except Exception:
+                    log.exception("failed to close partially-initialized database pool")
+
             engine = None
             store = None
+            _scheduler_stop = None
+            _telegram_poller = None
             _started = False
-            log.exception("application startup failed; a later request may retry initialization")
+            _startup_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+            log.exception("application startup failed; background retry remains enabled")
             raise
+
+
+def _startup_retry_loop():
+    """Retry transient DB/network startup failures with bounded exponential backoff."""
+    delay = 3.0
+    while not _startup_stop.is_set():
+        try:
+            _init()
+            if _started:
+                return
+        except Exception:
+            log.warning("application initialization failed; retrying in %.0f seconds", delay)
+        if _startup_stop.wait(delay):
+            return
+        delay = min(60.0, delay * 2.0)
 
 
 def _keepalive():
@@ -173,9 +234,17 @@ def _safe_config():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _startup_thread
     if os.getenv("AUTOSTART", "1") == "1":
-        threading.Thread(target=_init, name="bot-initializer", daemon=True).start()
+        _startup_stop.clear()
+        _startup_thread = threading.Thread(
+            target=_startup_retry_loop, name="bot-initializer", daemon=True
+        )
+        _startup_thread.start()
     yield
+    _startup_stop.set()
+    if _startup_thread is not None and _startup_thread.is_alive():
+        _startup_thread.join(timeout=2)
     _keepalive_stop.set()
     if _telegram_poller is not None:
         _telegram_poller.stop()
