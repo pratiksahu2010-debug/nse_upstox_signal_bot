@@ -305,6 +305,8 @@ class Engine:
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
+        # Fresh means the dataframe ends on the exact latest completed 5m bar.
+        d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Empty/stale responses are not proof of an exchange holiday. Keep the
         # scheduler retrying; holiday detection must come from a trusted calendar.
@@ -353,7 +355,8 @@ class Engine:
                         d["rejects"]["outcome_storage_error"] += 1
                         log.exception("could not persist outcome for signal id=%s", r["id"])
 
-            stale = f.bar_ts < expected - timedelta(minutes=ENGINE.candle_min * ENGINE.stale_max_bars)
+            # New entries require the exact latest completed 5m candle.
+            stale = f.bar_ts != expected
             if stale:
                 d["rejects"]["stale_data"] += 1
                 continue
