@@ -132,7 +132,7 @@ class MomentumCfg:
     sl_atr: float = NORMAL.sl_atr
     tp1_r: float = NORMAL.tp1_r
     tp2_r: float = NORMAL.tp2_r
-    cooldown_bars: int = _i("M_COOLDOWN_BARS", 1)
+    cooldown_bars: int = _i("M_COOLDOWN_BARS", 2)
     daily_cap: int = _i("M_DAILY_CAP", 1000)
     per_cycle_top: int = _i("M_PER_CYCLE_TOP", 1000)
 
