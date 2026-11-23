@@ -55,7 +55,7 @@ def test_run_boundary_records_successful_scan_health():
     engine = Engine(client=object(), store=MemoryStore())
     engine.ensure_universe = lambda now: None
     engine.cycle = lambda module, now, force=False: {
-        "scope": "full", "symbols": 150, "loaded": 150, "signals": 0
+        "scope": "full", "symbols": 150, "loaded": 150, "fresh": 150, "signals": 0
     }
     now = datetime(2026, 11, 20, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 

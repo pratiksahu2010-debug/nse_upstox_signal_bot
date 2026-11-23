@@ -38,7 +38,7 @@ def _ready_engine():
         last_cycle_completed_at = last_cycle_started_at
         last_successful_cycle_at = last_cycle_started_at
         last_cycle_error = ""
-        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "signals": 0}}
+        last_cycle_result = {"normal": {"scope": "full", "symbols": 150, "loaded": 150, "fresh": 150, "signals": 0}}
 
     return FakeEngine()
 
@@ -524,7 +524,7 @@ def test_readiness_rejects_incomplete_150_symbol_scan(monkeypatch):
     _configure_ready(monkeypatch)
     candidate = _ready_engine()
     candidate.last_cycle_result = {
-        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "signals": 0}
+        "normal": {"scope": "full", "symbols": 150, "loaded": 120, "fresh": 120, "signals": 0}
     }
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", candidate)
@@ -618,9 +618,10 @@ def test_readiness_rejects_incomplete_market_feed_subscriptions(monkeypatch):
     assert response.json() == {"ready": False, "reason": "market_feed_subscription_incomplete"}
 
 
-def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
+def test_readiness_rejects_when_all_strategies_are_disabled(monkeypatch):
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web.config, "ENABLE_NORMAL", False)
+    monkeypatch.setattr(web.config, "ENABLE_MOMENTUM", False)
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
@@ -630,7 +631,7 @@ def test_readiness_rejects_disabled_normal_strategy(monkeypatch):
         response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json() == {"ready": False, "reason": "normal_strategy_disabled"}
+    assert response.json() == {"ready": False, "reason": "all_strategies_disabled"}
 
 
 
@@ -670,3 +671,37 @@ def test_readiness_accepts_completed_idle_cycle_after_last_entry(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["ready"] is True
+
+    
+def test_readiness_rejects_nonempty_but_stale_symbol_frames(monkeypatch):
+    _freeze_market_time(monkeypatch)
+    _configure_ready(monkeypatch)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "full", "symbols": 150, "loaded": 150, "fresh": 120, "signals": 0}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "scanner_fresh_data_incomplete"}
+
+
+def test_readiness_rejects_persistent_conflict_for_active_telegram_leader(monkeypatch):
+    _configure_ready(monkeypatch)
+    web._telegram_poller.last_error = "Telegram getUpdates conflict: another getUpdates request"
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", _ready_engine())
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "telegram_polling_conflict"}

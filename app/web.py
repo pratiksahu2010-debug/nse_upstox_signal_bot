@@ -132,6 +132,9 @@ def _safe_config():
         "signal_stop": config.NORMAL.last_entry.strftime("%H:%M"),
         "session_end": config.NORMAL.session_end.strftime("%H:%M"),
         "adx_min": config.NORMAL.adx_min,
+        "score_min": config.NORMAL.score_min,
+        "momentum_enabled": config.ENABLE_MOMENTUM,
+        "momentum_score_min": config.MOMENTUM.score_min,
         "ema_fast": config.IND.ema_fast,
         "ema_slow": config.IND.ema_slow,
         "rsi_period": config.IND.rsi_n,
@@ -195,8 +198,8 @@ def readiness():
         return unavailable("application_not_initialized")
     if not config.RUN_SCHEDULER:
         return unavailable("scheduler_disabled")
-    if not config.ENABLE_NORMAL:
-        return unavailable("normal_strategy_disabled")
+    if not (config.ENABLE_NORMAL or config.ENABLE_MOMENTUM):
+        return unavailable("all_strategies_disabled")
     if not config.UPSTOX_TOKEN:
         return unavailable("upstox_token_missing")
     if not config.ADMIN_TOKEN:
@@ -224,7 +227,9 @@ def readiness():
     # delivery is independent of getUpdates; expose the state in diagnostics.
     if not poller_is_leader and not poller_standby:
         return unavailable("telegram_poller_leadership_unavailable")
-    if poller_is_leader and not poller_conflict:
+    if poller_is_leader and poller_conflict:
+        return unavailable("telegram_polling_conflict")
+    if poller_is_leader:
         last_telegram_success = getattr(poller, "last_success_at", None)
         if not last_telegram_success:
             return unavailable("telegram_not_yet_connected")
@@ -343,6 +348,7 @@ def readiness():
             try:
                 expected = int(normal_result.get("symbols") or 0)
                 loaded = int(normal_result.get("loaded") or 0)
+                fresh = int(normal_result.get("fresh") or 0)
             except (AttributeError, TypeError, ValueError):
                 return unavailable("scanner_result_invalid")
             if expected != EXPECTED_UNIVERSE_SIZE:
@@ -350,6 +356,8 @@ def readiness():
             minimum_loaded = max(1, int(expected * 0.90))
             if loaded < minimum_loaded:
                 return unavailable("scanner_data_incomplete")
+            if fresh < minimum_loaded:
+                return unavailable("scanner_fresh_data_incomplete")
 
             try:
                 provider_health = client.diagnostics() if hasattr(client, "diagnostics") else {}
@@ -373,9 +381,11 @@ def readiness():
                 try:
                     expected = int(normal_result.get("symbols") or 0)
                     loaded = int(normal_result.get("loaded") or 0)
+                    fresh = int(normal_result.get("fresh") or 0)
                 except (AttributeError, TypeError, ValueError):
                     return unavailable("scanner_result_invalid")
-                if expected <= 0 or loaded < max(1, int(expected * 0.90)):
+                minimum_loaded = max(1, int(expected * 0.90))
+                if expected <= 0 or loaded < minimum_loaded or fresh < minimum_loaded:
                     return unavailable("scanner_tracking_data_incomplete")
     feed_health = None
     if market_open and config.UPSTOX_STREAM_ENABLED:

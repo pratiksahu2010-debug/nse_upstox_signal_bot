@@ -40,7 +40,7 @@ class QuoteClient:
         }
 
 
-def _dispatch_with_empty_stream(monkeypatch, *, quote_failure=False):
+def _dispatch_with_empty_stream(monkeypatch, *, quote_failure=False, liquidity_checks=False):
     now = datetime(2026, 11, 19, 10, 5, tzinfo=IST)
     client = QuoteClient(now, fail=quote_failure)
     store = MemoryStore()
@@ -54,7 +54,7 @@ def _dispatch_with_empty_stream(monkeypatch, *, quote_failure=False):
     }
 
     monkeypatch.setattr(engine_module, "OPTION_MARKET_SNAPSHOT", False)
-    monkeypatch.setattr(engine_module, "OPTION_LIQUIDITY_CHECKS", False)
+    monkeypatch.setattr(engine_module, "OPTION_LIQUIDITY_CHECKS", liquidity_checks)
     monkeypatch.setattr(engine_module, "OPTION_PREMIUM_TRACKING", True)
     monkeypatch.setattr(engine_module, "OPTION_QUOTE", False)
     monkeypatch.setattr(engine_module, "OPTION_MAX_QUOTE_AGE_SEC", 20)
@@ -110,3 +110,14 @@ def test_optional_rest_quote_failure_never_blocks_underlying_signal(monkeypatch)
     assert store.rows[0]["option_tracking"]["entry_price"] is None
     assert store.rows[0]["option_tracking"]["tracking_status"] == "MISSING_ENTRY_QUOTE"
     assert diag["rejects"].get("option_quote_missing", 0) == 0
+
+    
+def test_missing_option_quote_suppresses_signal_when_liquidity_gate_is_enabled(monkeypatch):
+    sent, client, store, diag = _dispatch_with_empty_stream(
+        monkeypatch, quote_failure=True, liquidity_checks=True,
+    )
+
+    assert sent == 0
+    assert client.calls == [[OPTION_KEY]]
+    assert len(store.rows) == 0
+    assert diag["rejects"].get("option_quote_missing", 0) == 1

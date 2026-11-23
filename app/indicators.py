@@ -127,6 +127,37 @@ class Features:
     body_frac: float
     close_pos: float          # 0 = closed on low, 1 = closed on high
     range_atr: float
+    htf_bar_ts: Optional[pd.Timestamp] = None
+    htf_close: Optional[float] = None
+    htf_ema9: Optional[float] = None
+    htf_ema21: Optional[float] = None
+    htf_pdi: Optional[float] = None
+    htf_mdi: Optional[float] = None
+
+
+def completed_15m_context(df: pd.DataFrame):
+    """Return indicators from fully completed 15m bars built only from closed 5m bars."""
+    if len(df) < 45:
+        return None
+    base = df[["open", "high", "low", "close", "volume"]].copy()
+    grouped = base.resample("15min", label="left", closed="left").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    })
+    counts = base["close"].resample("15min", label="left", closed="left").count()
+    # Three source candles and a completed 15m close are both mandatory.
+    complete = grouped[(counts == 3) & (grouped.index + pd.Timedelta(minutes=15) <= df.index[-1] + pd.Timedelta(minutes=5))]
+    if len(complete) < 30:
+        return None
+    htf = add_indicators(complete)
+    row = htf.iloc[-1]
+    values = [row.close, row.ema9, row.ema21, row.pdi, row.mdi]
+    if any(pd.isna(value) for value in values):
+        return None
+    return {
+        "htf_bar_ts": htf.index[-1], "htf_close": float(row.close),
+        "htf_ema9": float(row.ema9), "htf_ema21": float(row.ema21),
+        "htf_pdi": float(row.pdi), "htf_mdi": float(row.mdi),
+    }
 
 
 def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features]:
@@ -159,4 +190,5 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
         body_frac=(body / rng) if rng > 0 else 0.0,
         close_pos=((float(r.close - r.low)) / rng) if rng > 0 else 0.5,
         range_atr=rng / float(r.atr),
+        **(completed_15m_context(df) or {}),
     )

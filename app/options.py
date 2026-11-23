@@ -1,8 +1,8 @@
-"""Option market snapshot normalization and optional liquidity validation.
+"""Option market snapshot normalization and configurable liquidity validation.
 
-This module does not alter the underlying CALL/PUT strategy. The hard liquidity
-gate is disabled by default and can only be enabled explicitly after quote access
-has been verified for the configured Upstox Analytics Token.
+This module does not alter the underlying CALL/PUT strategy. Production defaults
+enable the hard liquidity gate; missing, stale or illiquid contracts are rejected.
+The gate can be explicitly disabled with OPTION_LIQUIDITY_CHECKS=0.
 """
 import math
 import time
