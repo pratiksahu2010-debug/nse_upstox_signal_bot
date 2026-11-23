@@ -1,3 +1,6 @@
+import pytest
+
+import app.db as db
 from app.db import MIGRATIONS, PostgresStore
 
 
@@ -23,7 +26,16 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
         params for sql, params, _ in calls
         if sql.startswith("INSERT INTO schema_migrations")
     ]
-    assert applied == [(1, "baseline"), (2, "telegram_bot_state"), (3, "time_stop_review_flag"), (4, "training_feedback_labels"), (5, "first_target_hit"), (6, "time_to_target_metrics"), (7, "option_premium_and_actual_costs")]
+    assert sorted(applied) == sorted([
+        (1, "baseline"),
+        (2, "telegram_bot_state"),
+        (3, "time_stop_review_flag"),
+        (4, "training_feedback_labels"),
+        (5, "first_target_hit"),
+        (6, "time_to_target_metrics"),
+        (7, "option_premium_and_actual_costs"),
+        (8, "schema_reconciliation"),
+    ])
     assert any(sql == MIGRATIONS[0][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[1][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[2][2] for sql, _, _ in calls)
@@ -57,13 +69,12 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
-    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7))
+    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7, 8))
     store.init()
 
-    # The baseline SCHEMA is intentionally reconciled once on every startup,
-    # even when migration 1 is recorded, to repair columns missing from legacy
-    # installations. This is not a migration re-application.
-    assert sum(sql == MIGRATIONS[0][2] for sql, _, _ in calls) == 1
+    # The expensive compatibility reconciliation is versioned and must not
+    # run again after version 8 has been recorded.
+    assert sum(sql == MIGRATIONS[0][2] for sql, _, _ in calls) == 0
     # Versioned migrations 2-7 must not run again once recorded.
     assert not any(
         sql == migration_sql
@@ -75,3 +86,38 @@ def test_postgres_store_does_not_reapply_recorded_migrations():
         for sql, _, _ in calls
     )
     assert not any(sql.lstrip().upper().startswith("DELETE FROM SIGNALS") for sql, _, _ in calls)
+
+
+
+def test_postgres_store_reconciles_legacy_baseline_once():
+    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7))
+    store.init()
+
+    assert sum(sql == MIGRATIONS[0][2] for sql, _, _ in calls) == 1
+    assert any(
+        params == (8, "schema_reconciliation")
+        for sql, params, _ in calls
+        if sql.startswith("INSERT INTO schema_migrations")
+    )
+
+
+def test_make_store_closes_pool_when_schema_initialization_fails(monkeypatch):
+    class BrokenStore:
+        closed = False
+
+        def __init__(self, _dsn):
+            pass
+
+        def init(self):
+            raise RuntimeError("schema migration failed")
+
+        def close(self):
+            self.closed = True
+
+    broken = BrokenStore("postgresql://test")
+    monkeypatch.setattr(db, "PostgresStore", lambda _dsn: broken)
+
+    with pytest.raises(RuntimeError, match="schema migration failed"):
+        db.make_store("postgresql://test")
+
+    assert broken.closed is True

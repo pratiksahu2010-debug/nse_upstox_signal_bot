@@ -7,7 +7,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app.web:app --worker-class uvicorn_worker.UvicornWorker --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
-    healthCheckPath: /ready
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
