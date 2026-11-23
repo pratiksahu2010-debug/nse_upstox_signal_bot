@@ -90,3 +90,17 @@ def test_database_error_fails_closed():
             raise RuntimeError("database unavailable")
 
     assert ScannerLease(BrokenStore()).acquire() is False
+
+
+def test_heartbeat_renews_lease_during_long_scan():
+    store = FakePostgresStore()
+    first = ScannerLease(store, lease_seconds=1, renew_seconds=0.1)
+    second = ScannerLease(store, lease_seconds=1, renew_seconds=0.1)
+
+    assert first.acquire() is True
+    first.start_heartbeat()
+    time.sleep(1.25)
+    assert second.acquire() is False
+    first.release()
+    assert second.acquire() is True
+    second.release()
