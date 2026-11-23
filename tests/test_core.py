@@ -168,6 +168,7 @@ def test_engine_end_to_end_dedupe_and_cooldown(monkeypatch):
     out3 = eng.cycle("normal", late)
     assert out3["signals"] == 0
 
+
 def test_force_run_still_rejects_stale_market_data(monkeypatch):
     df, t = _find_signal_case()
     original_now = t + timedelta(minutes=5, seconds=7)
@@ -176,8 +177,7 @@ def test_force_run_still_rejects_stale_market_data(monkeypatch):
     uni = _test_universe(info, late_now)
     sent = []
     eng = Engine(FakeClient(df, original_now), MemoryStore(),
-                 notify=lambda message: sent.append(message),
-                 universe_builder=lambda n: uni)
+                 notify=lambda message: sent.append(message), universe_builder=lambda n: uni)
     eng.ensure_universe(late_now)
     eng.states[("normal", "TEST")].normal_state = {
         "phase": "IDLE", "side": 0,
@@ -221,6 +221,7 @@ def test_load_enforces_fetch_delay_even_for_direct_or_forced_scans():
     loaded = eng._load(state, now + timedelta(seconds=6), "normal")
     assert len(loaded) == 1
     assert loaded.index[-1] == candle_ts
+
 
 def test_weekend_and_empty_universe_safe():
     store = MemoryStore()
@@ -280,6 +281,7 @@ def test_engine_retries_failed_telegram_delivery_without_duplicate_signal(monkey
     assert store.pending_notifications() == []
     assert second["signals"] == 0
 
+
 def test_make_store_does_not_silently_fallback_when_database_url_is_set(monkeypatch):
     import app.db as db
     def unavailable(_dsn):
@@ -330,7 +332,9 @@ def test_postgres_run_discards_broken_connection_and_retries_once():
         def __init__(self, fail): self.fail = fail
         def __enter__(self): return self
         def __exit__(self, *args): return False
-        def execute(self, sql, params):
+        # psycopg2 allows execute(sql) with params omitted; mirror that API so
+        # SET LOCAL statements and the application query share this test cursor.
+        def execute(self, sql, params=None):
             if self.fail: raise psycopg2.OperationalError("connection reset")
         def fetchone(self): return (42,)
 
