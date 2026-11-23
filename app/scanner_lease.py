@@ -47,6 +47,10 @@ class ScannerLease:
 
     def acquire(self):
         """Acquire atomically; database errors fail closed."""
+        if self._thread is not None and self._thread.is_alive():
+            return False
+        self._lost.clear()
+        self._stop.clear()
         if getattr(self.store, "kind", "") != "postgres":
             self.acquired = True
             return True
