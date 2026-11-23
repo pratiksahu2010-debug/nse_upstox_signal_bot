@@ -12,12 +12,14 @@ from app.db import MemoryStore
 
 def _features(**overrides):
     values = dict(ema9=101.0, ema21=100.0, close=102.0, vwap=100.5,
-                  adx=25.0, pdi=30.0, mdi=15.0, rsi_prev=51.5, rsi=52.0)
+                  adx=25.0, pdi=30.0, mdi=15.0, rsi_prev=51.5, rsi=52.0,
+                  htf_close=102.0, htf_ema9=101.0, htf_ema21=100.0,
+                  htf_pdi=30.0, htf_mdi=15.0)
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def test_normal_setup_uses_5m_gates_without_15m_confirmation():
+def test_normal_setup_requires_5m_and_15m_trend_alignment():
     f = _features(htf="neutral")
     assert mod_normal.setup_side(f) == 1
     assert mod_normal.setup_side(_features(ema9=99, ema21=100, close=99, vwap=100,
@@ -40,16 +42,17 @@ def test_normal_setup_state_survives_memory_store_reload():
     assert store.load_normal_states(date(2026, 11, 19)) == {}
 
 
-def test_15m_di_is_informational_and_never_changes_5m_setup_eligibility():
-    # A bullish 5m CALL remains valid with bearish 15m DI.
-    assert mod_normal.setup_side(_features(htf_pdi=10.0, htf_mdi=35.0)) == 1
-    # A bearish 5m PUT remains valid with bullish 15m DI.
+def test_15m_opposite_or_missing_context_blocks_5m_setup():
+    # A bullish 5m setup cannot pass when 15m directional movement is bearish.
+    assert mod_normal.setup_side(_features(htf_pdi=10.0, htf_mdi=35.0)) == 0
+    # A bearish 5m setup cannot pass when 15m trend remains bullish.
     assert mod_normal.setup_side(_features(
         ema9=99.0, ema21=100.0, close=99.0, vwap=100.0,
-        pdi=12.0, mdi=25.0, htf_pdi=40.0, htf_mdi=8.0,
-    )) == -1
-    # Missing 15m DI also cannot block either 5m setup.
-    assert mod_normal.setup_side(_features(htf_pdi=None, htf_mdi=None)) == 1
+        pdi=12.0, mdi=25.0, htf_close=102.0, htf_ema9=101.0,
+        htf_ema21=100.0, htf_pdi=40.0, htf_mdi=8.0,
+    )) == 0
+    # Missing 15m context fails closed.
+    assert mod_normal.setup_side(_features(htf_pdi=None, htf_mdi=None)) == 0
 
 
 
