@@ -135,6 +135,7 @@ class UpstoxClient:
                     "count": self._latency["count"],
                     "avg_seconds": round(self._latency["total_seconds"] / self._latency["count"], 3)
                     if self._latency["count"] else 0.0,
+                    "total_seconds": round(self._latency["total_seconds"], 3),
                     "max_seconds": round(self._latency["max_seconds"], 3),
                 },
                 "optional_data_disabled": sorted(self._optional_data_disabled),
