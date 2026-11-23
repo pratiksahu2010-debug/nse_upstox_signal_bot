@@ -18,6 +18,7 @@ import pandas as pd
 
 from . import mod_normal, mod_momentum
 from .market_stream import UpstoxMarketStream
+from .scanner_lease import ScannerLease
 from .common import Ctx, Signal, SymbolInfo
 from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
@@ -106,6 +107,7 @@ class Engine:
         self.last_heartbeat: dict = {}
         self.eod_sent: set = set()
         self.lock = threading.Lock()                # one cycle at a time (scheduler vs /force)
+        self.scanner_lease = ScannerLease(store)  # cross-instance protection during rolling deploys
         self.started = datetime.now(IST)
         self.last_error = ""
         self.last_cycle_started_at = None
@@ -351,6 +353,9 @@ class Engine:
         pending_trigger_states: dict = {}
         watching = 0
         for sym, df in data.items():
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             st = self.states[(module, sym)]
             if df is None or len(df) < 50:
                 d["rejects"]["no_data"] += 1
@@ -525,6 +530,11 @@ class Engine:
         dispatch_started = _time.monotonic()
         d["_persisted_candidates"] = set()
         try:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                cands.clear()
+                momentum_candidates.clear()
+                pending_trigger_states.clear()
             d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
             if module == "normal" and ENABLE_MOMENTUM:
                 # Give Normal priority only when its signal is actually present
@@ -576,6 +586,9 @@ class Engine:
         d.setdefault("_persisted_candidates", set())
         cands.sort(key=lambda s: -s.score)
         sent = 0
+        if self.scanner_lease.lost:
+            d["rejects"]["scanner_lease_lost"] += 1
+            return 0
         self._deliver_pending(d, now)
         already = self.store.count_today(module, day)
         cd = getattr(cfg, "cooldown_bars", 0)
@@ -762,6 +775,9 @@ class Engine:
 
         accepted = 0
         for sig in prepared:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             if already + accepted >= cfg.daily_cap:
                 d["rejects"]["daily_cap"] += 1
                 continue
@@ -785,6 +801,9 @@ class Engine:
                     "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
                                "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
                                "option": dict(sig.option or {}), "telegram_text": message}}
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             try:
                 sid = self.store.add_signal(row)
             except Exception:
@@ -830,6 +849,9 @@ class Engine:
             log.exception("could not read Telegram outbox")
             return
         for item in pending:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             try:
                 result = (send(item["text"], signal_id=item["id"]) if self.notify is send
                           else self.notify(item["text"]))
@@ -962,10 +984,18 @@ class Engine:
         if not self.lock.acquire(blocking=False):
             self.last_cycle_busy_count += 1
             return {"busy": True}
+        # The local mutex prevents scheduler-vs-/force overlap in this process;
+        # the PostgreSQL lease additionally prevents overlapping Render
+        # instances from running the same expensive 150-symbol scan.
+        if not self.scanner_lease.acquire():
+            self.last_cycle_busy_count += 1
+            self.lock.release()
+            return {"busy": True, "scanner_lease": "held_by_another_instance"}
         started_at = datetime.now(IST)
         self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
         out = {}
         try:
+            self.scanner_lease.start_heartbeat()
             self.ensure_universe(now)
             t = floor5(now).time()
             for m, enabled in (("normal", _on("ENABLE_NORMAL") or _on("ENABLE_MOMENTUM")),):
@@ -1020,6 +1050,7 @@ class Engine:
             raise
         finally:
             self.last_cycle_completed_at = datetime.now(IST).isoformat(timespec="seconds")
+            self.scanner_lease.release()
             self.lock.release()
 
     def _alert_once(self, key: str, text: str, now: datetime, every_min: int = 60):
@@ -1113,6 +1144,7 @@ class Engine:
             "last_cycle_error": self.last_cycle_error,
             "last_cycle_result": dict(self.last_cycle_result),
             "last_cycle_busy_count": self.last_cycle_busy_count,
+            "scanner_lease_lost": self.scanner_lease.lost,
         }
 
     def diag_json(self) -> dict:
