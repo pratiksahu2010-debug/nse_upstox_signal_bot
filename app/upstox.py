@@ -90,7 +90,7 @@ class UpstoxClient:
         self.request_count = 0
         self.failure_count = 0
         self._latency_lock = threading.Lock()
-        self._latency = {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+        self._latency = {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0, "by_endpoint": {}}
         # Optional option-LTP endpoint can reject a token that is valid for
         # candle data. Once that happens, stop calling it until a new token is
         # installed; this prevents a warning/request on every scan cycle.
@@ -120,6 +120,28 @@ class UpstoxClient:
             self._ltp_auth_disabled = False
             self._optional_data_disabled.clear()
 
+    def _record_latency(self, path: str, elapsed: float):
+        if "/historical-candle/intraday/" in path:
+            endpoint = "intraday"
+        elif "/historical-candle/" in path:
+            endpoint = "historical"
+        elif "/market-quote/quotes" in path:
+            endpoint = "full_quotes"
+        elif "/option/" in path:
+            endpoint = "options"
+        else:
+            endpoint = "other"
+        with self._latency_lock:
+            self._latency["count"] += 1
+            self._latency["total_seconds"] += elapsed
+            self._latency["max_seconds"] = max(self._latency["max_seconds"], elapsed)
+            item = self._latency["by_endpoint"].setdefault(
+                endpoint, {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+            )
+            item["count"] += 1
+            item["total_seconds"] += elapsed
+            item["max_seconds"] = max(item["max_seconds"], elapsed)
+
     def diagnostics(self) -> dict:
         with self._state_lock:
             state = {
@@ -141,6 +163,16 @@ class UpstoxClient:
                 "avg_seconds": round(total_seconds / count, 3) if count else 0.0,
                 "total_seconds": round(total_seconds, 3),
                 "max_seconds": round(self._latency["max_seconds"], 3),
+                "by_endpoint": {
+                    name: {
+                        "count": item["count"],
+                        "avg_seconds": round(item["total_seconds"] / item["count"], 3)
+                        if item["count"] else 0.0,
+                        "total_seconds": round(item["total_seconds"], 3),
+                        "max_seconds": round(item["max_seconds"], 3),
+                    }
+                    for name, item in self._latency["by_endpoint"].items()
+                },
             }
         return state
 
@@ -178,10 +210,7 @@ class UpstoxClient:
                 )
             except requests.RequestException as e:
                 elapsed = max(0.0, time.monotonic() - request_started)
-                with self._latency_lock:
-                    self._latency["count"] += 1
-                    self._latency["total_seconds"] += elapsed
-                    self._latency["max_seconds"] = max(self._latency["max_seconds"], elapsed)
+                self._record_latency(path, elapsed)
                 last = UpstoxError(f"network error: {type(e).__name__}")
                 with self._state_lock:
                     self.failure_count += 1
@@ -192,10 +221,7 @@ class UpstoxClient:
                 break
 
             elapsed = max(0.0, time.monotonic() - request_started)
-            with self._latency_lock:
-                self._latency["count"] += 1
-                self._latency["total_seconds"] += elapsed
-                self._latency["max_seconds"] = max(self._latency["max_seconds"], elapsed)
+            self._record_latency(path, elapsed)
             with self._state_lock:
                 self.request_count += 1
                 self.last_status = r.status_code
