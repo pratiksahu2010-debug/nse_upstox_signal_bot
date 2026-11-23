@@ -147,9 +147,8 @@ OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)
 # candle-data tokens receive 401 from the optional v2 quote endpoint.
 # Set OPTION_QUOTE=1 only after verifying quote-endpoint access for the token.
 OPTION_QUOTE = _b("OPTION_QUOTE", "0")
-# Full option quote validation is required before emitting a contract recommendation.
-# If the Analytics Token cannot access fresh depth/volume/OI, suppress the signal
-# rather than silently recommending an unverified ATM contract.
+# Full option quote snapshots support descriptive tracking. Strict liquidity
+# validation is optional and disabled by default; when enabled it fails closed.
 OPTION_MARKET_SNAPSHOT = _b("OPTION_MARKET_SNAPSHOT", "1")
 OPTION_LIQUIDITY_CHECKS = _b("OPTION_LIQUIDITY_CHECKS", "0")
 OPTION_MIN_VOLUME = _i("OPTION_MIN_VOLUME", 100)
