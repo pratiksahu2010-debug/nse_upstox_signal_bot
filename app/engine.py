@@ -288,12 +288,17 @@ class Engine:
             d["scope"] = "market_closed_today"
             return d
         t_close = floor5(now).time()
-        full = force or (cfg.first_signal <= t_close <= cfg.last_entry)
+        full = force or (cfg.first_signal <= t_close <= cfg.last_entry) or (
+            module == "normal" and ENABLE_MOMENTUM
+            and MOMENTUM.first_signal <= t_close <= MOMENTUM.last_entry
+        )
         states = self._mod_states(module)
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
-        if module == "normal" and ENABLE_MOMENTUM:
+        if module == "normal":
+            # Continue outcome/quote tracking for existing Momentum signals even
+            # when the module is disabled for new entries.
             for r in self.store.open_signals(day, "momentum"):
                 open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
@@ -929,7 +934,10 @@ class Engine:
                 if not enabled and not force:
                     continue
                 cfg = MODULES[m][1]
-                active = cfg.first_signal <= t <= (cfg.session_end if m != "normal" else NORMAL.session_end)
+                active = (
+                    NORMAL.first_signal <= t <= NORMAL.session_end
+                    or (_on("ENABLE_MOMENTUM") and MOMENTUM.first_signal <= t <= MOMENTUM.session_end)
+                )
                 if not (active or force):
                     continue
                 try:
