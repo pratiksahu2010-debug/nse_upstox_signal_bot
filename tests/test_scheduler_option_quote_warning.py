@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+# Optional quote permission failures must be visible and throttled, not silent.
+
 from app import scheduler
 from app.config import IST
 
