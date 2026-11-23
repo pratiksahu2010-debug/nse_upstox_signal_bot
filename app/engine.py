@@ -57,6 +57,14 @@ def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     return next_state
 
 
+def _momentum_without_persisted_normal(candidates: list, persisted: set) -> list:
+    """Keep a same-candle Momentum candidate unless Normal reached durable storage."""
+    return [
+        item for item in candidates
+        if (item.symbol, item.bar_ts.isoformat()) not in persisted
+    ]
+
+
 def _trigger_state_after_persist(state: dict, persisted: bool) -> dict:
     """Commit cooldown only when the signal row exists in durable storage."""
     result = dict(state)
@@ -504,11 +512,9 @@ class Engine:
                 # may still use the same candle rather than being silently lost.
                 normal_persisted = set(d.get("_persisted_candidates", set()))
                 before = len(momentum_candidates)
-                momentum_candidates = [
-                    item for item in momentum_candidates
-                    if (item.symbol, item.bar_ts.isoformat()) not in normal_persisted
-                    and (item.symbol, item.bar_ts) not in normal_persisted
-                ]
+                momentum_candidates = _momentum_without_persisted_normal(
+                    momentum_candidates, normal_persisted,
+                )
                 if before > len(momentum_candidates):
                     d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
                 d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
@@ -1043,7 +1049,7 @@ class Engine:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
         return "\n".join([
             f"💓 <b>{m.upper()} scan {d['at']}</b>",
-            f"<b>symbols {d['loaded']}/{d['symbols']} · signals {d['signals']}</b>",
+            f"<b>symbols {d['loaded']}/{d['symbols']} · normal {d['signals']} · momentum {d.get('momentum_signals', 0)}</b>",
             f"<b>watching {d.get('watching', 0)} · top rejects: {top}</b>",
         ])
 
