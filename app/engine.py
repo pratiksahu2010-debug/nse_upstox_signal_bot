@@ -849,6 +849,9 @@ class Engine:
             log.exception("could not read Telegram outbox")
             return
         for item in pending:
+            if self.scanner_lease.lost:
+                d["rejects"]["scanner_lease_lost"] += 1
+                break
             try:
                 result = (send(item["text"], signal_id=item["id"]) if self.notify is send
                           else self.notify(item["text"]))
@@ -988,11 +991,11 @@ class Engine:
             self.last_cycle_busy_count += 1
             self.lock.release()
             return {"busy": True, "scanner_lease": "held_by_another_instance"}
-        self.scanner_lease.start_heartbeat()
         started_at = datetime.now(IST)
         self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
         out = {}
         try:
+            self.scanner_lease.start_heartbeat()
             self.ensure_universe(now)
             t = floor5(now).time()
             for m, enabled in (("normal", _on("ENABLE_NORMAL") or _on("ENABLE_MOMENTUM")),):
