@@ -21,7 +21,7 @@ def _features(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_normal_setup_requires_5m_and_15m_trend_alignment():
+def test_normal_setup_uses_5m_ema_vwap_and_adx_only():
     f = _features(htf="neutral")
     assert mod_normal.setup_side(f) == 1
     assert mod_normal.setup_side(_features(
@@ -46,18 +46,19 @@ def test_normal_setup_state_survives_memory_store_reload():
     assert store.load_normal_states(date(2026, 11, 19)) == {}
 
 
-def test_15m_opposite_or_missing_ema_context_blocks_5m_setup():
-    # A bullish 5m setup cannot pass when completed 15m EMA structure is bearish.
+def test_15m_context_is_not_required_or_used():
+    # Opposite and missing higher-timeframe values cannot veto a valid 5m setup.
     assert mod_normal.setup_side(_features(
         htf_close=99.0, htf_ema9=100.0, htf_ema21=101.0,
-    )) == 0
-    # A bearish 5m setup cannot pass when completed 15m EMA structure is bullish.
+    )) == 1
+    assert mod_normal.setup_side(_features(
+        htf_close=None, htf_ema9=None, htf_ema21=None,
+    )) == 1
+    # A bearish setup is decided from the completed 5m candle only.
     assert mod_normal.setup_side(_features(
         ema9=99.0, ema21=100.0, close=99.0, vwap=100.0,
         htf_close=102.0, htf_ema9=101.0, htf_ema21=100.0,
-    )) == 0
-    # Missing required completed 15m EMA context fails closed.
-    assert mod_normal.setup_side(_features(htf_close=None)) == 0
+    )) == -1
 
 
 
