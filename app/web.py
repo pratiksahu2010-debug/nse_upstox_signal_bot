@@ -425,6 +425,7 @@ def readiness():
         "last_cycle_error": getattr(engine, "last_cycle_error", ""),
         "last_cycle_result": getattr(engine, "last_cycle_result", {}),
         "paused": bool(getattr(engine, "paused", False)),
+        "scanner_standby": bool(getattr(engine, "scanner_lease_standby", False)),
     }
     provider_health = {}
 
@@ -459,7 +460,7 @@ def readiness():
                 return unavailable("universe_load_failed")
             return unavailable("universe_not_initialized")
 
-    if active_scan_window:
+    if active_scan_window and not scanner_health["scanner_standby"]:
         if not scanner_health["last_cycle_completed_at"]:
             return unavailable("scanner_cycle_not_yet_completed")
         cycle_age = age_seconds(scanner_health["last_cycle_completed_at"])
@@ -535,22 +536,26 @@ def readiness():
     feed_health = None
     if market_open and config.UPSTOX_STREAM_ENABLED:
         feed = getattr(engine, "market_stream", None)
-        if feed is None or not hasattr(feed, "diagnostics"):
-            return unavailable("market_feed_not_started")
-        try:
-            feed_health = feed.diagnostics()
-        except Exception:
-            log.exception("readiness market-feed diagnostics failed")
-            return unavailable("market_feed_diagnostics_unavailable")
+        if feed is not None and hasattr(feed, "diagnostics"):
+            try:
+                feed_health = feed.diagnostics()
+            except Exception:
+                log.exception("readiness market-feed diagnostics failed")
+                feed_health = {"connected": False, "error": "diagnostics_unavailable"}
+        else:
+            feed_health = {"connected": False, "error": "feed_not_started"}
         if not isinstance(feed_health, dict):
-            return unavailable("market_feed_diagnostics_invalid")
-        if not feed_health.get("connected") or not feed_health.get("thread_alive"):
-            return unavailable("market_feed_disconnected")
-        if int(feed_health.get("subscribed_symbols") or 0) < EXPECTED_UNIVERSE_SIZE:
-            return unavailable("market_feed_subscription_incomplete")
+            feed_health = {"connected": False, "error": "invalid_diagnostics"}
+        feed_healthy = bool(feed_health.get("connected") and feed_health.get("thread_alive"))
+        feed_healthy = feed_healthy and int(feed_health.get("subscribed_symbols") or 0) >= EXPECTED_UNIVERSE_SIZE
         feed_age = feed_health.get("last_quote_age_sec")
-        if feed_age is None or feed_age > 120:
-            return unavailable("market_feed_stale")
+        feed_healthy = feed_healthy and feed_age is not None and feed_age <= 120
+        feed_health["degraded"] = not feed_healthy
+        # Completed REST candles drive all signal decisions. The stream is a
+        # supplemental quote/tracking channel and must not block service
+        # readiness unless an operator explicitly marks it as required.
+        if not feed_healthy and config.UPSTOX_STREAM_REQUIRED:
+            return unavailable("market_feed_degraded")
 
     return {
         "ready": True,
