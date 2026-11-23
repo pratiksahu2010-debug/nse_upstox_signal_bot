@@ -526,6 +526,27 @@ def test_readiness_accepts_final_entry_boundary_scan_after_candle_close(monkeypa
     assert response.json()["ready"] is True
 
 
+def test_readiness_accepts_final_tracking_boundary_after_candle_close(monkeypatch):
+    # At 15:15:06 the scheduler processes the 15:15 close for tracking only.
+    _freeze_market_time(monkeypatch, hour=15, minute=15, second=6)
+    _configure_ready(monkeypatch)
+    monkeypatch.setattr(web.config, "UPSTOX_STREAM_ENABLED", True)
+    candidate = _ready_engine()
+    candidate.last_cycle_result = {
+        "normal": {"scope": "tracking", "symbols": 1, "loaded": 1, "fresh": 1}
+    }
+    monkeypatch.setattr(web, "_started", True)
+    monkeypatch.setattr(web, "engine", candidate)
+    monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())
+    monkeypatch.setattr(web.config, "REQUIRE_PERSISTENT_DB", False)
+
+    with TestClient(web.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
 def test_readiness_rejects_no_completed_scan_during_entry_window(monkeypatch):
     _freeze_market_time(monkeypatch)
     _configure_ready(monkeypatch)
