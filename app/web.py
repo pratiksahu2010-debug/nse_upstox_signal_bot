@@ -224,7 +224,9 @@ def readiness():
     # delivery is independent of getUpdates; expose the state in diagnostics.
     if not poller_is_leader and not poller_standby:
         return unavailable("telegram_poller_leadership_unavailable")
-    if poller_is_leader and not poller_conflict:
+    if poller_is_leader and poller_conflict:
+        return unavailable("telegram_polling_conflict")
+    if poller_is_leader:
         last_telegram_success = getattr(poller, "last_success_at", None)
         if not last_telegram_success:
             return unavailable("telegram_not_yet_connected")
@@ -343,6 +345,7 @@ def readiness():
             try:
                 expected = int(normal_result.get("symbols") or 0)
                 loaded = int(normal_result.get("loaded") or 0)
+                fresh = int(normal_result.get("fresh") or 0)
             except (AttributeError, TypeError, ValueError):
                 return unavailable("scanner_result_invalid")
             if expected != EXPECTED_UNIVERSE_SIZE:
@@ -350,6 +353,8 @@ def readiness():
             minimum_loaded = max(1, int(expected * 0.90))
             if loaded < minimum_loaded:
                 return unavailable("scanner_data_incomplete")
+            if fresh < minimum_loaded:
+                return unavailable("scanner_fresh_data_incomplete")
 
             try:
                 provider_health = client.diagnostics() if hasattr(client, "diagnostics") else {}
@@ -373,9 +378,11 @@ def readiness():
                 try:
                     expected = int(normal_result.get("symbols") or 0)
                     loaded = int(normal_result.get("loaded") or 0)
+                    fresh = int(normal_result.get("fresh") or 0)
                 except (AttributeError, TypeError, ValueError):
                     return unavailable("scanner_result_invalid")
-                if expected <= 0 or loaded < max(1, int(expected * 0.90)):
+                minimum_loaded = max(1, int(expected * 0.90))
+                if expected <= 0 or loaded < minimum_loaded or fresh < minimum_loaded:
                     return unavailable("scanner_tracking_data_incomplete")
     feed_health = None
     if market_open and config.UPSTOX_STREAM_ENABLED:
