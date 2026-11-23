@@ -158,7 +158,10 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
 
     persisted = [False]
 
-    def dispatch(_module, _cfg, candidates, _now, _force, diag):
+    def dispatch(module, _cfg, candidates, _now, _force, diag):
+        if module == "momentum":
+            assert candidates == []
+            return 0
         assert candidates == [signal]
         if persisted[0]:
             diag["_persisted_candidates"].add(("TEST", bar_ts.isoformat()))
