@@ -98,6 +98,7 @@ class Engine:
         self.client, self.store, self.notify = client, store, notify
         self.builder = universe_builder
         self.uni: Optional[Universe] = None
+        self.universe_retry_at: Optional[datetime] = None
         self.states: dict = {}                      # (module, symbol) -> SymbolState
         self.diag: dict = {}
         self.closed_days: set = set()               # (segment, date) flagged as holiday
@@ -123,19 +124,25 @@ class Engine:
     # ------------------------------------------------------------------ universe
     def ensure_universe(self, now: datetime):
         today = now.strftime("%Y-%m-%d")
-        if self.uni and self.uni.built_on == today:
+        if self.universe_retry_at is not None and now < self.universe_retry_at:
+            return
+        if self.uni and self.uni.built_on == today and getattr(self.uni, "ready", True):
             return
         if self.uni and now.time() < time(7, 30):
             return
         try:
             uni = self.builder(now)
         except Exception as e:
+            self.universe_retry_at = now + timedelta(minutes=5)
             self.last_error = f"universe: {e}"
-            log.error("universe build failed: %s", e)
+            log.error("universe build failed; retry scheduled: %s", e)
             if self.uni is None:
                 raise
             return
         self.uni = uni
+        self.universe_retry_at = (
+            None if getattr(uni, "ready", True) else now + timedelta(minutes=5)
+        )
         # One V3 feed for the fixed underlying universe; selected option contracts
         # are added lazily when qualified signals resolve their option instrument.
         underlying_keys = [item.key for item in uni.normal if item.key]
@@ -446,6 +453,10 @@ class Engine:
                             }
                             cands.append(sig)
                             state.update({"phase":"TRIGGERED","side":side,"trigger_bar":f.bar_ts.isoformat(),"cooldown_remaining":4,"invalidated":False})
+                            # The durable snapshot must advance its candle cursor
+                            # with the trigger itself; otherwise the next candle
+                            # appears to have a 10-minute gap and resets cooldown.
+                            state["last_bar"] = f.bar_ts.isoformat()
                             pending_trigger_states[(sym, f.bar_ts.isoformat())] = dict(state)
                             d["rejects"]["rsi_triggered"] += 1
                         else:
