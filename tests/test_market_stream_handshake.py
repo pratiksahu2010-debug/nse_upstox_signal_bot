@@ -27,6 +27,7 @@ def test_v3_websocket_uses_documented_accept_header(monkeypatch):
     import app.market_stream as market_stream
 
     stream = UpstoxMarketStream(_Client())
+    stream.set_keys(["NSE_INDEX|Nifty 50"])
     captured = {}
 
     def fake_connect(uri, **kwargs):
@@ -36,7 +37,7 @@ def test_v3_websocket_uses_documented_accept_header(monkeypatch):
 
     monkeypatch.setattr(market_stream.websockets, "connect", fake_connect)
 
-    asyncio.run(stream._run_batch(["NSE_INDEX|Nifty 50"]))
+    asyncio.run(stream._run())
 
     assert captured["uri"].startswith("wss://")
     assert captured["extra_headers"] == {"Accept": "*/*"}
