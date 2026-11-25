@@ -253,7 +253,6 @@ def _safe_config():
             "per_minute": config.ENGINE.rate_per_min,
             "per_30_minutes": config.ENGINE.rate_per_30min,
         },
-        "upstox_token_source": config.UPSTOX_TOKEN_SOURCE,
         "signal_only": True,
         "orders_enabled": False,
     }
