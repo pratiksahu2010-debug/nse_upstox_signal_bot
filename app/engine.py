@@ -1132,7 +1132,13 @@ class Engine:
                     log.exception("cycle %s failed", m)
                     out[m] = {"error": f"{type(e).__name__}: {str(e)[:240]}"}
                     if getattr(self.client, "auth_failed", False):
-                        self._alert_once("auth", "⚠️ <b>Upstox token rejected (401/403) - update UPSTOX_ACCESS_TOKEN</b>", now)
+                        self._alert_once(
+                            "auth",
+                            "⚠️ <b>Upstox token rejected (401/403) — update "
+                            "UPSTOX_ANALYTICS_TOKEN (preferred) or the legacy "
+                            "UPSTOX_ACCESS_TOKEN</b>",
+                            now,
+                        )
             self.last_cycle_result = {
                 name: {
                     key: value for key, value in result.items()

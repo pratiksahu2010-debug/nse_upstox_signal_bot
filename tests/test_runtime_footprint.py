@@ -4,7 +4,9 @@ from app.config import ENGINE
 
 
 def test_scanner_worker_pool_is_bounded_for_small_render_instances():
-    assert 8 <= ENGINE.workers <= 16
+    # 24 I/O workers hide upstream latency while the shared API budget caps
+    # actual request throughput independently.
+    assert 8 <= ENGINE.workers <= 24
 
 
 def test_candle_history_cap_covers_warm_sessions_and_current_day():

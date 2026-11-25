@@ -80,10 +80,10 @@ class Engine:
     warm_sessions: int = 6                 # prior sessions kept for indicator warm-up
     fetch_delay_sec: int = _i("FETCH_DELAY_SEC", 6)   # wait after candle close before fetching
     stale_max_bars: int = _i("STALE_MAX_BARS", 1)     # signal bar must be newest or 1 bar old
-    # Bound I/O concurrency for Render's small memory footprint. Upstox pacing
-    # (15 req/s by default) is the throughput ceiling; 24 threads added memory
-    # and socket overhead without increasing the allowed request rate.
-    workers: int = max(8, min(16, _i("WORKERS", 16)))
+    # Keep enough concurrent I/O workers to hide Upstox network latency across
+    # the 150-symbol universe. The shared Budget remains the hard request-rate
+    # ceiling, so raising concurrency does not raise provider request volume.
+    workers: int = max(8, min(24, _i("WORKERS", 24)))
     retry_passes: int = 1
     # Six warm sessions (~450 5m bars) plus today's bars fit within this bound.
     max_bars_kept: int = 600

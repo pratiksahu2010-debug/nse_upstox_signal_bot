@@ -15,6 +15,10 @@ services:
         value: Asia/Kolkata
       - key: NEON_DATABASE_URL
         sync: false
+      # Preferred long-lived read-only market-data credential.
+      - key: UPSTOX_ANALYTICS_TOKEN
+        sync: false
+      # Backwards-compatible fallback only.
       - key: UPSTOX_ACCESS_TOKEN
         sync: false
       - key: TELEGRAM_BOT_TOKEN
