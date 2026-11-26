@@ -69,44 +69,60 @@ def _ensure_session(store, day: date):
     return current
 
 
-def record_signal(store, signal_id: int, signal, day: date):
-    """Register a persisted live signal for shadow-only entry-timing comparison."""
-    if not enabled(store):
-        return False
+def _signal_record(signal_id: int, signal):
+    entry = float(signal.entry)
+    stop = float(signal.sl)
+    target = float(signal.tp1)
+    risk = abs(entry - stop)
+    side = 1 if str(signal.side).upper() in ("LONG", "CALL", "CE") else -1
+    if risk <= 0 or not all(map(lambda x: abs(x) < float("inf"), (entry, stop, target))):
+        return None
+    target_r = abs(target - entry) / risk
+    return {
+        "signal_id": int(signal_id),
+        "symbol": str(signal.symbol),
+        "side": "LONG" if side > 0 else "SHORT",
+        "direction": side,
+        "signal_bar_ts": signal.bar_ts.isoformat(),
+        "original_entry": entry,
+        "risk_points": risk,
+        "target_r": target_r if target_r > 0 else 1.5,
+        "score": int(getattr(signal, "score", 0) or 0),
+        "trigger": str(getattr(signal, "trigger", "") or ""),
+        "bars": [],
+        "results": {},
+    }
+
+
+def record_signals(store, signals, day: date):
+    """Batch-register persisted signals after live notifications have been dispatched."""
+    if not signals or not enabled(store):
+        return 0
     try:
-        entry = float(signal.entry)
-        stop = float(signal.sl)
-        target = float(signal.tp1)
-        risk = abs(entry - stop)
-        side = 1 if str(signal.side).upper() in ("LONG", "CALL", "CE") else -1
-        if risk <= 0 or not all(map(lambda x: abs(x) < float("inf"), (entry, stop, target))):
-            return False
-        target_r = abs(target - entry) / risk
-        bar_ts = signal.bar_ts.isoformat()
         with _LOCK:
             session = _ensure_session(store, day)
             records = session.setdefault("signals", {})
-            if str(signal_id) in records or len(records) >= _MAX_SIGNALS:
-                return False
-            records[str(signal_id)] = {
-                "signal_id": int(signal_id),
-                "symbol": str(signal.symbol),
-                "side": "LONG" if side > 0 else "SHORT",
-                "direction": side,
-                "signal_bar_ts": bar_ts,
-                "original_entry": entry,
-                "risk_points": risk,
-                "target_r": target_r if target_r > 0 else 1.5,
-                "score": int(getattr(signal, "score", 0) or 0),
-                "trigger": str(getattr(signal, "trigger", "") or ""),
-                "bars": [],
-                "results": {},
-            }
-            _save(store, session)
-        return True
+            added = 0
+            for signal_id, signal in signals:
+                key = str(signal_id)
+                if key in records or len(records) >= _MAX_SIGNALS:
+                    continue
+                item = _signal_record(signal_id, signal)
+                if item is None:
+                    continue
+                records[key] = item
+                added += 1
+            if added:
+                _save(store, session)
+            return added
     except Exception:
         # Training is strictly best-effort and must never affect signal dispatch.
-        return False
+        return 0
+
+
+def record_signal(store, signal_id: int, signal, day: date):
+    """Compatibility helper for tests and one-off signal registration."""
+    return bool(record_signals(store, [(signal_id, signal)], day))
 
 
 def _evaluate_candidate(record, delay: int, cost_r: float):
