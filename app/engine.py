@@ -382,14 +382,6 @@ class Engine:
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
-        if module == "normal":
-            try:
-                from .entry_training import observe_completed_bars
-                d["entry_training_updates"] = observe_completed_bars(self.store, day, data)
-            except Exception:
-                # Research collection is best-effort and must never block live scanning.
-                d["entry_training_error"] = True
-                log.exception("one-day entry training observation failed; live scanner continues")
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Provider timing and pacing diagnostics help separate broker latency
         # from local rate-limit waiting without changing request limits.
@@ -670,6 +662,14 @@ class Engine:
                     log.exception("could not commit trigger lifecycle state for %s", sym)
             self._cycle_started_monotonic = None
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
+        if module == "normal":
+            try:
+                from .entry_training import observe_completed_bars
+                d["entry_training_updates"] = observe_completed_bars(self.store, day, data)
+            except Exception:
+                # Research collection is best-effort and runs only after live dispatch.
+                d["entry_training_error"] = True
+                log.exception("one-day entry training observation failed; live scanner continues")
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
             try:
@@ -885,6 +885,7 @@ class Engine:
                 sig.option_tracking["atm_reference"] = sig.option.get("atm_reference")
 
         accepted = 0
+        entry_training_signals = []
         for sig in prepared:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
@@ -938,12 +939,7 @@ class Engine:
             d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
             if module == "normal":
-                try:
-                    from .entry_training import record_signal
-                    record_signal(self.store, sid, sig, sig.bar_ts.date())
-                except Exception:
-                    # Shadow training is isolated from durable signal persistence and delivery.
-                    log.exception("could not register signal id=%s in entry timing lab", sid)
+                entry_training_signals.append((sid, sig))
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
@@ -964,6 +960,13 @@ class Engine:
                 sent += 1
             else:
                 d["rejects"]["telegram_failed"] += 1
+        if module == "normal" and entry_training_signals:
+            try:
+                from .entry_training import record_signals
+                record_signals(self.store, entry_training_signals, day)
+            except Exception:
+                # Persist research data only after all live signal notifications were attempted.
+                log.exception("batch entry timing registration failed; live alerts already dispatched")
         return sent
 
     def _deliver_pending(self, d: dict, now: datetime):
