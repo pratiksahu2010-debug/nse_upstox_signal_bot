@@ -94,7 +94,7 @@ class ActorRuntime:
                     continue
                 try:
                     item.future.set_result(self.handler(symbol, item.event))
-                except BaseException as exc:
+                except Exception as exc:
                     item.future.set_exception(exc)
                     log.exception("symbol actor event failed symbol=%s", symbol)
             finally:

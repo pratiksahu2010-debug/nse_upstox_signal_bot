@@ -35,6 +35,7 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
         (6, "time_to_target_metrics"),
         (7, "option_premium_and_actual_costs"),
         (8, "schema_reconciliation"),
+        (9, "actor_cqrs_event_store"),
     ])
     assert any(sql == MIGRATIONS[0][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[1][2] for sql, _, _ in calls)
