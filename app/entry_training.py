@@ -99,7 +99,6 @@ def record_signal(store, signal_id: int, signal, day: date):
                 "target_r": target_r if target_r > 0 else 1.5,
                 "score": int(getattr(signal, "score", 0) or 0),
                 "trigger": str(getattr(signal, "trigger", "") or ""),
-                "snapshot": dict(getattr(signal, "indicator_snapshot", {}) or {}),
                 "bars": [],
                 "results": {},
             }
@@ -164,6 +163,7 @@ def observe_completed_bars(store, day: date, frames: dict):
         if not records:
             return 0
         changed = 0
+        dirty = False
         for record in records.values():
             if record.get("complete"):
                 continue
@@ -182,6 +182,7 @@ def observe_completed_bars(store, day: date, frames: dict):
                         continue
                     record.setdefault("bars", []).append({"ts": ts, **values})
                     known.add(ts)
+                    dirty = True
                 except (TypeError, ValueError, KeyError):
                     continue
             record["bars"].sort(key=lambda item: item["ts"])
@@ -193,7 +194,7 @@ def observe_completed_bars(store, day: date, frames: dict):
                         record["results"][key] = result
                         changed += 1
             record["complete"] = all(str(delay) in record["results"] for delay in _DELAY_BARS)
-        if changed:
+        if dirty or changed:
             session["updated_at"] = datetime.now().astimezone().isoformat()
             _save(store, session)
         return changed
