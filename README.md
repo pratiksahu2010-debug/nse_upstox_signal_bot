@@ -143,7 +143,8 @@ The values below match the committed `.env.example` template and the defaults in
 | `OPTION_MAX_SPREAD_PCT` | `3.0` | Maximum spread percentage when checks enabled |
 | `OPTION_MAX_QUOTE_AGE_SEC` | `20` | Maximum option quote age |
 | `OPTION_PREMIUM_TRACKING` | `1` | Descriptive option-premium tracking; does not gate signals |
-| `TRAINING_COST_R` | `0.0` | Configured round-trip cost in underlying R units |\n| `ENTRY_TRAINING_ENABLED` | `1` | Enable the non-blocking one-session entry-timing shadow lab |
+| `TRAINING_COST_R` | `0.0` | Configured round-trip cost in underlying R units |
+| `ENTRY_TRAINING_ENABLED` | `1` | Enable the non-blocking one-session entry-timing shadow lab |
 | `OPTION_EST_ROUND_TRIP_FEE_PCT` | `0.0` | User-supplied estimated round-trip fee percentage |
 | `OPTION_EST_SLIPPAGE_BPS_PER_SIDE` | `0.0` | User-supplied estimated slippage per side in basis points |
 
