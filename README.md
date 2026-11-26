@@ -49,7 +49,8 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /signals
 - /stats
 - /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>
-- /train — bounded offline walk-forward research
+- /train — bounded offline walk-forward research (minimum eight distinct sessions)
+- /daytrain [status|report|on|off] — one-session shadow entry timing comparison
 - /proposals — inspect the pending proposal and held-out metrics
 - /approve <proposal_id> — stage approval; does not edit live settings
 - /rollback <proposal_id> — mark a proposal rolled back
@@ -58,7 +59,7 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /pause
 - /resume
 
-Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset, pause state, feedback labels and proposal state are stored persistently. Each new signal alert includes Good / Bad / Late / Fake / Skip inline feedback buttons. Human feedback is stored separately and takes precedence over the automatic categorical label in training reports; measured net R remains the performance objective and is never fabricated from subjective feedback. SKIP labels are excluded from training. Only completed outcomes are eligible, and train/validation/held-out partitions are split by complete trading days with an eight-day minimum. The trainer uses three expanding-window validation folds followed by a final chronological holdout that is not used for candidate selection. A one-bar embargo removes samples whose tracked outcome windows reach the next partition; same-symbol overlapping outcome windows are also purged. Both purge counts and per-fold sample diagnostics are reported. Candidate and baseline reports include net-R expectancy, win rate, profit factor, average win/loss and maximum drawdown. Indicator snapshots are persisted with each signal. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
+Pause suppresses new signal decisions while existing signal outcome tracking continues. Polling offset, pause state, feedback labels and proposal state are stored persistently. Each new signal alert includes Good / Bad / Late / Fake / Skip inline feedback buttons. Human feedback is stored separately and takes precedence over the automatic categorical label in training reports; measured net R remains the performance objective and is never fabricated from subjective feedback. SKIP labels are excluded from training. The separate one-day entry-timing lab records only completed 5-minute candles after each persisted signal and compares the existing signal-close entry with hypothetical 5- and 10-minute delayed entries over a fixed six-bar horizon. It uses the existing stop distance and TP1 multiple, conservatively assumes stop-first when stop and target touch in the same candle, and subtracts configured TRAINING_COST_R. It is shadow-only, requires at least five samples per cohort before showing a timing hypothesis, and never changes live entry, score, indicator, stop/target, cooldown or alert rules. A one-day result is not statistical validation; any timing hypothesis must be checked across multiple sessions with the existing walk-forward trainer before manual strategy review. Only completed outcomes are eligible, and train/validation/held-out partitions are split by complete trading days with an eight-day minimum. The trainer uses three expanding-window validation folds followed by a final chronological holdout that is not used for candidate selection. A one-bar embargo removes samples whose tracked outcome windows reach the next partition; same-symbol overlapping outcome windows are also purged. Both purge counts and per-fold sample diagnostics are reported. Candidate and baseline reports include net-R expectancy, win rate, profit factor, average win/loss and maximum drawdown. Indicator snapshots are persisted with each signal. /stats includes average MFE/MAE for tracked signals. No command can execute a trade.
 
 ## API
 
@@ -144,6 +145,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `OPTION_MAX_QUOTE_AGE_SEC` | `20` | Maximum option quote age |
 | `OPTION_PREMIUM_TRACKING` | `1` | Descriptive option-premium tracking; does not gate signals |
 | `TRAINING_COST_R` | `0.0` | Configured round-trip cost in underlying R units |
+| `ENTRY_TRAINING_ENABLED` | `1` | Enable the non-blocking one-session entry-timing shadow lab |
 | `OPTION_EST_ROUND_TRIP_FEE_PCT` | `0.0` | User-supplied estimated round-trip fee percentage |
 | `OPTION_EST_SLIPPAGE_BPS_PER_SIDE` | `0.0` | User-supplied estimated slippage per side in basis points |
 

@@ -110,6 +110,23 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         store.init()
         initialized = True
 
+        # The one-session entry-timing lab uses the existing persistent bot_state
+        # store; verify it survives real PostgreSQL serialization without a schema migration.
+        from types import SimpleNamespace
+        from app.entry_training import (
+            current_report, pending_symbols, record_signal, set_enabled,
+        )
+        set_enabled(store, True)
+        training_signal = SimpleNamespace(
+            symbol="CI_ENTRY_TRAINING", side="LONG", entry=100.0,
+            sl=98.0, tp1=103.0, bar_ts=stamp, score=82,
+            trigger="CI_ENTRY_TRAINING",
+        )
+        training_signal_id = int(stamp.timestamp()) % 1000000000
+        assert record_signal(store, training_signal_id, training_signal, today)
+        assert current_report(store)["signals"] == 1
+        assert pending_symbols(store, today) == {"CI_ENTRY_TRAINING"}
+
         # The scanner lease must also coordinate independent Render instances.
         # Keep the TTL deliberately short here so this real-Postgres test proves
         # renewal, not merely the in-memory fake's approximation of it.
@@ -328,6 +345,11 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         if legacy_module_signal_id is not None:
             store._run("DELETE FROM signals WHERE id=%s", (legacy_module_signal_id,))
         if initialized:
+            store._run(
+                "DELETE FROM bot_state WHERE key IN (%s, %s, %s)",
+                ("entry_timing_training_enabled", "entry_timing_training_session",
+                 "entry_timing_training_previous"),
+            )
             if signal_id is not None:
                 store._run("DELETE FROM signals WHERE id=%s", (signal_id,))
             store._run(

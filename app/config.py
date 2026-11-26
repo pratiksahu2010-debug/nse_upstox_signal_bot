@@ -63,6 +63,7 @@ UPSTOX_STREAM_ENABLED = _b("UPSTOX_STREAM_ENABLED", "1")
 UPSTOX_STREAM_REQUIRED = _b("UPSTOX_STREAM_REQUIRED", "0")
 DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do not send Telegram
 TRAINING_COST_R = max(0.0, _f("TRAINING_COST_R", 0.0))  # configured round-trip cost expressed in underlying R
+ENTRY_TRAINING_ENABLED = _b("ENTRY_TRAINING_ENABLED", "1")  # one-session shadow entry-timing lab; never gates signals
 
 # Modules on/off
 ENABLE_NORMAL = _b("ENABLE_NORMAL", "1")

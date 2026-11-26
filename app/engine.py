@@ -353,6 +353,8 @@ class Engine:
             and MOMENTUM.first_signal <= t_close <= MOMENTUM.last_entry
         )
         states = self._mod_states(module)
+        training_symbols = set()
+        training_only_symbols = set()
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
@@ -362,12 +364,31 @@ class Engine:
             for r in self.store.open_signals(day, "momentum"):
                 open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
-            states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
+            if module == "normal":
+                try:
+                    from .entry_training import pending_symbols
+                    training_symbols = pending_symbols(self.store, day)
+                except Exception:
+                    log.exception("could not read pending entry-training symbols; live tracking continues")
+            active_setup_symbols = {
+                s.info.symbol for s in states
+                if s.normal_state.get("phase", "IDLE") != "IDLE"
+            }
+            training_only_symbols = training_symbols - set(open_rows) - active_setup_symbols
+            states = [
+                s for s in states
+                if s.info.symbol in open_rows
+                or s.info.symbol in active_setup_symbols
+                or s.info.symbol in training_symbols
+            ]
             if not states:
                 d["scope"] = "idle"
                 return d
-        d["scope"] = "full" if full else "tracking"
-        d["symbols"] = len(states)
+        training_only_symbols &= {s.info.symbol for s in states}
+        strategy_states = [s for s in states if s.info.symbol not in training_only_symbols]
+        d["scope"] = "full" if full else ("tracking" if strategy_states else "idle")
+        d["symbols"] = len(strategy_states)
+        d["entry_training_symbols"] = len(training_only_symbols)
 
         expected = latest_eligible_bar(now)
         fetch_started = _time.monotonic()
@@ -379,10 +400,20 @@ class Engine:
             self._api_budget_before_cycle = {}
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
-        d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
+        strategy_data = {
+            symbol: frame for symbol, frame in data.items()
+            if symbol not in training_only_symbols
+        }
+        training_data = {
+            symbol: frame for symbol, frame in data.items()
+            if symbol in training_only_symbols
+        }
+        d["loaded"] = sum(1 for v in strategy_data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
-        d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
-        d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
+        d["fresh"] = sum(1 for v in strategy_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["entry_training_loaded"] = sum(1 for v in training_data.values() if v is not None and len(v))
+        d["entry_training_fresh"] = sum(1 for v in training_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["errors"] = [f"{s.info.symbol}: {s.err}" for s in strategy_states if s.err][:5]
         # Provider timing and pacing diagnostics help separate broker latency
         # from local rate-limit waiting without changing request limits.
         try:
@@ -469,6 +500,12 @@ class Engine:
                         # write; never abort evaluation of new signals.
                         d["rejects"]["outcome_storage_error"] += 1
                         log.exception("could not persist outcome for signal id=%s", r["id"])
+
+            # A symbol fetched only to finish shadow timing samples must not
+            # advance or arm the live Normal setup state machine.
+            if module == "normal" and sym in training_only_symbols:
+                d["rejects"]["entry_training_only_tracking"] += 1
+                continue
 
             # New entries require the exact latest completed 5m candle.
             stale = f.bar_ts != expected
@@ -662,6 +699,14 @@ class Engine:
                     log.exception("could not commit trigger lifecycle state for %s", sym)
             self._cycle_started_monotonic = None
         d["dispatch_seconds"] = round(_time.monotonic() - dispatch_started, 3)
+        if module == "normal":
+            try:
+                from .entry_training import observe_completed_bars
+                d["entry_training_updates"] = observe_completed_bars(self.store, day, data, through_ts=expected)
+            except Exception:
+                # Research collection is best-effort and runs only after live dispatch.
+                d["entry_training_error"] = True
+                log.exception("one-day entry training observation failed; live scanner continues")
         # Quote tracking runs after alert dispatch so optional observations cannot delay alerts.
         if OPTION_PREMIUM_TRACKING and open_rows:
             try:
@@ -877,6 +922,7 @@ class Engine:
                 sig.option_tracking["atm_reference"] = sig.option.get("atm_reference")
 
         accepted = 0
+        entry_training_signals = []
         for sig in prepared:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
@@ -929,6 +975,8 @@ class Engine:
                 continue
             d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
+            if module == "normal":
+                entry_training_signals.append((sid, sig))
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
@@ -949,6 +997,13 @@ class Engine:
                 sent += 1
             else:
                 d["rejects"]["telegram_failed"] += 1
+        if module == "normal" and entry_training_signals:
+            try:
+                from .entry_training import record_signals
+                record_signals(self.store, entry_training_signals, day)
+            except Exception:
+                # Persist research data only after all live signal notifications were attempted.
+                log.exception("batch entry timing registration failed; live alerts already dispatched")
         return sent
 
     def _deliver_pending(self, d: dict, now: datetime):
