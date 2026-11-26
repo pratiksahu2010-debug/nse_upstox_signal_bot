@@ -182,7 +182,7 @@ def _evaluate_candidate(record, delay: int, cost_r: float):
     }
 
 
-def observe_completed_bars(store, day: date, frames: dict):
+def observe_completed_bars(store, day: date, frames: dict, through_ts=None):
     """Append post-signal completed 5m OHLC bars and finalize mature candidates."""
     if not enabled(store):
         return 0
@@ -206,7 +206,7 @@ def observe_completed_bars(store, day: date, frames: dict):
             for stamp, candle in frame.iterrows():
                 try:
                     ts = stamp.isoformat()
-                    if stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]:
+                    if (stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]\n                            or (through_ts is not None and stamp > through_ts)):
                         continue
                     values = {name: float(candle[name]) for name in ("high", "low", "close")}
                     if not all(abs(value) < float("inf") for value in values.values()):
