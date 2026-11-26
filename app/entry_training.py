@@ -104,6 +104,8 @@ def record_signals(store, signals, day: date):
     try:
         with _LOCK:
             session = _ensure_session(store, day)
+            if session.get("status") != "COLLECTING":
+                return 0
             records = session.setdefault("signals", {})
             added = 0
             for signal_id, signal in signals:
@@ -186,6 +188,8 @@ def observe_completed_bars(store, day: date, frames: dict):
         return 0
     with _LOCK:
         session = _ensure_session(store, day)
+        if session.get("status") != "COLLECTING":
+            return 0
         records = session.get("signals") or {}
         if not records:
             return 0
