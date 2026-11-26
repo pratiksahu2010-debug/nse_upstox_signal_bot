@@ -384,8 +384,11 @@ class Engine:
             if not states:
                 d["scope"] = "idle"
                 return d
-        d["scope"] = "full" if full else "tracking"
-        d["symbols"] = len(states)
+        training_only_symbols &= {s.info.symbol for s in states}
+        strategy_states = [s for s in states if s.info.symbol not in training_only_symbols]
+        d["scope"] = "full" if full else ("tracking" if strategy_states else "idle")
+        d["symbols"] = len(strategy_states)
+        d["entry_training_symbols"] = len(training_only_symbols)
 
         expected = latest_eligible_bar(now)
         fetch_started = _time.monotonic()
@@ -397,10 +400,20 @@ class Engine:
             self._api_budget_before_cycle = {}
         data = self._load_many(module, states, now, force)
         d["fetch_seconds"] = round(_time.monotonic() - fetch_started, 3)
-        d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
+        strategy_data = {
+            symbol: frame for symbol, frame in data.items()
+            if symbol not in training_only_symbols
+        }
+        training_data = {
+            symbol: frame for symbol, frame in data.items()
+            if symbol in training_only_symbols
+        }
+        d["loaded"] = sum(1 for v in strategy_data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
-        d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
-        d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
+        d["fresh"] = sum(1 for v in strategy_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["entry_training_loaded"] = sum(1 for v in training_data.values() if v is not None and len(v))
+        d["entry_training_fresh"] = sum(1 for v in training_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["errors"] = [f"{s.info.symbol}: {s.err}" for s in strategy_states if s.err][:5]
         # Provider timing and pacing diagnostics help separate broker latency
         # from local rate-limit waiting without changing request limits.
         try:
