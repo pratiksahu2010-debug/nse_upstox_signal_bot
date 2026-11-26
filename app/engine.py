@@ -20,7 +20,7 @@ from . import mod_normal, mod_momentum
 from .market_stream import UpstoxMarketStream
 from .scanner_lease import ScannerLease
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, ENTRY_TRAINING_ENABLED, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
+from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
 from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_snapshot,
                      initial_option_tracking, update_option_tracking)
