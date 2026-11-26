@@ -86,3 +86,14 @@ def test_daily_report_is_research_only_and_never_proposes_live_changes():
     assert report["research_only"] is True
     assert report["live_strategy_changed"] is False
     assert report["recommendation"]["status"] == "insufficient_one_day_samples"
+
+def test_pending_symbols_keep_tracking_until_all_shadow_cohorts_mature():
+    from app.entry_training import pending_symbols
+
+    store = MemoryStore()
+    set_enabled(store, True)
+    stamp = datetime(2026, 11, 27, 9, 15, tzinfo=IST)
+    record_signal(store, 3, Signal(stamp), stamp.date())
+    assert pending_symbols(store, stamp.date()) == {"ABC"}
+    observe_completed_bars(store, stamp.date(), {"ABC": _frame(stamp, 8)})
+    assert pending_symbols(store, stamp.date()) == set()
