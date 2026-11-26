@@ -6,7 +6,7 @@ Each candidate uses only bars that completed after its hypothetical entry.
 from __future__ import annotations
 
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from statistics import mean, median
 
 from .config import ENTRY_TRAINING_ENABLED, TRAINING_COST_R
@@ -113,6 +113,13 @@ def _evaluate_candidate(record, delay: int, cost_r: float):
     bars = record["bars"]
     if len(bars) < delay + _HORIZON_BARS:
         return None
+    # Reject gaps rather than treating a missing candle as a five-minute bar.
+    expected = datetime.fromisoformat(record["signal_bar_ts"]) + timedelta(minutes=5)
+    for item in bars[:delay + _HORIZON_BARS]:
+        stamp = datetime.fromisoformat(item["ts"])
+        if stamp != expected:
+            return None
+        expected += timedelta(minutes=5)
     direction = int(record["direction"])
     risk = float(record["risk_points"])
     if delay == 0:
@@ -170,12 +177,12 @@ def observe_completed_bars(store, day: date, frames: dict):
             frame = frames.get(record.get("symbol"))
             if frame is None or getattr(frame, "empty", True):
                 continue
-            signal_ts = record["signal_bar_ts"]
+            signal_ts = datetime.fromisoformat(record["signal_bar_ts"])
             known = {item["ts"] for item in record.get("bars", [])}
             for stamp, candle in frame.iterrows():
                 try:
                     ts = stamp.isoformat()
-                    if ts <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]:
+                    if stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]:
                         continue
                     values = {name: float(candle[name]) for name in ("high", "low", "close")}
                     if not all(abs(value) < float("inf") for value in values.values()):
