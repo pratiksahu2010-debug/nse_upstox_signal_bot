@@ -89,14 +89,17 @@ class ActorRuntime:
                     self._running.discard(symbol)
                     return
                 item = mailbox.popleft()
-                self._pending -= 1
-            if not item.future.set_running_or_notify_cancel():
-                continue
             try:
-                item.future.set_result(self.handler(symbol, item.event))
-            except BaseException as exc:
-                item.future.set_exception(exc)
-                log.exception("symbol actor event failed symbol=%s", symbol)
+                if not item.future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    item.future.set_result(self.handler(symbol, item.event))
+                except BaseException as exc:
+                    item.future.set_exception(exc)
+                    log.exception("symbol actor event failed symbol=%s", symbol)
+            finally:
+                with self._lock:
+                    self._pending -= 1
 
     def close(self, wait: bool = True) -> None:
         with self._lock:
