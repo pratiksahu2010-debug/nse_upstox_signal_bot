@@ -31,3 +31,15 @@ Adopt a modular-monolith architecture combining bounded virtual actors with a Po
 - Per-symbol ordering, durable event IDs, monotonic aggregate sequence and snapshots.
 - PostgreSQL remains required in production. Never fall back to volatile memory when configured production persistence is unavailable.
 - No automatic merge or Render deployment as part of this migration.
+
+
+## Durable actor orchestration foundation
+
+`EventSourcedActorRuntime` provides a tested, opt-in orchestration layer:
+- restores each aggregate from its latest snapshot and replays later events in sequence;
+- persists each new event before submitting it to the local bounded mailbox;
+- retries enqueueing already-persisted events through `flush` after mailbox backpressure;
+- checkpoints only after the reducer has applied the corresponding event;
+- keeps replay side-effect-free by requiring a pure reducer.
+
+This class is not yet wired into the production scanner. The current engine remains authoritative until a separate shadow integration and parity phase is completed. Reducers must only reconstruct state; they must never send Telegram messages, place orders, or call external services.
