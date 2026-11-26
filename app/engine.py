@@ -353,6 +353,8 @@ class Engine:
             and MOMENTUM.first_signal <= t_close <= MOMENTUM.last_entry
         )
         states = self._mod_states(module)
+        training_symbols = set()
+        training_only_symbols = set()
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
@@ -362,17 +364,21 @@ class Engine:
             for r in self.store.open_signals(day, "momentum"):
                 open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
-            training_symbols = set()
             if module == "normal":
                 try:
                     from .entry_training import pending_symbols
                     training_symbols = pending_symbols(self.store, day)
                 except Exception:
                     log.exception("could not read pending entry-training symbols; live tracking continues")
+            active_setup_symbols = {
+                s.info.symbol for s in states
+                if s.normal_state.get("phase", "IDLE") != "IDLE"
+            }
+            training_only_symbols = training_symbols - set(open_rows) - active_setup_symbols
             states = [
                 s for s in states
                 if s.info.symbol in open_rows
-                or s.normal_state.get("phase", "IDLE") != "IDLE"
+                or s.info.symbol in active_setup_symbols
                 or s.info.symbol in training_symbols
             ]
             if not states:
@@ -481,6 +487,12 @@ class Engine:
                         # write; never abort evaluation of new signals.
                         d["rejects"]["outcome_storage_error"] += 1
                         log.exception("could not persist outcome for signal id=%s", r["id"])
+
+            # A symbol fetched only to finish shadow timing samples must not
+            # advance or arm the live Normal setup state machine.
+            if module == "normal" and sym in training_only_symbols:
+                d["rejects"]["entry_training_only_tracking"] += 1
+                continue
 
             # New entries require the exact latest completed 5m candle.
             stale = f.bar_ts != expected
