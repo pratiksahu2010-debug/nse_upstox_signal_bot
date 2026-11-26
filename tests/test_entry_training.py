@@ -5,8 +5,8 @@ import pandas as pd
 from app.config import IST
 from app.db import MemoryStore
 from app.entry_training import (
-    build_daily_report, current_report, observe_completed_bars,
-    record_signal, set_enabled,
+    _evaluate_candidate, _signal_record, build_daily_report, current_report,
+    observe_completed_bars, record_signal, set_enabled,
 )
 
 
@@ -111,3 +111,34 @@ def test_training_never_reads_candles_after_completed_scan_boundary():
     report = current_report(store)
     assert report["completed_signals"] == 0
     assert report["pending_signals"] == 1
+
+def test_gap_through_stop_uses_adverse_open_fill():
+    record = {
+        "direction": 1,
+        "risk_points": 2.0,
+        "original_entry": 100.0,
+        "target_r": 1.5,
+        "bars": [
+            {"ts": f"2026-11-27T09:{20 + i * 5:02d}:00+05:30",
+             "open": 97.0 if i == 0 else 97.5,
+             "high": 98.0, "low": 96.5, "close": 97.5}
+            for i in range(6)
+        ],
+        "signal_bar_ts": "2026-11-27T09:15:00+05:30",
+    }
+    result = _evaluate_candidate(record, 0, 0.0)
+    assert result["first_hit"] == "SL"
+    assert result["gross_r"] == -1.5
+
+
+def test_invalid_signal_direction_or_target_is_not_trained():
+    stamp = datetime(2026, 11, 27, 9, 15, tzinfo=IST)
+
+    class InvalidSide(Signal):
+        side = "UNKNOWN"
+
+    class InvalidTarget(Signal):
+        tp1 = 99.0
+
+    assert _signal_record(1, InvalidSide(stamp)) is None
+    assert _signal_record(2, InvalidTarget(stamp)) is None
