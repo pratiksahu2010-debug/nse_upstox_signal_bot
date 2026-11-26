@@ -362,7 +362,19 @@ class Engine:
             for r in self.store.open_signals(day, "momentum"):
                 open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
-            states = [s for s in states if s.info.symbol in open_rows or s.normal_state.get("phase", "IDLE") != "IDLE"]
+            training_symbols = set()
+            if module == "normal":
+                try:
+                    from .entry_training import pending_symbols
+                    training_symbols = pending_symbols(self.store, day)
+                except Exception:
+                    log.exception("could not read pending entry-training symbols; live tracking continues")
+            states = [
+                s for s in states
+                if s.info.symbol in open_rows
+                or s.normal_state.get("phase", "IDLE") != "IDLE"
+                or s.info.symbol in training_symbols
+            ]
             if not states:
                 d["scope"] = "idle"
                 return d
