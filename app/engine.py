@@ -20,7 +20,7 @@ from . import mod_normal, mod_momentum
 from .market_stream import UpstoxMarketStream
 from .scanner_lease import ScannerLease
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
+from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, ENTRY_TRAINING_ENABLED, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
 from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_snapshot,
                      initial_option_tracking, update_option_tracking)
@@ -382,6 +382,14 @@ class Engine:
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
+        if module == "normal" and ENTRY_TRAINING_ENABLED:
+            try:
+                from .entry_training import observe_completed_bars
+                d["entry_training_updates"] = observe_completed_bars(self.store, day, data)
+            except Exception:
+                # Research collection is best-effort and must never block live scanning.
+                d["entry_training_error"] = True
+                log.exception("one-day entry training observation failed; live scanner continues")
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in states if s.err][:5]
         # Provider timing and pacing diagnostics help separate broker latency
         # from local rate-limit waiting without changing request limits.
@@ -929,6 +937,13 @@ class Engine:
                 continue
             d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
+            if module == "normal" and ENTRY_TRAINING_ENABLED:
+                try:
+                    from .entry_training import record_signal
+                    record_signal(self.store, sid, sig, sig.bar_ts.date())
+                except Exception:
+                    # Shadow training is isolated from durable signal persistence and delivery.
+                    log.exception("could not register signal id=%s in entry timing lab", sid)
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
             try:
