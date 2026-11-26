@@ -382,7 +382,7 @@ class Engine:
         d["loaded"] = sum(1 for v in data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in data.values() if v is not None and len(v) and v.index[-1] == expected)
-        if module == "normal" and ENTRY_TRAINING_ENABLED:
+        if module == "normal":
             try:
                 from .entry_training import observe_completed_bars
                 d["entry_training_updates"] = observe_completed_bars(self.store, day, data)
@@ -937,7 +937,7 @@ class Engine:
                 continue
             d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
-            if module == "normal" and ENTRY_TRAINING_ENABLED:
+            if module == "normal":
                 try:
                     from .entry_training import record_signal
                     record_signal(self.store, sid, sig, sig.bar_ts.date())
