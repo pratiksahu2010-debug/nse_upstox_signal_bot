@@ -206,7 +206,8 @@ def observe_completed_bars(store, day: date, frames: dict, through_ts=None):
             for stamp, candle in frame.iterrows():
                 try:
                     ts = stamp.isoformat()
-                    if (stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]\n                            or (through_ts is not None and stamp > through_ts)):
+                    if (stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]
+                            or (through_ts is not None and stamp > through_ts)):
                         continue
                     values = {name: float(candle[name]) for name in ("high", "low", "close")}
                     if not all(abs(value) < float("inf") for value in values.values()):
