@@ -49,7 +49,8 @@ Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. The polling worker only respo
 - /signals
 - /stats
 - /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>
-- /train — bounded offline walk-forward research
+- /train — bounded offline walk-forward research (minimum eight distinct sessions)
+- /daytrain [status|report|on|off] — one-session shadow entry timing comparison
 - /proposals — inspect the pending proposal and held-out metrics
 - /approve <proposal_id> — stage approval; does not edit live settings
 - /rollback <proposal_id> — mark a proposal rolled back
