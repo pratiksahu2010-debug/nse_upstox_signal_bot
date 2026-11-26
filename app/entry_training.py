@@ -77,8 +77,13 @@ def _signal_record(signal_id: int, signal):
     stop = float(signal.sl)
     target = float(signal.tp1)
     risk = abs(entry - stop)
-    side = 1 if str(signal.side).upper() in ("LONG", "CALL", "CE") else -1
+    side_name = str(signal.side).upper()
+    if side_name not in ("LONG", "CALL", "CE", "SHORT", "PUT", "PE"):
+        return None
+    side = 1 if side_name in ("LONG", "CALL", "CE") else -1
     if risk <= 0 or not all(map(lambda x: abs(x) < float("inf"), (entry, stop, target))):
+        return None
+    if (side > 0 and target <= entry) or (side < 0 and target >= entry):
         return None
     target_r = abs(target - entry) / risk
     return {
@@ -156,6 +161,7 @@ def _evaluate_candidate(record, delay: int, cost_r: float):
     first_hit = "TIME"
     gross_r = (float(window[-1]["close"]) - entry) * direction / risk
     for bar in window:
+        open_price = float(bar["open"])
         high, low = float(bar["high"]), float(bar["low"])
         favourable = (high - entry) * direction / risk if direction > 0 else (entry - low) / risk
         adverse = (entry - low) / risk if direction > 0 else (high - entry) / risk
@@ -165,7 +171,10 @@ def _evaluate_candidate(record, delay: int, cost_r: float):
         target_hit = high >= target if direction > 0 else low <= target
         # Conservative same-candle ambiguity: stop is assumed first.
         if stop_hit:
-            first_hit, gross_r = "SL", -1.0
+            # A gap through the stop fills at the worse opening price, not the stop level.
+            exit_price = min(open_price, stop) if direction > 0 else max(open_price, stop)
+            first_hit = "SL"
+            gross_r = (exit_price - entry) * direction / risk
             break
         if target_hit:
             first_hit, gross_r = "TP1", float(record["target_r"])
@@ -209,7 +218,7 @@ def observe_completed_bars(store, day: date, frames: dict, through_ts=None):
                     if (stamp <= signal_ts or ts in known or stamp.date().isoformat() != session["date"]
                             or (through_ts is not None and stamp > through_ts)):
                         continue
-                    values = {name: float(candle[name]) for name in ("high", "low", "close")}
+                    values = {name: float(candle[name]) for name in ("open", "high", "low", "close")}
                     if not all(abs(value) < float("inf") for value in values.values()):
                         continue
                     record.setdefault("bars", []).append({"ts": ts, **values})
