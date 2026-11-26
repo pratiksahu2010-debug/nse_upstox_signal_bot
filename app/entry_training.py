@@ -290,7 +290,7 @@ def pending_symbols(store, day: date):
     if not enabled(store):
         return set()
     session = _state(store)
-    if not session or session.get("date") != day.isoformat():
+    if not session or session.get("date") != day.isoformat() or session.get("status") != "COLLECTING":
         return set()
     return {
         str(record.get("symbol"))
@@ -304,7 +304,7 @@ def current_report(store):
     now = datetime.now(IST)
     if session and session.get("status") == "COLLECTING":
         session_day = date.fromisoformat(session["date"])
-        if session_day < now.date() or now.time() >= time(15, 30):
+        if session_day < now.date() or now.time() >= time(15, 36):
             session["status"] = "CLOSED"
             session["closed_at"] = now.isoformat()
             _save(store, session)
