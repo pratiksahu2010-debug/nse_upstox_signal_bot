@@ -281,6 +281,20 @@ def build_daily_report(session):
     }
 
 
+def pending_symbols(store, day: date):
+    """Symbols that still need completed bars for the current session's shadow cohorts."""
+    if not enabled(store):
+        return set()
+    session = _state(store)
+    if not session or session.get("date") != day.isoformat():
+        return set()
+    return {
+        str(record.get("symbol"))
+        for record in (session.get("signals") or {}).values()
+        if record.get("symbol") and not record.get("complete")
+    }
+
+
 def current_report(store):
     session = _state(store)
     if session is None:
