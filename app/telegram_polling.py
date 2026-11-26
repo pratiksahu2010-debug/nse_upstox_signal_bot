@@ -370,7 +370,7 @@ class TelegramPoller:
                 self._reply("One-day entry timing lab disabled. Existing signal tracking and live strategy are unchanged.")
             elif action in {"status", "report"}:
                 report = current_report(self.store)
-                prefix = f"Collection enabled: {enabled(self.store)}\\n"
+                prefix = f"Collection enabled: {enabled(self.store)}\n"
                 self._reply(prefix + format_daily_report(report))
             else:
                 self._reply("Usage: /daytrain [status|report|on|off]")
