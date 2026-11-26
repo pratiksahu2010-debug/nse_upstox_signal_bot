@@ -174,7 +174,7 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
         # Re-running init must be safe and must not reapply completed migrations.
         store.init()
         versions = store._run("SELECT version FROM schema_migrations ORDER BY version", fetch="all")
-        assert [row[0] for row in versions] == list(range(1, 9))
+        assert [row[0] for row in versions] == list(range(1, 10))
 
         # The legacy timestamp and signal row must survive the in-place rename.
         migrated = store._run(
@@ -241,6 +241,30 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
 
         store.save_normal_state(today, symbol, {"phase": "TRIGGERED", "side": 1})
         assert store.load_normal_states(today)[symbol] == {"phase": "TRIGGERED", "side": 1}
+
+        # Event-sourcing primitives use the same real PostgreSQL store and
+        # enforce event-ID idempotency plus contiguous per-aggregate sequences.
+        event_aggregate = "CI_EVENT_STORE"
+        event_one = {
+            "event_id": "ci-event-1", "aggregate_type": "symbol",
+            "aggregate_id": event_aggregate, "sequence": 1,
+            "event_type": "SETUP_DETECTED", "payload": {"side": "LONG"},
+            "occurred_at": stamp,
+        }
+        event_two = dict(event_one, event_id="ci-event-2", sequence=2,
+                         event_type="CONFIRMED", payload={"score": 84})
+        event_gap = dict(event_one, event_id="ci-event-gap", sequence=4,
+                         event_type="PUBLISHED")
+        assert store.append_domain_event(event_one) is True
+        assert store.append_domain_event(event_one) is False
+        assert store.append_domain_event(event_gap) is False
+        assert store.append_domain_event(event_two) is True
+        replayed = store.load_domain_events("symbol", event_aggregate)
+        assert [item["sequence"] for item in replayed] == [1, 2]
+        assert replayed[1]["payload"] == {"score": 84}
+        assert store.save_actor_snapshot("symbol", event_aggregate, 2, {"phase": "CONFIRMED"})
+        assert store.save_actor_snapshot("symbol", event_aggregate, 1, {"phase": "IDLE"}) is False
+        assert store.load_actor_snapshot("symbol", event_aggregate)["state"] == {"phase": "CONFIRMED"}
 
         signal = {
             "module": "normal",
@@ -310,4 +334,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip():
                 "DELETE FROM normal_setup_state WHERE trade_day=%s AND symbol=%s",
                 (today, symbol),
             )
+            store._run("DELETE FROM domain_events WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_STORE"))
+            store._run("DELETE FROM actor_snapshots WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_STORE"))
         store.close()
