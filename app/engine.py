@@ -702,7 +702,7 @@ class Engine:
         if module == "normal":
             try:
                 from .entry_training import observe_completed_bars
-                d["entry_training_updates"] = observe_completed_bars(self.store, day, data)
+                d["entry_training_updates"] = observe_completed_bars(self.store, day, data, through_ts=expected)
             except Exception:
                 # Research collection is best-effort and runs only after live dispatch.
                 d["entry_training_error"] = True
