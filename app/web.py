@@ -75,7 +75,7 @@ def _init():
             log.info("startup phase=engine_constructed elapsed_seconds=%.2f", _time.monotonic() - phase_started)
             candidate.paused = bool(get_persistent_state(candidate_store, "paused", False))
             if not config.UPSTOX_TOKEN:
-                log.error("UPSTOX_ACCESS_TOKEN is empty - data calls will fail")
+                log.error("Upstox token is not configured - data calls will fail")
 
             # Start the Telegram poller before the scheduler so a poller
             # startup failure cannot leave a live scanner behind during retry.

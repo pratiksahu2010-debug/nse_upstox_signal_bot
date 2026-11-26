@@ -859,42 +859,70 @@ class PostgresStore(MemoryStore):
         self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
 
     def append_domain_event(self, event: dict) -> bool:
-        """Append under an aggregate-scoped transaction lock.
+        """Append an event using a fresh READ COMMITTED snapshot under an aggregate lock.
 
-        The advisory lock and MAX(sequence) read occur in the same SQL statement
-        and transaction. Concurrent writers for one aggregate therefore cannot
-        both observe the same next sequence. A stale/gapped sequence returns
-        False so the caller can reload the aggregate version and retry.
+        Lock acquisition and sequence allocation are separate statements in the
+        same transaction. This matters with Neon/PgBouncer: a statement snapshot
+        taken before waiting for the advisory lock would otherwise remain stale.
+        A stale/gapped sequence or duplicate key returns False for caller retry.
         """
-        row = self._run(
-            """WITH aggregate_lock AS MATERIALIZED (
-                   SELECT pg_advisory_xact_lock(
-                       731904, hashtext(%s || chr(31) || %s)
-                   )
-               ),
-               next_sequence AS MATERIALIZED (
-                   SELECT COALESCE(MAX(events.sequence), 0) + 1 AS next_sequence
-                     FROM domain_events AS events
-                     CROSS JOIN aggregate_lock
-                    WHERE events.aggregate_type=%s AND events.aggregate_id=%s
-               )
-               INSERT INTO domain_events
-                   (event_id, aggregate_type, aggregate_id, sequence,
-                    event_type, payload, occurred_at)
-               SELECT %s, %s, %s, %s, %s, %s::jsonb, %s
-                 FROM next_sequence
-                WHERE %s = next_sequence.next_sequence
-               ON CONFLICT DO NOTHING
-               RETURNING event_id""",
-            (event["aggregate_type"], event["aggregate_id"],
-             event["aggregate_type"], event["aggregate_id"],
-             event["event_id"], event["aggregate_type"], event["aggregate_id"],
-             int(event["sequence"]), event["event_type"],
-             json.dumps(event.get("payload") or {}), event["occurred_at"],
-             int(event["sequence"])),
-            "one",
-        )
-        return bool(row)
+        from psycopg2 import InterfaceError, OperationalError
+
+        for attempt in range(2):
+            conn = self.pool.getconn()
+            discard = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = 120000")
+                    cur.execute("SET LOCAL lock_timeout = 15000")
+                    cur.execute("SET LOCAL idle_in_transaction_session_timeout = 60000")
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(731904, hashtext(%s || chr(31) || %s))",
+                        (event["aggregate_type"], event["aggregate_id"]),
+                    )
+                    cur.execute(
+                        """SELECT COALESCE(MAX(sequence), 0) + 1
+                             FROM domain_events
+                            WHERE aggregate_type=%s AND aggregate_id=%s""",
+                        (event["aggregate_type"], event["aggregate_id"]),
+                    )
+                    expected_sequence = int(cur.fetchone()[0])
+                    if int(event["sequence"]) != expected_sequence:
+                        conn.rollback()
+                        return False
+                    cur.execute(
+                        """INSERT INTO domain_events
+                               (event_id, aggregate_type, aggregate_id, sequence,
+                                event_type, payload, occurred_at)
+                           VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                           ON CONFLICT DO NOTHING
+                           RETURNING event_id""",
+                        (event["event_id"], event["aggregate_type"], event["aggregate_id"],
+                         int(event["sequence"]), event["event_type"],
+                         json.dumps(event.get("payload") or {}), event["occurred_at"]),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+                return bool(row)
+            except (OperationalError, InterfaceError):
+                discard = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    log.warning("Postgres event append failed; discarding connection and retrying once")
+                    continue
+                raise
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    discard = True
+                raise
+            finally:
+                self.pool.putconn(conn, close=discard or bool(conn.closed))
+        return False
 
     def load_domain_events(self, aggregate_type: str, aggregate_id: str,
                            after_sequence: int = 0, limit: int = 1000) -> list:

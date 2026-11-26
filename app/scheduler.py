@@ -24,7 +24,11 @@ def _notify_auth_state(engine: Engine, now: datetime):
     last = getattr(engine, "auth_alerted_at", None)
     if last is not None and now - last < timedelta(minutes=5):
         return
-    reason = "UPSTOX_ACCESS_TOKEN is missing" if missing else "Upstox rejected UPSTOX_ACCESS_TOKEN"
+    reason = (
+        "Upstox token is missing (set UPSTOX_ANALYTICS_TOKEN; UPSTOX_ACCESS_TOKEN is a fallback)"
+        if missing else
+        "Upstox rejected the configured token (check UPSTOX_ANALYTICS_TOKEN or UPSTOX_ACCESS_TOKEN)"
+    )
     message = (
         f"<b>⚠️ Upstox authentication problem</b>\n{reason}. "
         "Update the Render secret and restart the service. Scanner data may be unavailable; "

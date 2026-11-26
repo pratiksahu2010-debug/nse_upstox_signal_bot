@@ -32,6 +32,7 @@ def test_invalid_upstox_token_alert_is_throttled_and_recovers(monkeypatch):
     scheduler._notify_auth_state(engine, now + timedelta(minutes=5))
     assert len(engine.messages) == 2
     assert "rejected" in engine.messages[0][0]
+    assert "UPSTOX_ANALYTICS_TOKEN" in engine.messages[0][0]
 
     engine.client.auth_failed = False
     scheduler._notify_auth_state(engine, now + timedelta(minutes=6))
@@ -47,3 +48,4 @@ def test_missing_upstox_token_sends_configuration_alert(monkeypatch):
 
     assert len(engine.messages) == 1
     assert "missing" in engine.messages[0][0]
+    assert "UPSTOX_ANALYTICS_TOKEN" in engine.messages[0][0]
