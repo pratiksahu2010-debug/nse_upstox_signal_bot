@@ -317,6 +317,29 @@ MIGRATIONS = (
     (7, "option_premium_and_actual_costs", """ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS option_tracking JSONB NOT NULL DEFAULT '{}'::jsonb;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS actual_option_costs JSONB NOT NULL DEFAULT '{}'::jsonb"""),
+    (9, "actor_cqrs_event_store", """
+        CREATE TABLE IF NOT EXISTS domain_events (
+            event_id TEXT PRIMARY KEY,
+            aggregate_type TEXT NOT NULL,
+            aggregate_id TEXT NOT NULL,
+            sequence BIGINT NOT NULL CHECK (sequence > 0),
+            event_type TEXT NOT NULL,
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            occurred_at TIMESTAMPTZ NOT NULL,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (aggregate_type, aggregate_id, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_domain_events_aggregate
+            ON domain_events (aggregate_type, aggregate_id, sequence);
+        CREATE TABLE IF NOT EXISTS actor_snapshots (
+            aggregate_type TEXT NOT NULL,
+            aggregate_id TEXT NOT NULL,
+            version BIGINT NOT NULL CHECK (version >= 0),
+            state JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (aggregate_type, aggregate_id)
+        );
+    """),
 )
 
 COLS = "id, module, symbol, side, bar_ts, trade_day, entry, sl, tp1, tp2, score, trig, status, r_result, details, option_tracking, actual_option_costs"
@@ -407,9 +430,53 @@ class MemoryStore:
         self.lock = threading.Lock()
         self._id = 0
         self.normal_states: dict = {}
+        self.domain_events: list = []
+        self.event_ids: set = set()
+        self.actor_snapshots: dict = {}
 
     def init(self):
         pass
+
+    def append_domain_event(self, event: dict) -> bool:
+        """Append one immutable event; duplicate IDs or aggregate sequences are ignored."""
+        key = (event["aggregate_type"], event["aggregate_id"], int(event["sequence"]))
+        with self.lock:
+            if event["event_id"] in self.event_ids:
+                return False
+            if any((row["aggregate_type"], row["aggregate_id"], row["sequence"]) == key
+                   for row in self.domain_events):
+                return False
+            row = dict(event)
+            self.domain_events.append(row)
+            self.event_ids.add(row["event_id"])
+            return True
+
+    def load_domain_events(self, aggregate_type: str, aggregate_id: str,
+                           after_sequence: int = 0, limit: int = 1000) -> list:
+        with self.lock:
+            rows = [dict(row) for row in self.domain_events
+                    if row["aggregate_type"] == aggregate_type
+                    and row["aggregate_id"] == aggregate_id
+                    and int(row["sequence"]) > int(after_sequence)]
+        return sorted(rows, key=lambda row: int(row["sequence"]))[:max(1, int(limit))]
+
+    def save_actor_snapshot(self, aggregate_type: str, aggregate_id: str,
+                            version: int, state: dict) -> bool:
+        key = (aggregate_type, aggregate_id)
+        with self.lock:
+            current = self.actor_snapshots.get(key)
+            if current and int(current["version"]) >= int(version):
+                return False
+            self.actor_snapshots[key] = {
+                "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
+                "version": int(version), "state": dict(state),
+            }
+            return True
+
+    def load_actor_snapshot(self, aggregate_type: str, aggregate_id: str):
+        with self.lock:
+            row = self.actor_snapshots.get((aggregate_type, aggregate_id))
+            return dict(row) if row else None
 
     def add_signal(self, s: dict) -> Optional[int]:
         with self.lock:
@@ -772,6 +839,67 @@ class PostgresStore(MemoryStore):
 
     def save_normal_state(self, day: date, symbol: str, state: dict):
         self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
+
+    def append_domain_event(self, event: dict) -> bool:
+        """Append an immutable event with idempotent event and aggregate-sequence keys."""
+        row = self._run(
+            """INSERT INTO domain_events
+                   (event_id, aggregate_type, aggregate_id, sequence, event_type, payload, occurred_at)
+               VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+               ON CONFLICT DO NOTHING
+               RETURNING event_id""",
+            (event["event_id"], event["aggregate_type"], event["aggregate_id"],
+             int(event["sequence"]), event["event_type"],
+             json.dumps(event.get("payload") or {}), event["occurred_at"]),
+            "one",
+        )
+        return bool(row)
+
+    def load_domain_events(self, aggregate_type: str, aggregate_id: str,
+                           after_sequence: int = 0, limit: int = 1000) -> list:
+        rows = self._run(
+            """SELECT event_id, aggregate_type, aggregate_id, sequence,
+                      event_type, payload, occurred_at
+                 FROM domain_events
+                WHERE aggregate_type=%s AND aggregate_id=%s AND sequence>%s
+                ORDER BY sequence LIMIT %s""",
+            (aggregate_type, aggregate_id, int(after_sequence), max(1, int(limit))),
+            "all",
+        )
+        return [
+            {"event_id": row[0], "aggregate_type": row[1], "aggregate_id": row[2],
+             "sequence": int(row[3]), "event_type": row[4],
+             "payload": row[5] if isinstance(row[5], dict) else json.loads(row[5] or "{}"),
+             "occurred_at": row[6]}
+            for row in rows
+        ]
+
+    def save_actor_snapshot(self, aggregate_type: str, aggregate_id: str,
+                            version: int, state: dict) -> bool:
+        row = self._run(
+            """INSERT INTO actor_snapshots (aggregate_type, aggregate_id, version, state)
+               VALUES (%s, %s, %s, %s::jsonb)
+               ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
+                   SET version=EXCLUDED.version, state=EXCLUDED.state, updated_at=now()
+                 WHERE actor_snapshots.version < EXCLUDED.version
+               RETURNING version""",
+            (aggregate_type, aggregate_id, int(version), json.dumps(state or {})),
+            "one",
+        )
+        return bool(row)
+
+    def load_actor_snapshot(self, aggregate_type: str, aggregate_id: str):
+        row = self._run(
+            """SELECT aggregate_type, aggregate_id, version, state
+                 FROM actor_snapshots
+                WHERE aggregate_type=%s AND aggregate_id=%s""",
+            (aggregate_type, aggregate_id), "one",
+        )
+        if not row:
+            return None
+        state = row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}")
+        return {"aggregate_type": row[0], "aggregate_id": row[1],
+                "version": int(row[2]), "state": state}
 
     def add_signal(self, s: dict) -> Optional[int]:
         """Insert at most one direction for a module/symbol/candle across workers."""
