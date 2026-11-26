@@ -5,11 +5,14 @@ Each candidate uses only bars that completed after its hypothetical entry.
 """
 from __future__ import annotations
 
+import logging
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from statistics import mean, median
 
-from .config import ENTRY_TRAINING_ENABLED, TRAINING_COST_R
+from .config import ENTRY_TRAINING_ENABLED, TRAINING_COST_R, IST
+
+log = logging.getLogger("entry_training")
 
 _STATE_KEY = "entry_timing_training_session"
 _ENABLED_KEY = "entry_timing_training_enabled"
@@ -117,6 +120,7 @@ def record_signals(store, signals, day: date):
             return added
     except Exception:
         # Training is strictly best-effort and must never affect signal dispatch.
+        log.exception("could not persist one-session entry timing records")
         return 0
 
 
@@ -297,6 +301,15 @@ def pending_symbols(store, day: date):
 
 def current_report(store):
     session = _state(store)
+    now = datetime.now(IST)
+    if session and session.get("status") == "COLLECTING":
+        session_day = date.fromisoformat(session["date"])
+        if session_day < now.date() or now.time() >= time(15, 30):
+            session["status"] = "CLOSED"
+            session["closed_at"] = now.isoformat()
+            _save(store, session)
+            from .telegram_polling import set_persistent_state
+            set_persistent_state(store, "entry_timing_training_previous", session)
     if session is None:
         from .telegram_polling import get_persistent_state
         session = get_persistent_state(store, "entry_timing_training_previous", None)
