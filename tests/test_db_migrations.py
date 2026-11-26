@@ -43,6 +43,9 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
     assert any(sql == MIGRATIONS[4][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[5][2] for sql, _, _ in calls)
     assert any(sql == MIGRATIONS[6][2] for sql, _, _ in calls)
+    assert any(sql == MIGRATIONS[7][2] for sql, _, _ in calls)
+    assert "CREATE TABLE IF NOT EXISTS domain_events" in MIGRATIONS[7][2]
+    assert "CREATE TABLE IF NOT EXISTS actor_snapshots" in MIGRATIONS[7][2]
     # Existing installations may have a version-only migration ledger.
     # Bootstrap must add/backfill the metadata columns before reading or writing it.
     sql_calls = [sql for sql, _, _ in calls]
@@ -69,7 +72,7 @@ def test_postgres_store_applies_each_missing_schema_migration_once():
 
 
 def test_postgres_store_does_not_reapply_recorded_migrations():
-    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7, 8))
+    store, calls = _fake_store((1, 2, 3, 4, 5, 6, 7, 8, 9))
     store.init()
 
     # The expensive compatibility reconciliation is versioned and must not
