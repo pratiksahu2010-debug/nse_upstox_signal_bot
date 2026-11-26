@@ -470,14 +470,24 @@ class MemoryStore:
 
     def save_actor_snapshot(self, aggregate_type: str, aggregate_id: str,
                             version: int, state: dict) -> bool:
+        """Save only a monotonic checkpoint backed by an existing event prefix."""
         key = (aggregate_type, aggregate_id)
+        version = int(version)
         with self.lock:
             current = self.actor_snapshots.get(key)
-            if current and int(current["version"]) >= int(version):
+            if current and int(current["version"]) >= version:
+                return False
+            latest_event = max(
+                (int(row["sequence"]) for row in self.domain_events
+                 if row["aggregate_type"] == aggregate_type
+                 and row["aggregate_id"] == aggregate_id),
+                default=0,
+            )
+            if version > latest_event:
                 return False
             self.actor_snapshots[key] = {
                 "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
-                "version": int(version), "state": dict(state),
+                "version": version, "state": dict(state),
             }
             return True
 
@@ -849,21 +859,39 @@ class PostgresStore(MemoryStore):
         self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
 
     def append_domain_event(self, event: dict) -> bool:
-        """Append an immutable event with idempotent event and aggregate-sequence keys."""
+        """Append under an aggregate-scoped transaction lock.
+
+        The advisory lock and MAX(sequence) read occur in the same SQL statement
+        and transaction. Concurrent writers for one aggregate therefore cannot
+        both observe the same next sequence. A stale/gapped sequence returns
+        False so the caller can reload the aggregate version and retry.
+        """
         row = self._run(
-            """INSERT INTO domain_events
-                   (event_id, aggregate_type, aggregate_id, sequence, event_type, payload, occurred_at)
+            """WITH aggregate_lock AS MATERIALIZED (
+                   SELECT pg_advisory_xact_lock(
+                       731904, hashtext(%s || chr(31) || %s)
+                   )
+               ),
+               next_sequence AS MATERIALIZED (
+                   SELECT COALESCE(MAX(events.sequence), 0) + 1 AS next_sequence
+                     FROM domain_events AS events
+                     CROSS JOIN aggregate_lock
+                    WHERE events.aggregate_type=%s AND events.aggregate_id=%s
+               )
+               INSERT INTO domain_events
+                   (event_id, aggregate_type, aggregate_id, sequence,
+                    event_type, payload, occurred_at)
                SELECT %s, %s, %s, %s, %s, %s::jsonb, %s
-                WHERE %s = COALESCE((
-                    SELECT MAX(sequence) + 1 FROM domain_events
-                     WHERE aggregate_type=%s AND aggregate_id=%s
-                ), 1)
+                 FROM next_sequence
+                WHERE %s = next_sequence.next_sequence
                ON CONFLICT DO NOTHING
                RETURNING event_id""",
-            (event["event_id"], event["aggregate_type"], event["aggregate_id"],
+            (event["aggregate_type"], event["aggregate_id"],
+             event["aggregate_type"], event["aggregate_id"],
+             event["event_id"], event["aggregate_type"], event["aggregate_id"],
              int(event["sequence"]), event["event_type"],
              json.dumps(event.get("payload") or {}), event["occurred_at"],
-             int(event["sequence"]), event["aggregate_type"], event["aggregate_id"]),
+             int(event["sequence"])),
             "one",
         )
         return bool(row)
@@ -889,14 +917,20 @@ class PostgresStore(MemoryStore):
 
     def save_actor_snapshot(self, aggregate_type: str, aggregate_id: str,
                             version: int, state: dict) -> bool:
+        """Persist a checkpoint only when its version exists in the event ledger."""
         row = self._run(
             """INSERT INTO actor_snapshots (aggregate_type, aggregate_id, version, state)
-               VALUES (%s, %s, %s, %s::jsonb)
+               SELECT %s, %s, %s, %s::jsonb
+                WHERE %s <= COALESCE((
+                    SELECT MAX(sequence) FROM domain_events
+                     WHERE aggregate_type=%s AND aggregate_id=%s
+                ), 0)
                ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
                    SET version=EXCLUDED.version, state=EXCLUDED.state, updated_at=now()
                  WHERE actor_snapshots.version < EXCLUDED.version
                RETURNING version""",
-            (aggregate_type, aggregate_id, int(version), json.dumps(state or {})),
+            (aggregate_type, aggregate_id, int(version), json.dumps(state or {}),
+             int(version), aggregate_type, aggregate_id),
             "one",
         )
         return bool(row)
