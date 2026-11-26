@@ -97,3 +97,17 @@ def test_pending_symbols_keep_tracking_until_all_shadow_cohorts_mature():
     assert pending_symbols(store, stamp.date()) == {"ABC"}
     observe_completed_bars(store, stamp.date(), {"ABC": _frame(stamp, 8)})
     assert pending_symbols(store, stamp.date()) == set()
+
+def test_training_never_reads_candles_after_completed_scan_boundary():
+    store = MemoryStore()
+    set_enabled(store, True)
+    stamp = datetime(2026, 11, 27, 9, 15, tzinfo=IST)
+    record_signal(store, 9, Signal(stamp), stamp.date())
+    frame = _frame(stamp, 8)
+    boundary = frame.index[3]
+    assert observe_completed_bars(
+        store, stamp.date(), {"ABC": frame}, through_ts=boundary
+    ) == 0
+    report = current_report(store)
+    assert report["completed_signals"] == 0
+    assert report["pending_signals"] == 1
