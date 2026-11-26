@@ -28,6 +28,15 @@ def test_event_store_rejects_duplicate_aggregate_sequence():
     assert not store.append(two)
 
 
+def test_event_store_rejects_sequence_gaps():
+    store = EventStore(MemoryStore())
+    gap = DomainEvent("evt-gap", "symbol", "NIFTY", 2, "CONFIRM", {}, datetime.now(timezone.utc))
+    assert not store.append(gap)
+    first = DomainEvent("evt-first", "symbol", "NIFTY", 1, "SETUP", {}, datetime.now(timezone.utc))
+    assert store.append(first)
+    assert store.replay("symbol", "NIFTY")[0]["sequence"] == 1
+
+
 def test_snapshots_are_monotonic_and_restorable():
     store = EventStore(MemoryStore())
     assert store.checkpoint("symbol", "NIFTY", 4, {"phase": "ARMED"})

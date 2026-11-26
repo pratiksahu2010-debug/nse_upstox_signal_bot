@@ -446,6 +446,14 @@ class MemoryStore:
             if any((row["aggregate_type"], row["aggregate_id"], row["sequence"]) == key
                    for row in self.domain_events):
                 return False
+            current = max(
+                (int(row["sequence"]) for row in self.domain_events
+                 if row["aggregate_type"] == event["aggregate_type"]
+                 and row["aggregate_id"] == event["aggregate_id"]),
+                default=0,
+            )
+            if int(event["sequence"]) != current + 1:
+                return False
             row = dict(event)
             self.domain_events.append(row)
             self.event_ids.add(row["event_id"])
@@ -845,12 +853,17 @@ class PostgresStore(MemoryStore):
         row = self._run(
             """INSERT INTO domain_events
                    (event_id, aggregate_type, aggregate_id, sequence, event_type, payload, occurred_at)
-               VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+               SELECT %s, %s, %s, %s, %s, %s::jsonb, %s
+                WHERE %s = COALESCE((
+                    SELECT MAX(sequence) + 1 FROM domain_events
+                     WHERE aggregate_type=%s AND aggregate_id=%s
+                ), 1)
                ON CONFLICT DO NOTHING
                RETURNING event_id""",
             (event["event_id"], event["aggregate_type"], event["aggregate_id"],
              int(event["sequence"]), event["event_type"],
-             json.dumps(event.get("payload") or {}), event["occurred_at"]),
+             json.dumps(event.get("payload") or {}), event["occurred_at"],
+             int(event["sequence"]), event["aggregate_type"], event["aggregate_id"]),
             "one",
         )
         return bool(row)
