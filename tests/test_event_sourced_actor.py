@@ -97,3 +97,38 @@ def test_recovery_rejects_event_sequence_gaps():
             runtime.recover(["NIFTY"])
     finally:
         runtime.close()
+
+
+
+def test_persisted_event_survives_mailbox_backpressure_and_flushes_later():
+    import threading
+
+    from app.actors import ActorQueueFull
+
+    gate = threading.Event()
+    started = threading.Event()
+
+    def slow_reducer(state, record):
+        started.set()
+        gate.wait(2)
+        return reducer(state, record)
+
+    persistence = MemoryStore()
+    store = EventStore(persistence)
+    runtime = EventSourcedActorRuntime(
+        store, slow_reducer, max_workers=1, max_pending=1
+    )
+    runtime.recover(["NIFTY"])
+    try:
+        first_event, first_future = runtime.publish("NIFTY", "BAR", {"bar": "09:20"})
+        assert started.wait(1)
+        with pytest.raises(ActorQueueFull):
+            runtime.publish("NIFTY", "BAR", {"bar": "09:25"})
+        assert len(store.replay("symbol", "NIFTY")) == 2
+        gate.set()
+        assert first_future.result(timeout=2)["last_bar"] == "09:20"
+        pending_future = runtime.flush("NIFTY")
+        assert pending_future.result(timeout=2)["last_bar"] == "09:25"
+    finally:
+        gate.set()
+        runtime.close()
