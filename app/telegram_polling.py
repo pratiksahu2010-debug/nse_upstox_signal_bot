@@ -305,7 +305,7 @@ class TelegramPoller:
                 "<b>Normal NSE F&amp;O Signal Bot</b>\n"
                 "/status · /signals · /stats\n"
                 "/relabel <id> <GOOD|BAD|LATE|FAKE|SKIP>\n"
-                "/train · /proposals · /approve <id> · /rollback <id>\n"
+                "/train · /daytrain [status|report|on|off] · /proposals · /approve <id> · /rollback <id>\n"
                 "/export · /shadow on|off · /pause · /resume\n"
                 "/actualcost <signal_id> <quantity_units> <brokerage_rupees> <other_fees_rupees> <slippage_rupees>\n"
                 "Signal-only: no order placement or execution.")
@@ -359,6 +359,21 @@ class TelegramPoller:
                 self._reply(f"<b>Proposal {proposal['id']} created.</b>\nUse /proposals to inspect. Nothing was applied.")
             else:
                 self._reply(f"Trainer: {report.get('status')} · samples {report.get('samples', 0)} · overlap purged {report.get('overlap_purged', 0)} · required {report.get('required', 'n/a')}. No proposal.")
+        elif command in ("/daytrain", "/entrytrain"):
+            from .entry_training import current_report, enabled, format_daily_report, set_enabled
+            action = parts[1].lower() if len(parts) > 1 else "status"
+            if action == "on":
+                set_enabled(self.store, True)
+                self._reply("One-day entry timing lab enabled. It records shadow observations only; live signals are unchanged.")
+            elif action == "off":
+                set_enabled(self.store, False)
+                self._reply("One-day entry timing lab disabled. Existing signal tracking and live strategy are unchanged.")
+            elif action in {"status", "report"}:
+                report = current_report(self.store)
+                prefix = f"Collection enabled: {enabled(self.store)}\\n"
+                self._reply(prefix + format_daily_report(report))
+            else:
+                self._reply("Usage: /daytrain [status|report|on|off]")
         elif command == "/proposals":
             history = get_persistent_state(self.store, "training_proposals", [])
             proposal = get_persistent_state(self.store, "training_proposal", None)
