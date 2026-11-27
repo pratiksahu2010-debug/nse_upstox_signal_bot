@@ -709,10 +709,9 @@ def test_readiness_rejects_degraded_market_feed_when_explicitly_required(monkeyp
     assert response.json() == {"ready": False, "reason": "market_feed_degraded"}
 
 
-def test_readiness_rejects_when_all_strategies_are_disabled(monkeypatch):
+def test_readiness_rejects_when_normal_strategy_is_disabled(monkeypatch):
     _configure_ready(monkeypatch)
     monkeypatch.setattr(web.config, "ENABLE_NORMAL", False)
-    monkeypatch.setattr(web.config, "ENABLE_MOMENTUM", False)
     monkeypatch.setattr(web, "_started", True)
     monkeypatch.setattr(web, "engine", _ready_engine())
     monkeypatch.setattr(web, "store", type("Store", (), {"kind": "memory"})())

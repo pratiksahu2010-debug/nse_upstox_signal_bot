@@ -65,11 +65,8 @@ DRY_RUN = _b("DRY_RUN", "0")                             # 1 = log signals, do n
 TRAINING_COST_R = max(0.0, _f("TRAINING_COST_R", 0.0))  # configured round-trip cost expressed in underlying R
 ENTRY_TRAINING_ENABLED = _b("ENTRY_TRAINING_ENABLED", "1")  # one-session shadow entry-timing lab; never gates signals
 
-# Modules on/off
+# The production bot runs the Normal signal module only.
 ENABLE_NORMAL = _b("ENABLE_NORMAL", "1")
-# This production bot intentionally runs a single signal module: Normal only.
-# Kept as a constant so a stale Render environment variable cannot re-enable Momentum.
-ENABLE_MOMENTUM = False
 
 
 # --------------------------------------------------------------------------- #
@@ -138,24 +135,6 @@ class NormalCfg:
 
 
 NORMAL = NormalCfg()
-
-
-@dataclass(frozen=True)
-class MomentumCfg:
-    first_signal: time = _t("M_FIRST_SIGNAL", "09:20")
-    last_entry: time = _t("M_LAST_ENTRY", "15:00")
-    session_end: time = _t("M_SESSION_END", "15:15")
-    score_min: int = max(0, min(100, _i("M_SCORE_MIN", 78)))
-    adx_min: float = NORMAL.adx_min
-    sl_atr: float = NORMAL.sl_atr
-    tp1_r: float = NORMAL.tp1_r
-    tp2_r: float = NORMAL.tp2_r
-    cooldown_bars: int = _i("M_COOLDOWN_BARS", 2)
-    daily_cap: int = _i("M_DAILY_CAP", 1000)
-    per_cycle_top: int = _i("M_PER_CYCLE_TOP", 1000)
-
-
-MOMENTUM = MomentumCfg()
 
 
 OPTION_MIN_DAYS = _i("OPTION_MIN_DAYS", 1)

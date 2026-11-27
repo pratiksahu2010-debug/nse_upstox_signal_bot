@@ -16,19 +16,18 @@ def _frame(index):
     }, index=index)
 
 
-def test_live_features_include_only_completed_5m_context():
+def test_live_features_use_only_completed_5m_indicators():
     index = pd.date_range("2026-11-18 09:15", periods=150, freq="5min", tz=IST)
     features = compute_features(add_indicators(_frame(index)))
 
     assert features is not None
     assert features.bar_ts == index[-1]
+    assert features.bar_end == index[-1] + pd.Timedelta(minutes=5)
     assert features.ema9 > 0
     assert features.ema21 > 0
     assert features.vwap > 0
-    assert features.adx >= 0
-    assert features.htf_bar_ts is None
-    assert features.htf_close is None
-    assert features.htf_ema9 is None
-    assert features.htf_ema21 is None
-    assert features.htf_pdi is None
-    assert features.htf_mdi is None
+    assert 0 <= features.rsi <= 100
+    assert 0 <= features.adx <= 100
+    assert features.atr > 0
+    assert features.pdi >= 0
+    assert features.mdi >= 0
