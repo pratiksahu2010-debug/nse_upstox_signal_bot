@@ -339,7 +339,9 @@ class UpstoxClient:
         # Match the previous parser: absent OI is allowed, but a supplied,
         # non-null OI value that cannot be converted invalidates that row.
         oi_raw = pd.Series([row[6] for row in rows], index=df.index)
-        oi_invalid = oi_raw.notna() & df["oi"].isna()
+        oi_text = oi_raw.astype("string").str.strip().str.lower()
+        nan_literals = oi_text.isin({"nan", "+nan", "-nan"})
+        oi_invalid = oi_raw.notna() & df["oi"].isna() & ~nan_literals
 
         core = ["open", "high", "low", "close", "volume"]
         values = df[core].to_numpy(dtype=float)
