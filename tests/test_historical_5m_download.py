@@ -31,7 +31,7 @@ def test_monthly_chunks_reject_reversed_dates():
 def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     path = tmp_path / "instruments.csv"
     path.write_text(
-        "symbol,instrument_key\nRELIANCE,NSE_EQ|INE002A01018\nSBIN,NSE_EQ|INE062A01020\n",
+        "symbol,instrument_key\\nRELIANCE,NSE_EQ|INE002A01018\\nSBIN,NSE_EQ|INE062A01020\\n",
         encoding="utf-8",
     )
     assert read_instruments(path) == [
@@ -49,7 +49,7 @@ def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     ]
 
     path.write_text(
-        "symbol,instrument_key\nRELIANCE,key-1\nRELIANCE,key-2\n",
+        "symbol,instrument_key\\nRELIANCE,key-1\\nRELIANCE,key-2\\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate"):
@@ -96,3 +96,4 @@ def test_write_atomic_produces_timestamped_csv(tmp_path):
     ]
     assert saved.iloc[0]["close"] == 101
     assert not (tmp_path / "RELIANCE.csv.tmp").exists()
+}
