@@ -96,4 +96,3 @@ def test_write_atomic_produces_timestamped_csv(tmp_path):
     ]
     assert saved.iloc[0]["close"] == 101
     assert not (tmp_path / "RELIANCE.csv.tmp").exists()
-}
