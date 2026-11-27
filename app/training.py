@@ -108,7 +108,8 @@ def walk_forward(rows, min_train=MIN_TRAIN_SAMPLES, min_test=MIN_TEST_SAMPLES):
     """Expanding-window walk-forward selection plus one untouched final holdout."""
     eligible = [
         r for r in rows
-        if r.get("bar_ts") and r.get("net_r") is not None
+        if r.get("module") == "normal"
+        and r.get("bar_ts") and r.get("net_r") is not None
         and r.get("snapshot") and r.get("status") not in OPEN_STATUSES
         and effective_label(r) != "SKIP"
     ]
