@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Iterator, Optional
 from urllib.parse import quote
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -308,30 +309,50 @@ class UpstoxClient:
 
     @staticmethod
     def _frame(candles: list) -> pd.DataFrame:
+        """Normalize a candle batch with vectorized parsing and validation.
+
+        Historical warm-up can contain tens of thousands of rows across the
+        fixed universe. Scalar timestamp conversion inside a Python loop made
+        cold-start scans CPU-bound on small Render instances.
+        """
         if not candles:
             return pd.DataFrame(columns=OHLCV)
-        rows = []
-        for candle in candles:
-            if not isinstance(candle, (list, tuple)) or len(candle) < 6:
-                continue
-            # The API may omit open_interest; preserve the standard six OHLCV fields.
-            try:
-                ts = pd.to_datetime(candle[0], utc=True).tz_convert(IST)
-                o, h, low, close, volume = [float(x) for x in candle[1:6]]
-                oi = float(candle[6]) if len(candle) > 6 and candle[6] is not None else float("nan")
-            except (TypeError, ValueError, OverflowError):
-                continue
-            vals = (o, h, low, close, volume)
-            if not all(math.isfinite(x) for x in vals):
-                continue
-            if volume < 0 or h < max(o, close, low) or low > min(o, close, h):
-                continue
-            rows.append((ts, o, h, low, close, volume, oi))
+
+        rows = [
+            (
+                candle[0], candle[1], candle[2], candle[3], candle[4], candle[5],
+                candle[6] if len(candle) > 6 and candle[6] is not None else None,
+            )
+            for candle in candles
+            if isinstance(candle, (list, tuple)) and len(candle) >= 6
+        ]
         if not rows:
             return pd.DataFrame(columns=OHLCV)
-        df = pd.DataFrame(rows, columns=["ts"] + OHLCV).set_index("ts").sort_index()
-        df = df[~df.index.duplicated(keep="last")]
-        return df
+
+        df = pd.DataFrame(rows, columns=["ts"] + OHLCV)
+        df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce").dt.tz_convert(IST)
+
+        numeric = ["open", "high", "low", "close", "volume", "oi"]
+        for column in numeric:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+        # Match the previous parser: absent OI is allowed, but a supplied,
+        # non-null OI value that cannot be converted invalidates that row.
+        oi_raw = pd.Series([row[6] for row in rows], index=df.index)
+        oi_text = oi_raw.astype("string").str.strip().str.lower()
+        nan_literals = oi_text.isin({"nan", "+nan", "-nan"})
+        oi_invalid = oi_raw.notna() & df["oi"].isna() & ~nan_literals
+
+        core = ["open", "high", "low", "close", "volume"]
+        values = df[core].to_numpy(dtype=float)
+        valid = df["ts"].notna().to_numpy() & ~oi_invalid.to_numpy()
+        valid &= np.isfinite(values).all(axis=1)
+        valid &= df["volume"].to_numpy(dtype=float) >= 0
+        valid &= df["high"].to_numpy(dtype=float) >= df[["open", "close", "low"]].max(axis=1).to_numpy(dtype=float)
+        valid &= df["low"].to_numpy(dtype=float) <= df[["open", "close", "high"]].min(axis=1).to_numpy(dtype=float)
+
+        df = df.loc[valid, ["ts"] + OHLCV].set_index("ts").sort_index()
+        return df[~df.index.duplicated(keep="last")]
 
     def intraday(self, key: str, interval: int = 5) -> pd.DataFrame:
         # The scanner has one bounded stale-data refresh pass of its own. Keep

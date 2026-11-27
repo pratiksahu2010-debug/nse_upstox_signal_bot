@@ -170,3 +170,25 @@ def test_late_401_from_old_token_does_not_poison_rotated_token(monkeypatch, latc
     assert client.auth_status is None
     assert client._ltp_auth_disabled is False
     assert client._optional_data_disabled == set()
+
+
+def test_vectorized_candle_frame_preserves_validation_and_timestamp_semantics():
+    candles = [
+        ["2026-11-17T03:45:00Z", "100", "102", "99", "101", "10", None],
+        ["2026-11-17T03:50:00Z", 101, 103, 100, 102, 20, "bad-oi"],
+        ["not-a-timestamp", 101, 103, 100, 102, 20, 5],
+        ["2026-11-17T04:00:00Z", 101, 103, 100, 102, float("inf"), 5],
+        ["2026-11-17T03:55:00Z", 101, 103, 100, 102, 30, 7],
+        ["2026-11-17T04:05:00Z", 101, 103, 100, 102, 40, "nan"],
+    ]
+
+    frame = UpstoxClient._frame(candles)
+
+    assert len(frame) == 3
+    assert frame.index.is_monotonic_increasing
+    assert str(frame.index.tz) == "UTC+05:30"
+    assert frame.iloc[0]["close"] == 101
+    assert pd.isna(frame.iloc[0]["oi"])
+    assert frame.iloc[1]["close"] == 102
+    assert frame.iloc[1]["oi"] == 7
+    assert pd.isna(frame.iloc[2]["oi"])
