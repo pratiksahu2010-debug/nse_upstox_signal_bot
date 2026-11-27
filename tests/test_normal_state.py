@@ -205,3 +205,48 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     assert cooldown_state["phase"] == "COOLDOWN"
     assert cooldown_state["cooldown_remaining"] == 3
     assert cooldown_state["last_bar"] == next_bar.isoformat()
+
+
+
+def test_state_gap_recovery_resets_lifecycle_but_keeps_current_bar_eligible():
+    from app.engine import _recover_normal_state_after_gap
+
+    prior = {
+        "phase": "ARMED",
+        "side": 1,
+        "last_bar": "2026-11-27T12:20:00+05:30",
+        "cooldown_remaining": 0,
+        "invalidated": False,
+    }
+
+    recovered, did_reset = _recover_normal_state_after_gap(
+        prior, pd.Timedelta(minutes=10),
+    )
+
+    assert did_reset is True
+    assert recovered == {
+        "phase": "IDLE",
+        "side": 0,
+        "cooldown_remaining": 0,
+        "invalidated": False,
+    }
+    assert prior["phase"] == "ARMED"
+
+
+def test_state_recovery_preserves_lifecycle_on_contiguous_completed_bar():
+    from app.engine import _recover_normal_state_after_gap
+
+    prior = {
+        "phase": "COOLDOWN",
+        "side": -1,
+        "cooldown_remaining": 2,
+        "invalidated": True,
+    }
+
+    recovered, did_reset = _recover_normal_state_after_gap(
+        prior, pd.Timedelta(minutes=5),
+    )
+
+    assert did_reset is False
+    assert recovered == prior
+    assert recovered is not prior
