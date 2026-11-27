@@ -96,3 +96,40 @@ def test_write_atomic_produces_timestamped_csv(tmp_path):
     ]
     assert saved.iloc[0]["close"] == 101
     assert not (tmp_path / "RELIANCE.csv.tmp").exists()
+
+
+def test_manifest_index_futures_fail_closed_without_stocks_only(tmp_path):
+    path = tmp_path / "manifest.csv"
+    path.write_text(
+        "symbol,instrument_key,is_index,price_source\n"
+        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\n"
+        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="point-in-time index-futures"):
+        read_instruments(path)
+
+
+def test_stocks_only_explicitly_excludes_index_futures(tmp_path, caplog):
+    path = tmp_path / "manifest.csv"
+    path.write_text(
+        "symbol,instrument_key,is_index,price_source\n"
+        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\n"
+        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\n",
+        encoding="utf-8",
+    )
+    assert read_instruments(path, stocks_only=True) == [
+        ("RELIANCE", "NSE_EQ|INE002A01018")
+    ]
+    assert "Excluded 1 index futures" in caplog.text
+
+
+def test_manifest_rejects_non_index_row_with_futures_key(tmp_path):
+    path = tmp_path / "manifest.csv"
+    path.write_text(
+        "symbol,instrument_key,is_index\n"
+        "RELIANCE,NSE_FO|WRONG,false\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="NSE_EQ cash-equity key"):
+        read_instruments(path)
