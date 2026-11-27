@@ -202,6 +202,20 @@ class UpstoxClient:
 
         last = None
         for attempt in range(max(1, retries)):
+            # Authentication failure is process-wide for this token. Re-check
+            # before every retry so concurrent workers stop retrying after the
+            # first 401/403 instead of amplifying one bad credential into
+            # hundreds of duplicate requests.
+            with self._state_lock:
+                if self._token != token:
+                    token = self._token
+                    auth_failed = self.auth_failed
+                else:
+                    auth_failed = self.auth_failed
+            if auth_failed:
+                raise UpstoxError(
+                    "Upstox authentication is rejected; replace UPSTOX_ANALYTICS_TOKEN in Render"
+                )
             self.budget.acquire()
             try:
                 headers = {
