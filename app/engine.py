@@ -911,7 +911,13 @@ class Engine:
                     # Candidate selection already validated this quote; prefer it over
                     # an unvalidated/stale stream cache entry for this signal.
                     snapshots[key] = raw_snapshot
-            needs_rest = [key for key in option_keys if key not in snapshots and key not in candidate_keys]
+            # Candidate discovery quotes may be stale, incomplete, or absent.
+            # Only a quote already accepted into the final snapshot map satisfies
+            # the selected contract. Do not suppress the selected-contract REST
+            # fallback merely because its key appeared in the earlier candidate
+            # batch; this was causing option_quote_missing for otherwise valid
+            # ATM fallbacks when the stream had not delivered its first tick.
+            needs_rest = [key for key in option_keys if key not in snapshots]
             # Premium tracking needs a signal-time entry reference. A newly added
             # WebSocket subscription may not have produced its first tick yet, so
             # use the same batched optional REST snapshot as a best-effort fallback.

@@ -220,3 +220,89 @@ def test_fresh_stream_quote_can_validate_atm_fallback_before_liquidity_rejection
     assert store.rows[0]["details"]["option"]["quote_age_sec"] <= 20
     assert diag["rejects"].get("option_no_liquid_contract", 0) == 0
     assert diag["rejects"].get("option_quote_stale", 0) == 0
+
+
+
+class StaleThenFreshQuoteClient(QuoteClient):
+    def full_quotes(self, keys):
+        self.calls.append(list(keys))
+        if len(self.calls) == 1:
+            timestamp = self.now.timestamp() - 60
+        else:
+            timestamp = self.now.timestamp() - 2
+        return {
+            OPTION_KEY: {
+                "last_price": 10.0,
+                "timestamp": timestamp,
+                "volume": 1000,
+                "oi": 10000,
+                "depth": {
+                    "buy": [{"price": 9.9, "quantity": 500}],
+                    "sell": [{"price": 10.1, "quantity": 500}],
+                },
+            }
+        }
+
+
+def test_stale_candidate_batch_does_not_suppress_selected_contract_rest_retry(monkeypatch):
+    now = datetime(2026, 11, 19, 10, 5, tzinfo=IST)
+    client = StaleThenFreshQuoteClient(now)
+    store = MemoryStore()
+    engine = Engine(client, store, notify=lambda _message: True)
+    engine.market_stream = EmptyStream()
+    engine._stream_keys = []
+    engine._sync_market_stream_keys = lambda: None
+    engine._deliver_pending = lambda _diag, _now: None
+    engine._option_for = lambda _sig, _now: {
+        "_key": OPTION_KEY,
+        "tsym": "TEST26NOV100CE",
+        "lot": 25,
+        "strike": 100.0,
+        "ltp": None,
+        "_candidates": [{
+            "_key": OPTION_KEY,
+            "tsym": "TEST26NOV100CE",
+            "lot": 25,
+            "strike": 100.0,
+            "ltp": None,
+        }],
+    }
+
+    monkeypatch.setattr(engine_module, "OPTION_MARKET_SNAPSHOT", False)
+    monkeypatch.setattr(engine_module, "OPTION_LIQUIDITY_CHECKS", True)
+    monkeypatch.setattr(engine_module, "OPTION_PREMIUM_TRACKING", True)
+    monkeypatch.setattr(engine_module, "OPTION_QUOTE", False)
+    monkeypatch.setattr(engine_module, "OPTION_MAX_QUOTE_AGE_SEC", 20)
+    monkeypatch.setattr(engine_module, "OPTION_MIN_VOLUME", 100)
+    monkeypatch.setattr(engine_module, "OPTION_MIN_OI", 500)
+    monkeypatch.setattr(engine_module, "OPTION_MAX_SPREAD_PCT", 3.0)
+    monkeypatch.setattr(engine_module, "format_signal", lambda _sig: "test signal")
+    monkeypatch.setattr(
+        "app.telegram_polling.get_persistent_state",
+        lambda _store, _key, default=None: default,
+    )
+
+    signal = SimpleNamespace(
+        score=90,
+        symbol="RELIANCE",
+        side="LONG",
+        bar_ts=pd.Timestamp("2026-11-19 10:00:00", tz=IST),
+        entry=100.0,
+        sl=98.0,
+        tp1=103.0,
+        tp2=104.0,
+        trigger="TEST",
+        reasons=[],
+        atr=1.0,
+        indicator_snapshot={"adx": 25.0},
+        option=None,
+    )
+    diag = {"rejects": Counter()}
+    sent = engine._dispatch("normal", NORMAL, [signal], now, False, diag)
+
+    assert sent == 1
+    assert client.calls == [[OPTION_KEY], [OPTION_KEY]]
+    assert len(store.rows) == 1
+    assert store.rows[0]["details"]["option"]["selection_status"] == "LIQUIDITY_VERIFIED"
+    assert store.rows[0]["details"]["option"]["quote_age_sec"] <= 20
+    assert diag["rejects"].get("option_quote_missing", 0) == 0
