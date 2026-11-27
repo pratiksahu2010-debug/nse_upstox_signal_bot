@@ -429,12 +429,15 @@ class Engine:
         d["fresh"] = sum(1 for v in strategy_data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["stale_count"] = sum(
             1 for v in strategy_data.values()
-            if v is not None and len(v) and v.index[-1] < expected
+            if v is not None and len(v) and isinstance(v.index, pd.DatetimeIndex)
+            and v.index[-1] < expected
         )
         d["stale_symbols"] = [
             f"{symbol}:{frame.index[-1].isoformat()}"
             for symbol, frame in strategy_data.items()
-            if frame is not None and len(frame) and frame.index[-1] < expected
+            if frame is not None and len(frame)
+            and isinstance(frame.index, pd.DatetimeIndex)
+            and frame.index[-1] < expected
         ][:10]
         d["entry_training_loaded"] = sum(1 for v in training_data.values() if v is not None and len(v))
         d["entry_training_fresh"] = sum(1 for v in training_data.values() if v is not None and len(v) and v.index[-1] == expected)
