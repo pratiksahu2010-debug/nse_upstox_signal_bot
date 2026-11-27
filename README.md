@@ -85,7 +85,8 @@ The committed `.env.example` is a **safe template**, not a production environmen
 
 Set all five variables below. The application fails readiness when required configuration is missing or invalid.
 
-- `UPSTOX_ACCESS_TOKEN` — Upstox Analytics/API access token with the required market-data permissions.
+- `UPSTOX_ANALYTICS_TOKEN` — preferred Upstox Analytics Token (read-only, one-year validity); supports market quotes, historical candles, option data and WebSocket market feeds. Generate it from Upstox Developer Apps → Analytics.
+- `UPSTOX_ACCESS_TOKEN` — legacy compatibility fallback only. If both are set, `UPSTOX_ANALYTICS_TOKEN` takes precedence. Do not paste either token into GitHub or chat.
 - `NEON_DATABASE_URL` — Neon PostgreSQL connection string; use the SSL-enabled URL.
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token.
 - `TELEGRAM_CHAT_ID` — destination chat ID allowed by the bot.
@@ -157,7 +158,7 @@ Every scan boundary acquires a PostgreSQL-backed, owner-token lease before fetch
 
 ### Render-specific settings
 
-The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS` setting controls fetch concurrency (bounded to 16–24) and is unrelated to Gunicorn's `--workers 1`.
+The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. Use `/health` as Render liveness path; `/ready` is an operational diagnostic and may correctly return 503 during a broker outage, scan cycle, or temporary data gap. A strict readiness failure must not restart the web process. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS` setting controls fetch concurrency (bounded to 16–24) and is unrelated to Gunicorn's `--workers 1`.
 
 ## Local setup
 
@@ -169,7 +170,7 @@ The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_
 
 ## Render
 
-The Blueprint defines one web service and does not provision Render Postgres. Set NEON_DATABASE_URL, UPSTOX_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID and ADMIN_TOKEN in Render.
+The Blueprint defines one web service and does not provision Render Postgres. Set NEON_DATABASE_URL, UPSTOX_ANALYTICS_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID and ADMIN_TOKEN in Render. Keep UPSTOX_ACCESS_TOKEN only during a controlled migration; the Analytics Token takes precedence.
 
 Start command:
 
