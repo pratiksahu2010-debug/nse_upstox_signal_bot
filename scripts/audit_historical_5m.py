@@ -84,7 +84,6 @@ def audit_file(
 
     frame = raw.loc[valid].copy()
     frame["timestamp"] = parsed
-    duplicate_mask = frame["timestamp"].duplicated(keep=False)
     duplicate_timestamps = int(frame["timestamp"].duplicated(keep="last").sum())
 
     if start_date is not None:
@@ -139,7 +138,7 @@ def audit_file(
     total_missing = sum(row["missing_bars"] for row in session_rows)
     total_duplicates = int(frame["timestamp"].duplicated(keep="last").sum())
     total_off_session = sum(row["off_session_bars"] for row in session_rows)
-    if raw_count == 0:
+    if raw_count == 0 or (frame.empty and invalid_timestamps == 0):
         status = "NO_DATA"
     elif invalid_timestamps or incomplete or no_data:
         status = "REVIEW"
