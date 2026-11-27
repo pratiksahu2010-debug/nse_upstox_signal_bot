@@ -75,6 +75,28 @@ def test_persistently_stale_candle_does_not_trigger_unbounded_retries(monkeypatc
     assert result["ABC"].index[-1] < expected
     assert "ABC:stale:" in caplog.text
 
+
+def test_prior_session_stale_candle_is_not_retried(monkeypatch):
+    _configure(monkeypatch)
+    now = datetime(2026, 11, 23, 10, 5, 6, tzinfo=IST)
+    expected = engine_module.latest_eligible_bar(now)
+    stale = pd.DataFrame(index=[expected - pd.Timedelta(days=1)])
+    state = SimpleNamespace(info=SimpleNamespace(symbol="NIFTYFPI"), err="")
+
+    engine = object.__new__(Engine)
+    engine.client = SimpleNamespace(auth_failed=False)
+    calls = []
+
+    def load(_state, _now, _module):
+        calls.append(1)
+        return stale
+
+    engine._load = load
+    result = engine._load_many("normal", [state], now, force=False)
+
+    assert len(calls) == 1
+    assert result["NIFTYFPI"].index[-1] < expected
+
 def test_option_liquidity_gate_defaults_off():
     env = os.environ.copy()
     env.pop("OPTION_LIQUIDITY_CHECKS", None)
