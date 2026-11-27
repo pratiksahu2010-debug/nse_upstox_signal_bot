@@ -15,6 +15,7 @@ def _rows(n=1000):
         day_index, bar_index = divmod(i, 50)
         rows.append({
             "id": i + 1,
+            "module": "normal",
             "bar_ts": start + timedelta(days=day_index, minutes=5 * bar_index),
             "status": "SL" if not strong else "TP1_BE",
             "side": "LONG",
@@ -36,6 +37,27 @@ def test_walk_forward_produces_only_research_filter_diff_with_held_out_check():
     assert len(report["fold_reports"]) == 3
     assert len(report["rolling_fold_scores"]) == 3
     assert report["held_out_test"]["mean_net_r"] > report["baseline_test"]["mean_net_r"]
+
+
+def test_walk_forward_ignores_legacy_momentum_rows():
+    normal_rows = _rows()
+    baseline = walk_forward(normal_rows)
+    momentum_rows = []
+    for index, row in enumerate(normal_rows[:100]):
+        momentum = dict(row)
+        momentum["id"] = 10000 + index
+        momentum["module"] = "momentum"
+        momentum["bar_ts"] = momentum["bar_ts"] + timedelta(days=100)
+        momentum["net_r"] = 10.0
+        momentum["snapshot"] = {"adx": 99.0, "rvol": 99.0}
+        momentum_rows.append(momentum)
+
+    report = walk_forward(normal_rows + momentum_rows)
+    assert report["samples"] == baseline["samples"]
+    assert report["distinct_days"] == baseline["distinct_days"]
+    assert report["proposal"] == baseline["proposal"]
+    assert report["rolling_fold_scores"] == baseline["rolling_fold_scores"]
+    assert report["held_out_test"] == baseline["held_out_test"]
 
 
 def test_trainer_refuses_small_samples():
