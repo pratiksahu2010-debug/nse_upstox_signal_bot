@@ -250,3 +250,43 @@ def test_state_recovery_preserves_lifecycle_on_contiguous_completed_bar():
     assert did_reset is False
     assert recovered == prior
     assert recovered is not prior
+
+def test_cooldown_counts_four_completed_bars_before_rearming_after_invalidation():
+    from app.engine import _cooldown_state_after_bar
+
+    state = _triggered_to_cooldown({
+        "phase": "TRIGGERED", "side": 1,
+        "cooldown_remaining": 4, "invalidated": False,
+    }, current_side=0)
+    assert state["phase"] == "COOLDOWN"
+    assert state["cooldown_remaining"] == 3
+    assert state["invalidated"] is True
+
+    state = _cooldown_state_after_bar(state, current_side=0)
+    assert (state["phase"], state["cooldown_remaining"]) == ("COOLDOWN", 2)
+    state = _cooldown_state_after_bar(state, current_side=0)
+    assert (state["phase"], state["cooldown_remaining"]) == ("COOLDOWN", 1)
+    state = _cooldown_state_after_bar(state, current_side=0)
+    assert (state["phase"], state["cooldown_remaining"]) == ("IDLE", 0)
+
+
+def test_cooldown_does_not_rearm_while_original_setup_remains_valid():
+    from app.engine import _cooldown_state_after_bar
+
+    state = {
+        "phase": "COOLDOWN", "side": -1,
+        "cooldown_remaining": 3, "invalidated": False,
+    }
+    for expected in (2, 1, 0):
+        state = _cooldown_state_after_bar(state, current_side=-1)
+        assert state["phase"] == "COOLDOWN"
+        assert state["cooldown_remaining"] == expected
+        assert state["invalidated"] is False
+
+    # Once the setup invalidates, an expired cooldown can re-arm immediately.
+    state = _cooldown_state_after_bar(state, current_side=0)
+    assert state == {
+        "phase": "IDLE", "side": 0,
+        "cooldown_remaining": 0, "invalidated": False,
+    }
+
