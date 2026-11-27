@@ -31,7 +31,7 @@ def test_monthly_chunks_reject_reversed_dates():
 def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     path = tmp_path / "instruments.csv"
     path.write_text(
-        "symbol,instrument_key\\nRELIANCE,NSE_EQ|INE002A01018\\nSBIN,NSE_EQ|INE062A01020\\n",
+        "symbol,instrument_key\nRELIANCE,NSE_EQ|INE002A01018\nSBIN,NSE_EQ|INE062A01020\n",
         encoding="utf-8",
     )
     assert read_instruments(path) == [
@@ -40,7 +40,7 @@ def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     ]
 
     path.write_text(
-        "symbol,instrument_key\\nM&M,NSE_EQ|INE296A01024\\nGVT&D,NSE_EQ|INE123A01016\\n",
+        "symbol,instrument_key\nM&M,NSE_EQ|INE296A01024\nGVT&D,NSE_EQ|INE123A01016\n",
         encoding="utf-8",
     )
     assert read_instruments(path) == [
@@ -49,7 +49,7 @@ def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     ]
 
     path.write_text(
-        "symbol,instrument_key\\nRELIANCE,key-1\\nRELIANCE,key-2\\n",
+        "symbol,instrument_key\nRELIANCE,key-1\nRELIANCE,key-2\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate"):
