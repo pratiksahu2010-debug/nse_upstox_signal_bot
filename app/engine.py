@@ -290,31 +290,41 @@ class Engine:
         with ThreadPoolExecutor(max_workers=ENGINE.workers) as ex:
             for attempt in range(1 + ENGINE.retry_passes):
                 retry = []
+                retry_details = []
                 pass_started = _time.monotonic()
                 futs = {ex.submit(self._load, st, now, module): st for st in pending}
                 for fu in as_completed(futs):
                     st = futs[fu]
+                    symbol = st.info.symbol
                     try:
                         df = fu.result()
                         st.err = ""
                     except Exception as e:
                         st.err = str(e)[:120]
                         retry.append(st)
+                        retry_details.append(f"{symbol}:error:{type(e).__name__}")
                         continue
                     if df is None:
                         continue
-                    out[st.info.symbol] = df
-                    if len(df) == 0 or df.index[-1] < expected:
+                    out[symbol] = df
+                    if len(df) == 0:
                         retry.append(st)
+                        retry_details.append(f"{symbol}:empty")
+                    elif df.index[-1] < expected:
+                        retry.append(st)
+                        retry_details.append(f"{symbol}:stale:{df.index[-1].isoformat()}")
                 if not retry or getattr(self.client, "auth_failed", False):
                     break
                 all_empty = all((out.get(s.info.symbol) is None or len(out[s.info.symbol]) == 0) for s in retry)
                 if all_empty and len(retry) >= 0.8 * max(1, len(states)):
                     break     # holiday / outage: do not hammer the API
+                details = ",".join(retry_details[:10])
+                if len(retry_details) > 10:
+                    details += f",+{len(retry_details) - 10} more"
                 log.warning(
-                    "candle fetch retry pass=%d/%d pending=%d elapsed_seconds=%.2f",
+                    "candle fetch retry pass=%d/%d pending=%d elapsed_seconds=%.2f pending_details=%s",
                     attempt + 1, 1 + ENGINE.retry_passes, len(retry),
-                    _time.monotonic() - pass_started,
+                    _time.monotonic() - pass_started, details or "unknown",
                 )
                 pending = retry
                 # A single short refresh is enough to catch provider publication
