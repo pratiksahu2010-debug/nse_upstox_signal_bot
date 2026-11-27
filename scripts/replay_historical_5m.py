@@ -168,7 +168,7 @@ def replay_frame(
             results.append({
                 "symbol": symbol,
                 "bar_ts": signal.bar_ts.isoformat(),
-                "side": signal.side,
+                "option_type": "CALL" if signal.side == "LONG" else "PUT",
                 "entry": signal.entry,
                 "sl": signal.sl,
                 "tp1": signal.tp1,
@@ -196,7 +196,7 @@ def replay_directory(input_dir: Path, output: Path, tick: float = 0.05):
         rows.extend(replay_frame(symbol, load_ohlcv(path), tick=tick))
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=[
-        "symbol", "bar_ts", "side", "entry", "sl", "tp1", "tp2",
+        "symbol", "bar_ts", "option_type", "entry", "sl", "tp1", "tp2",
         "atr", "score", "status", "net_r",
     ]).to_csv(output, index=False)
     log.info("Saved %d Normal signals to %s", len(rows), output)
