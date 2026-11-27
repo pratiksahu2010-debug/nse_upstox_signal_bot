@@ -50,8 +50,11 @@ def test_stale_candle_refresh_is_bounded_to_one_retry(monkeypatch):
     assert result["ABC"].index[-1] == expected
 
 
-def test_persistently_stale_candle_does_not_trigger_unbounded_retries(monkeypatch):
+def test_persistently_stale_candle_does_not_trigger_unbounded_retries(monkeypatch, caplog):
+    import logging
+
     _configure(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="engine")
     now = datetime(2026, 11, 23, 10, 5, 6, tzinfo=IST)
     expected = engine_module.latest_eligible_bar(now)
     stale = pd.DataFrame(index=[expected - pd.Timedelta(minutes=5)])
@@ -70,6 +73,7 @@ def test_persistently_stale_candle_does_not_trigger_unbounded_retries(monkeypatc
 
     assert len(calls) == 2
     assert result["ABC"].index[-1] < expected
+    assert "ABC:stale:" in caplog.text
 
 def test_option_liquidity_gate_defaults_off():
     env = os.environ.copy()
