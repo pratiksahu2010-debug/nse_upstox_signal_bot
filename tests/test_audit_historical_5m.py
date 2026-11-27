@@ -88,3 +88,14 @@ def test_audit_directory_writes_both_reports(tmp_path):
     assert len(sessions) == 1
     assert (output / "symbol_summary.csv").exists()
     assert (output / "session_detail.csv").exists()
+
+
+def test_date_filter_with_no_matching_rows_is_not_pass(tmp_path):
+    path = tmp_path / "ABC.csv"
+    _write_bars(path, expected_session_index(date(2026, 11, 2)))
+    summary, sessions = audit_file(
+        path, start_date=date(2026, 11, 3), end_date=date(2026, 11, 4)
+    )
+    assert summary["status"] == "NO_DATA"
+    assert summary["trading_days"] == 0
+    assert sessions == []
