@@ -23,7 +23,7 @@ No 15m candles or higher-timeframe context are used in signal generation. ADX us
 
 Normal assigns a deterministic 0–100 quality score and applies one final score gate, N_SCORE_MIN (default 72). No separate OI or extra score gates are added.
 
-**Momentum Explosion is disabled in production.** The bot emits Normal signals only; the code hard-disables Momentum so a stale Render environment variable cannot re-enable it. Historical Momentum rows remain available for outcome/history compatibility.
+**Normal is the only strategy module.** The Momentum implementation and its runtime path have been removed. Legacy Momentum rows, if any, remain stored for historical reference but are no longer processed or included in Normal reports.
 
 ## Risk and state
 
@@ -107,7 +107,6 @@ The values below match the committed `.env.example` template and the defaults in
 | `KEEPALIVE` | `1` | Render keepalive self-ping when URL is available |
 | `LOG_LEVEL` | `INFO` | Application log level |
 | `ENABLE_NORMAL` | `1` | Enable the Normal signal module |
-| `ENABLE_MOMENTUM` | `0` | Retired; Momentum is hard-disabled in production |
 | `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
 | `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
 | `STALE_MAX_BARS` | `1` | Legacy compatibility setting; new entries require the exact latest eligible 5m candle |
@@ -128,13 +127,6 @@ The values below match the committed `.env.example` template and the defaults in
 | `N_TP2_R` | `2.0` | Second target in R |
 | `N_DAILY_CAP` | `1000` | Daily signal cap |
 | `N_PER_CYCLE_TOP` | `1000` | Maximum candidates per scan cycle |
-| `M_FIRST_SIGNAL` | `09:20` | Earliest Momentum entry time (IST) |
-| `M_LAST_ENTRY` | `15:00` | Last Momentum entry time (IST) |
-| `M_SESSION_END` | `15:15` | Momentum outcome-tracking session end (IST) |
-| `M_SCORE_MIN` | `78` | Single final Momentum quality-score gate |
-| `M_COOLDOWN_BARS` | `2` | Same-direction Momentum signal cooldown |
-| `M_DAILY_CAP` | `1000` | Daily Momentum signal cap |
-| `M_PER_CYCLE_TOP` | `1000` | Maximum Momentum candidates per scan cycle |
 | `OPTION_MIN_DAYS` | `1` | Minimum days to option expiry |
 | `OPTION_QUOTE` | `0` | Optional option LTP display |
 | `OPTION_MARKET_SNAPSHOT` | `1` | Fetch optional full quote snapshots for display/tracking |
