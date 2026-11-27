@@ -160,14 +160,10 @@ def test_cycle_commits_triggered_only_when_dispatch_persisted_signal(monkeypatch
     monkeypatch.setattr(mod_normal, "setup_side", lambda _features: 1)
     monkeypatch.setattr(mod_normal, "rsi_triggered", lambda _features, _side: True)
     monkeypatch.setattr(mod_normal, "evaluate", lambda *_args: (signal, None))
-    monkeypatch.setattr(engine_module, "ENABLE_MOMENTUM", False)
 
     persisted = [False]
 
     def dispatch(module, _cfg, candidates, _now, _force, diag):
-        if module == "momentum":
-            assert candidates == []
-            return 0
         if not candidates:
             return 0
         assert candidates == [signal]
