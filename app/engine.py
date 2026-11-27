@@ -792,6 +792,8 @@ class Engine:
         d.setdefault("_persisted_candidates", set())
         cands.sort(key=lambda s: -s.score)
         sent = 0
+        dispatch_counts = {"input": len(cands), "option_resolved": 0, "persisted": 0,
+                           "telegram_attempted": 0, "telegram_ok": 0, "telegram_failed": 0}
         if self.scanner_lease.lost:
             d["rejects"]["scanner_lease_lost"] += 1
             return 0
@@ -815,8 +817,16 @@ class Engine:
             sig.option = self._option_for(sig, now)
             if sig.option is None:
                 d["rejects"]["option_unavailable"] += 1
+                available = len((self.uni.options or {}).get(
+                    getattr(getattr(sig, "info", None), "underlying", ""), []
+                )) if self.uni else 0
+                log.warning(
+                    "dispatch option unavailable symbol=%s underlying=%s side=%s option_records=%d",
+                    sig.symbol, getattr(sig.info, "underlying", ""), sig.side, available,
+                )
                 continue
             prepared.append(sig)
+        dispatch_counts["option_resolved"] = len(prepared)
 
         # Compare nearby strikes using one batched quote request. An unverified
         # ATM fallback is never emitted when the liquidity hard gate is enabled.
@@ -1044,10 +1054,12 @@ class Engine:
                 continue
             d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
             accepted += 1
+            dispatch_counts["persisted"] += 1
             if module == "normal":
                 entry_training_signals.append((sid, sig))
             log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
                      sig.entry, sig.sl)
+            dispatch_counts["telegram_attempted"] += 1
             try:
                 result = (send(message, signal_id=sid) if self.notify is send
                           else self.notify(message))
@@ -1064,8 +1076,20 @@ class Engine:
                 log.exception("could not persist Telegram delivery state for signal id=%s", sid)
             if ok:
                 sent += 1
+                dispatch_counts["telegram_ok"] += 1
             else:
+                dispatch_counts["telegram_failed"] += 1
                 d["rejects"]["telegram_failed"] += 1
+        d["dispatch_counts"] = dispatch_counts
+        dispatch_rejects = {
+            key: value for key, value in d["rejects"].items()
+            if key in {"option_unavailable", "option_quote_missing", "option_quote_stale",
+                       "option_spread_too_wide", "option_volume_low", "option_oi_low",
+                       "stale_before_dispatch", "storage_error", "duplicate", "daily_cap",
+                       "cycle_top_n", "telegram_failed", "delivery_state_error"}
+        }
+        log.info("dispatch summary module=%s counts=%s rejects=%s", module,
+                 dispatch_counts, dispatch_rejects)
         if module == "normal" and entry_training_signals:
             try:
                 from .entry_training import record_signals

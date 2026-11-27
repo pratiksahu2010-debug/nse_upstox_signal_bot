@@ -39,7 +39,7 @@ def test_telegram_429_malformed_json_retries_with_fallback(monkeypatch):
     sleeps = []
     calls = _configure(
         monkeypatch,
-        [Response(429, error=ValueError("bad json")), Response(200)],
+        [Response(429, error=ValueError("bad json")), Response(200, {"ok": True, "result": {"message_id": 123}})],
         sleeps,
     )
     assert telegram.send("alert") is True
@@ -51,7 +51,7 @@ def test_telegram_429_retry_after_is_bounded(monkeypatch):
     sleeps = []
     calls = _configure(
         monkeypatch,
-        [Response(429, {"parameters": {"retry_after": 9999}}), Response(200)],
+        [Response(429, {"parameters": {"retry_after": 9999}}), Response(200, {"ok": True, "result": {"message_id": 123}})],
         sleeps,
     )
     assert telegram.send("alert") is True
@@ -63,9 +63,22 @@ def test_telegram_429_invalid_retry_after_uses_fallback(monkeypatch):
     sleeps = []
     calls = _configure(
         monkeypatch,
-        [Response(429, {"parameters": {"retry_after": "not-a-number"}}), Response(200)],
+        [Response(429, {"parameters": {"retry_after": "not-a-number"}}), Response(200, {"ok": True, "result": {"message_id": 123}})],
         sleeps,
     )
     assert telegram.send("alert") is True
     assert len(calls) == 2
     assert sleeps == [3.5]
+
+
+
+def test_telegram_http_200_api_rejection_is_not_marked_delivered(monkeypatch):
+    sleeps = []
+    _configure(monkeypatch, [Response(200, {"ok": False, "error_code": 400})], sleeps)
+    assert telegram.send("alert") is False
+
+
+def test_telegram_http_200_requires_valid_success_payload(monkeypatch):
+    sleeps = []
+    _configure(monkeypatch, [Response(200, {"ok": True, "result": {"message_id": 456}})], sleeps)
+    assert telegram.send("alert", signal_id=12) is True
