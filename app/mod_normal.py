@@ -3,6 +3,8 @@
 No higher-timeframe candles or filters are used. All entry decisions are made
 from completed 5-minute bars; options remain recommendations only.
 """
+import math
+
 import pandas as pd
 
 from .common import Ctx, Signal, SymbolInfo, round_tick
@@ -11,6 +13,17 @@ from .indicators import Features
 
 LONG_RSI_TRIGGER = 52.0
 SHORT_RSI_TRIGGER = 42.0
+
+
+def _tick_round_directional(value: float, tick: float, direction: str) -> float:
+    """Round a stop/target away from entry so tick rounding cannot weaken its distance."""
+    if not tick or tick <= 0:
+        return round(value, 2)
+    units = value / tick
+    # Small tolerance prevents binary floating-point noise at exact tick values.
+    if direction == "down":
+        return round(math.floor(units + 1e-10) * tick, 6)
+    return round(math.ceil(units - 1e-10) * tick, 6)
 
 
 def setup_side(f: Features):
@@ -74,15 +87,33 @@ def evaluate(info: SymbolInfo, df: pd.DataFrame, f: Features, ctx: Ctx):
 
     if pd.isna(f.atr) or f.atr <= 0:
         return None, "invalid_atr"
+    if (not math.isfinite(C.sl_atr) or C.sl_atr <= 0
+            or not math.isfinite(C.tp1_r) or C.tp1_r <= 0
+            or not math.isfinite(C.tp2_r) or C.tp2_r <= C.tp1_r):
+        return None, "invalid_risk_config"
 
-    entry = f.close
-    risk = C.sl_atr * f.atr
-    sl = entry - side * risk
-    tp1 = entry + side * C.tp1_r * risk
-    tp2 = entry + side * C.tp2_r * risk
-    entry, sl, tp1, tp2 = (
-        round_tick(value, info.tick) for value in (entry, sl, tp1, tp2)
-    )
+    # Round entry to the nearest tradable tick. Then derive targets from the
+    # actual tick-rounded stop distance, not the pre-rounded ATR distance.
+    entry = round_tick(float(f.close), info.tick)
+    raw_risk = C.sl_atr * float(f.atr)
+    if side > 0:
+        sl = _tick_round_directional(entry - raw_risk, info.tick, "down")
+    else:
+        sl = _tick_round_directional(entry + raw_risk, info.tick, "up")
+
+    risk = abs(entry - sl)
+    if not math.isfinite(risk) or risk <= 0:
+        return None, "invalid_levels"
+
+    raw_tp1 = entry + side * C.tp1_r * risk
+    raw_tp2 = entry + side * C.tp2_r * risk
+    if side > 0:
+        tp1 = _tick_round_directional(raw_tp1, info.tick, "up")
+        tp2 = _tick_round_directional(raw_tp2, info.tick, "up")
+    else:
+        tp1 = _tick_round_directional(raw_tp1, info.tick, "down")
+        tp2 = _tick_round_directional(raw_tp2, info.tick, "down")
+
     if (side > 0 and not sl < entry < tp1 < tp2) or (
             side < 0 and not sl > entry > tp1 > tp2):
         return None, "invalid_levels"
