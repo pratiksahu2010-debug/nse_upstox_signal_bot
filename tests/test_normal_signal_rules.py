@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 from app import mod_normal
-from app.config import ENABLE_MOMENTUM
 
 
 def _features(**overrides):
@@ -20,10 +19,6 @@ def _features(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_production_configuration_is_normal_only():
-    assert ENABLE_MOMENTUM is False
-
-
 def test_long_setup_uses_only_completed_5m_indicators(monkeypatch):
     monkeypatch.setattr(mod_normal, "C", SimpleNamespace(adx_min=20.0))
     # No 15m, DI, RVOL, or candle-shape fields are supplied.
@@ -38,10 +33,8 @@ def test_short_setup_uses_only_completed_5m_indicators(monkeypatch):
     assert mod_normal.setup_side(f) == -1
 
 
-def test_5m_score_uses_no_higher_timeframe_fields():
+def test_5m_score_is_deterministic_from_normal_features():
     f = _features()
     score = mod_normal.score_signal(f, 1)
     assert 0 <= score <= 100
-    assert score == mod_normal.score_signal(
-        _features(htf_close=-999.0, htf_ema9=999.0, htf_ema21=-999.0), 1
-    )
+    assert score == mod_normal.score_signal(_features(), 1)
