@@ -83,6 +83,29 @@ def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     return next_state
 
 
+def _cooldown_state_after_bar(state: dict, current_side: int) -> dict:
+    """Advance one completed 5m cooldown bar; re-arm only after expiry and invalidation."""
+    next_state = dict(state)
+    side = int(state.get("side", 0) or 0)
+    invalidated = bool(state.get("invalidated", False)) or int(current_side or 0) != side
+    remaining = max(0, int(state.get("cooldown_remaining", 0)) - 1)
+    if remaining == 0 and invalidated:
+        next_state.update({
+            "phase": "IDLE",
+            "side": 0,
+            "cooldown_remaining": 0,
+            "invalidated": False,
+        })
+    else:
+        next_state.update({
+            "phase": "COOLDOWN",
+            "side": side,
+            "cooldown_remaining": remaining,
+            "invalidated": invalidated,
+        })
+    return next_state
+
+
 def _momentum_without_persisted_normal(candidates: list, persisted: set) -> list:
     """Keep a same-candle Momentum candidate unless Normal reached durable storage."""
     return [
@@ -677,14 +700,10 @@ class Engine:
                     state = _triggered_to_cooldown(state, mod.setup_side(f))
                     d["rejects"]["triggered_to_cooldown"] += 1
                 elif phase == "COOLDOWN":
-                    valid=mod.setup_side(f)==side
-                    invalidated=bool(state.get("invalidated",False)) or not valid
-                    remaining=max(0,int(state.get("cooldown_remaining",0))-1)
-                    if remaining==0 and invalidated:
-                        state.update({"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False})
+                    state = _cooldown_state_after_bar(state, mod.setup_side(f))
+                    if state.get("phase") == "IDLE":
                         d["rejects"]["cooldown_rearmed"] += 1
                     else:
-                        state.update({"phase":"COOLDOWN","side":side,"cooldown_remaining":remaining,"invalidated":invalidated})
                         d["rejects"]["cooldown_locked"] += 1
                 else:
                     state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
