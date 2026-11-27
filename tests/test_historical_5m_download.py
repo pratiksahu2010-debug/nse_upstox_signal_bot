@@ -40,6 +40,15 @@ def test_read_instruments_requires_unique_explicit_keys(tmp_path):
     ]
 
     path.write_text(
+        "symbol,instrument_key\\nM&M,NSE_EQ|INE296A01024\\nGVT&D,NSE_EQ|INE123A01016\\n",
+        encoding="utf-8",
+    )
+    assert read_instruments(path) == [
+        ("M&M", "NSE_EQ|INE296A01024"),
+        ("GVT&D", "NSE_EQ|INE123A01016"),
+    ]
+
+    path.write_text(
         "symbol,instrument_key\nRELIANCE,key-1\nRELIANCE,key-2\n",
         encoding="utf-8",
     )
