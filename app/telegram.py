@@ -86,6 +86,17 @@ def send(text: str, silent: bool = False, signal_id: Optional[int] = None) -> bo
         try:
             r = requests.post(url, json=payload, timeout=15)
             if r.status_code == 200:
+                try:
+                    body = r.json()
+                except (ValueError, TypeError):
+                    log.error("telegram returned HTTP 200 with an unreadable response")
+                    return False
+                if not isinstance(body, dict) or body.get("ok") is not True:
+                    error_code = body.get("error_code") if isinstance(body, dict) else None
+                    log.error("telegram API rejected message despite HTTP 200 (error_code=%s)", error_code)
+                    return False
+                message_id = (body.get("result") or {}).get("message_id")
+                log.info("telegram delivered message_id=%s signal_id=%s", message_id, signal_id)
                 return True
             if r.status_code == 429:
                 # Telegram may return a malformed/non-JSON body during overload.
