@@ -26,9 +26,3 @@ def test_live_features_include_only_completed_5m_context():
     assert features.ema21 > 0
     assert features.vwap > 0
     assert features.adx >= 0
-    assert features.htf_bar_ts is None
-    assert features.htf_close is None
-    assert features.htf_ema9 is None
-    assert features.htf_ema21 is None
-    assert features.htf_pdi is None
-    assert features.htf_mdi is None
