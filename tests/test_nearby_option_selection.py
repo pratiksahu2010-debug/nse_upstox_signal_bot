@@ -102,7 +102,10 @@ def test_dispatch_keeps_atm_and_labels_unverified_when_quotes_unavailable(monkey
     sent, client, store = _run(monkeypatch, fail=True)
 
     assert sent == 1
-    assert client.calls == [[ATM_KEY, LIQUID_KEY]]
+    # The nearby batch failed, then the selected ATM contract received its
+    # own REST retry. Both failures are tolerated and the alert is explicitly
+    # labelled unverified rather than falsely marked liquidity-verified.
+    assert client.calls == [[ATM_KEY, LIQUID_KEY], [ATM_KEY]]
     option = store.rows[0]["details"]["option"]
     assert option["tsym"] == "TEST100CE"
     assert option["selection_status"] == "ATM_FALLBACK_UNVERIFIED"
