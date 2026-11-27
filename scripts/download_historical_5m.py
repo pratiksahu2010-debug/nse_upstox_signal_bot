@@ -56,7 +56,7 @@ def read_instruments(path: Path):
                 raise ValueError(f"missing symbol or instrument_key on CSV line {line}")
             if symbol in seen_symbols or key in seen_keys:
                 raise ValueError(f"duplicate symbol or instrument_key on CSV line {line}")
-            if not re.fullmatch(r"[A-Z0-9_.-]+", symbol):
+            if not re.fullmatch(r"[A-Z0-9_.&-]+", symbol):
                 raise ValueError(f"invalid symbol on CSV line {line}")
             seen_symbols.add(symbol)
             seen_keys.add(key)
