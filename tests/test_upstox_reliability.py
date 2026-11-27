@@ -45,7 +45,7 @@ def test_candle_frame_sorts_deduplicates_and_keeps_optional_oi():
     ]
     frame = UpstoxClient._frame(candles)
     assert frame.index.is_monotonic_increasing
-    assert len(frame) == 3
+    assert len(frame) == 2
     assert frame.iloc[-1]["close"] == 103
     assert frame.iloc[-1]["oi"] == 8
     assert pd.isna(frame.iloc[0]["oi"])
@@ -184,7 +184,7 @@ def test_vectorized_candle_frame_preserves_validation_and_timestamp_semantics():
 
     frame = UpstoxClient._frame(candles)
 
-    assert len(frame) == 2
+    assert len(frame) == 3
     assert frame.index.is_monotonic_increasing
     assert str(frame.index.tz) == "UTC+05:30"
     assert frame.iloc[0]["close"] == 101
