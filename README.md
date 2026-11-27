@@ -83,16 +83,15 @@ The committed `.env.example` is a **safe template**, not a production environmen
 
 ### Required Render secrets
 
-Set all five variables below. The application fails readiness when required configuration is missing or invalid.
+Set these five production variables. The application reports readiness failures when required configuration is missing or invalid.
 
 - `UPSTOX_ANALYTICS_TOKEN` — preferred Upstox Analytics Token (read-only, one-year validity); supports market quotes, historical candles, option data and WebSocket market feeds. Generate it from Upstox Developer Apps → Analytics.
-- `UPSTOX_ACCESS_TOKEN` — legacy compatibility fallback only. If both are set, `UPSTOX_ANALYTICS_TOKEN` takes precedence. Do not paste either token into GitHub or chat.
 - `NEON_DATABASE_URL` — Neon PostgreSQL connection string; use the SSL-enabled URL.
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token.
 - `TELEGRAM_CHAT_ID` — destination chat ID allowed by the bot.
 - `ADMIN_TOKEN` — long, random secret used by admin-authenticated endpoints.
 
-`NEON_DATABASE_URL` takes precedence. `DATABASE_URL` is accepted only as a compatibility fallback. Do not set both to different databases.
+`UPSTOX_ACCESS_TOKEN` remains an optional legacy compatibility fallback only; if both tokens are set, `UPSTOX_ANALYTICS_TOKEN` takes precedence. `NEON_DATABASE_URL` takes precedence over the legacy `DATABASE_URL` alias. Do not set both database URLs to different databases. Never paste any token into GitHub or chat.
 
 ### Runtime configuration reference
 
