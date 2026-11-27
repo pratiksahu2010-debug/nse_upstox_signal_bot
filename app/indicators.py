@@ -75,18 +75,33 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def rvol_time_of_day(df: pd.DataFrame, lookback_days: int = 5, min_days: int = 3) -> float:
-    """Last-bar volume / mean volume of the same clock slot on previous sessions.
-    Falls back to the 20-bar mean when there is not enough same-slot history."""
-    v = df["volume"]
+    """Last-bar volume / same clock-slot volume from prior sessions.
+
+    Uses a 20-bar fallback when there is insufficient same-slot history. Bad or
+    missing volume is treated as unavailable (0.0), never as NaN/inf.
+    """
+    if df.empty or "volume" not in df or not isinstance(df.index, pd.DatetimeIndex):
+        return 0.0
+    v = pd.to_numeric(df["volume"], errors="coerce")
+    current = float(v.iloc[-1]) if pd.notna(v.iloc[-1]) else float("nan")
+    if not np.isfinite(current) or current < 0:
+        return 0.0
+
     ts = df.index[-1]
     slot = ts.hour * 60 + ts.minute
     same_slot = (df.index.hour * 60 + df.index.minute) == slot
     other_day = np.asarray(df.index.date != ts.date())
-    prev = v[same_slot & other_day].tail(lookback_days)
-    if len(prev) >= min_days and prev.mean() > 0:
-        return float(v.iloc[-1] / prev.mean())
-    base = v.iloc[-21:-1].mean()
-    return float(v.iloc[-1] / base) if base and base > 0 else 0.0
+    prev = v[same_slot & other_day].tail(max(1, int(lookback_days)))
+    prev = prev[np.isfinite(prev.to_numpy(dtype=float)) & (prev >= 0)]
+    if len(prev) >= max(1, int(min_days)):
+        baseline = float(prev.mean())
+        if np.isfinite(baseline) and baseline > 0:
+            return float(current / baseline)
+
+    base = v.iloc[max(0, len(v) - 21):-1]
+    base = base[np.isfinite(base.to_numpy(dtype=float)) & (base >= 0)]
+    baseline = float(base.mean()) if len(base) else 0.0
+    return float(current / baseline) if np.isfinite(baseline) and baseline > 0 else 0.0
 
 
 def cross_info(df: pd.DataFrame, lookback: int = 20):
@@ -161,12 +176,40 @@ def completed_15m_context(df: pd.DataFrame):
 
 
 def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features]:
-    """`df` must already contain indicator columns (add_indicators) and only CLOSED bars."""
-    if len(df) < 45:
+    """Build features only from a clean, ascending sequence of CLOSED OHLCV bars.
+
+    The latest 45 bars feed the rolling indicators and cross/candle metrics. If
+    that window contains malformed market data, fail closed instead of allowing
+    NaN, infinity, impossible OHLC ranges, or duplicate timestamps into signals.
+    """
+    required = ("open", "high", "low", "close", "volume")
+    if (not isinstance(df, pd.DataFrame) or len(df) < 45
+            or not isinstance(df.index, pd.DatetimeIndex)
+            or not df.index.is_monotonic_increasing or df.index.has_duplicates
+            or any(col not in df.columns for col in required)):
         return None
+
+    window = df.iloc[-45:]
+    ohlcv = window.loc[:, required].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(ohlcv).all():
+        return None
+    op, hi, lo, cl, vol = ohlcv.T
+    if ((vol < 0).any() or (hi < lo).any()
+            or (hi < np.maximum(op, cl)).any()
+            or (lo > np.minimum(op, cl)).any()):
+        return None
+
     r = df.iloc[-1]
-    needed = [r.ema9, r.ema21, r.vwap, r.rsi, r.adx, r.atr, r.close]
-    if any(pd.isna(x) for x in needed) or r.atr <= 0 or r.close <= 0:
+    needed = [r.ema9, r.ema21, r.vwap, r.rsi, r.adx, r.pdi, r.mdi, r.atr, r.close]
+    if any(pd.isna(x) or not np.isfinite(float(x)) for x in needed):
+        return None
+    if (r.atr <= 0 or r.close <= 0 or not 0 <= r.rsi <= 100
+            or not 0 <= r.adx <= 100 or r.pdi < 0 or r.mdi < 0):
+        return None
+    slope_ref = df["ema21"].iloc[-4]
+    rsi_prev = df["rsi"].iloc[-2]
+    adx_prev2 = df["adx"].iloc[-3]
+    if any(pd.isna(x) or not np.isfinite(float(x)) for x in (slope_ref, rsi_prev, adx_prev2)):
         return None
     rng = float(r.high - r.low)
     body = abs(float(r.close - r.open))
@@ -178,10 +221,10 @@ def compute_features(df: pd.DataFrame, candle_min: int = 5) -> Optional[Features
         open=float(r.open), high=float(r.high), low=float(r.low), close=float(r.close),
         volume=float(r.volume),
         ema9=float(r.ema9), ema21=float(r.ema21),
-        ema21_slope=float(r.ema21 - df["ema21"].iloc[-4]),
+        ema21_slope=float(r.ema21 - slope_ref),
         vwap=float(r.vwap),
-        rsi=float(r.rsi), rsi_prev=float(df["rsi"].iloc[-2]),
-        adx=float(r.adx), adx_prev2=float(df["adx"].iloc[-3]),
+        rsi=float(r.rsi), rsi_prev=float(rsi_prev),
+        adx=float(r.adx), adx_prev2=float(adx_prev2),
         adx_max10=float(df["adx"].iloc[-10:].max()),
         pdi=float(r.pdi), mdi=float(r.mdi),
         atr=float(r.atr), atr_pct=float(r.atr / r.close * 100),
