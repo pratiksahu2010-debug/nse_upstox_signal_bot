@@ -40,9 +40,9 @@ def test_tick_rounding_preserves_minimum_stop_distance_and_rr(monkeypatch, side)
     assert reason is None
     assert signal is not None
     risk = abs(signal.entry - signal.sl)
-    assert risk >= pytest.approx(1.2 * 1.03, abs=1e-9)
-    assert abs(signal.tp1 - signal.entry) / risk >= 1.5
-    assert abs(signal.tp2 - signal.entry) / risk >= 2.0
+    assert risk + 1e-9 >= 1.2 * 1.03
+    assert abs(signal.tp1 - signal.entry) / risk + 1e-9 >= 1.5
+    assert abs(signal.tp2 - signal.entry) / risk + 1e-9 >= 2.0
     assert round(signal.entry / 0.05) * 0.05 == pytest.approx(signal.entry)
     for price in (signal.sl, signal.tp1, signal.tp2):
         assert price / 0.05 == pytest.approx(round(price / 0.05))
