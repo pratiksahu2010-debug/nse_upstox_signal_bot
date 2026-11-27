@@ -253,17 +253,21 @@ class Engine:
                 self._warm(st, now, module)
             except Exception as e:
                 # A historical warm-up outage must not suppress today's
-                # intraday request. The intraday-only frame is still useful
-                # once it contains enough completed bars for indicator warm-up.
-                # Never combine a prior session's cached frame after a failed
-                # new-day warm-up: that would silently mix stale history.
-                st.err = str(e)[:120]
+                # intraday request, except when the credential itself is
+                # rejected. In that case every symbol shares the same failed
+                # auth state: stop immediately instead of issuing a second
+                # request per symbol with the same invalid token.
+                st.err = str(e)[:160]
+                if getattr(self.client, "auth_failed", False):
+                    raise
                 log.warning(
-                    "historical warm-up failed for %s; trying intraday-only data: %s",
-                    st.info.symbol, type(e).__name__,
+                    "historical warm-up failed for %s; trying intraday-only data: %s: %s",
+                    st.info.symbol, type(e).__name__, str(e)[:160],
                 )
         if st.disabled:
             return None
+        if getattr(self.client, "auth_failed", False):
+            raise RuntimeError("Upstox authentication failed; intraday fetch skipped")
         intr = self.client.intraday(st.info.key)
         if len(intr):
             intr = intr[OHLCV]
@@ -319,7 +323,7 @@ class Engine:
                     except Exception as e:
                         st.err = str(e)[:120]
                         retry.append(st)
-                        retry_details.append(f"{symbol}:error:{type(e).__name__}")
+                        retry_details.append(f"{symbol}:error:{type(e).__name__}:{str(e)[:100]}")
                         continue
                     if df is None:
                         continue
