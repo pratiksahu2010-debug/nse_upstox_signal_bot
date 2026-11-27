@@ -529,7 +529,7 @@ class Engine:
                 outcome_cfg = MOMENTUM if r.get("module") == "momentum" else cfg
                 status, rr = simulate(r, ind, outcome_cfg.session_end)
                 mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, outcome_cfg.session_end)
-                bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind)
+                bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind, outcome_cfg.session_end)
                 # Do not close a signal until all training metrics for this
                 # replay have been persisted. The row remains OPEN/TP1 on any
                 # transient metrics write failure, so the next scan retries it.

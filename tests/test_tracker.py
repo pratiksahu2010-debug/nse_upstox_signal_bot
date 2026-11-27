@@ -40,6 +40,22 @@ def test_measure_target_times_tracks_short_targets():
     assert measure_target_times(_signal("SHORT"), df) == (1, 1)
 
 
+def test_measure_target_times_ignores_targets_after_session_end():
+    df = _frame([
+        [100, 102, 99, 101, 1000],       # 09:20-09:25, final eligible candle
+        [101, 105, 100.5, 104, 1000],   # 09:25-09:30, after session cutoff
+    ])
+    assert measure_target_times(_signal(), df, session_end=time(9, 25)) == (None, None)
+
+
+def test_measure_target_times_counts_tp1_on_final_candle_but_not_later_tp2():
+    df = _frame([
+        [100, 103.5, 100.5, 103, 1000], # TP1 reached before 09:25 close
+        [103, 105, 102, 104.5, 1000],   # TP2 occurs after session cutoff
+    ])
+    assert measure_target_times(_signal(), df, session_end=time(9, 25)) == (1, None)
+
+
 
 def test_memory_store_persists_target_time_metrics_in_training_rows():
     store = MemoryStore()
