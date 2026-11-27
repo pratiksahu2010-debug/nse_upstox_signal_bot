@@ -15,7 +15,7 @@ services:
         value: Asia/Kolkata
       - key: NEON_DATABASE_URL
         sync: false
-      - key: UPSTOX_ACCESS_TOKEN
+      - key: UPSTOX_ANALYTICS_TOKEN
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false

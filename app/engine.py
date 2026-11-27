@@ -52,6 +52,23 @@ def dispatch_bar_is_fresh(bar_ts, now: datetime) -> bool:
         return False
 
 
+def _recover_normal_state_after_gap(state: dict, gap: pd.Timedelta) -> tuple[dict, bool]:
+    """Reset an out-of-sequence lifecycle without dropping the current candle.
+
+    A missed scan boundary invalidates the old ARMED/TRIGGERED/COOLDOWN cursor.
+    The caller must still evaluate the current completed candle as a fresh IDLE
+    state; returning the reset flag keeps diagnostics explicit.
+    """
+    if gap == pd.Timedelta(minutes=ENGINE.candle_min):
+        return dict(state), False
+    return {
+        "phase": "IDLE",
+        "side": 0,
+        "cooldown_remaining": 0,
+        "invalidated": False,
+    }, True
+
+
 def _triggered_to_cooldown(state: dict, current_side: int) -> dict:
     """Advance the persisted trigger stage on the next completed 5m candle."""
     next_state = dict(state)
@@ -588,10 +605,14 @@ class Engine:
                 if f.bar_ts <= last_bar: continue
                 phase=state.get("phase","IDLE"); side=int(state.get("side",0) or 0)
                 gap=f.bar_ts-last_bar
-                if gap != pd.Timedelta(minutes=ENGINE.candle_min):
-                    state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
+                state, gap_reset = _recover_normal_state_after_gap(state, gap)
+                if gap_reset:
+                    # Keep the current completed candle eligible for a fresh
+                    # setup evaluation after recovery from a missed scan.
+                    phase="IDLE"
+                    side=0
                     d["rejects"]["state_gap_reset"] += 1
-                elif phase == "IDLE":
+                if phase == "IDLE":
                     side=mod.setup_side(f)
                     if side:
                         state.update({"phase":"ARMED","side":side,"armed_bar":f.bar_ts.isoformat(),"cooldown_remaining":0,"invalidated":False})

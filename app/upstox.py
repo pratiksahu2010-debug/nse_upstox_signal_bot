@@ -196,9 +196,9 @@ class UpstoxClient:
             token = self._token
             auth_failed = self.auth_failed
         if not token:
-            raise UpstoxError("UPSTOX_ACCESS_TOKEN is not configured")
+            raise UpstoxError("UPSTOX_ANALYTICS_TOKEN is not configured (legacy UPSTOX_ACCESS_TOKEN is also supported)")
         if auth_failed:
-            raise UpstoxError("Upstox authentication is rejected; replace the Analytics Token")
+            raise UpstoxError("Upstox authentication is rejected; replace UPSTOX_ANALYTICS_TOKEN in Render")
 
         last = None
         for attempt in range(max(1, retries)):
@@ -255,7 +255,7 @@ class UpstoxClient:
                         "stale token rejected after token rotation; current token remains active"
                     )
                 if latch_auth:
-                    raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ACCESS_TOKEN")
+                    raise UpstoxError(f"auth error {r.status_code}: replace UPSTOX_ANALYTICS_TOKEN in Render")
                 raise UpstoxError(f"optional endpoint auth error {r.status_code}")
 
             if r.status_code == 429:
