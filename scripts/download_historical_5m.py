@@ -39,8 +39,14 @@ def monthly_chunks(start: date, end: date):
         cursor = chunk_end + timedelta(days=1)
 
 
-def read_instruments(path: Path):
-    """Read and validate an explicit symbol-to-Upstox-instrument-key CSV."""
+def read_instruments(path: Path, stocks_only: bool = False):
+    """Read explicit instruments and refuse point-in-time index futures by default.
+
+    The current research manifest resolves one active index-futures contract.
+    Reusing that key across a multi-month date range is not a continuous futures
+    series. Until expiry-aware contract history is wired in, index rows require
+    an explicit --stocks-only run and are excluded rather than misrepresented.
+    """
     instruments = []
     seen_symbols = set()
     seen_keys = set()
@@ -49,6 +55,8 @@ def read_instruments(path: Path):
         required = {"symbol", "instrument_key"}
         if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
             raise ValueError("instrument CSV must contain symbol,instrument_key columns")
+        has_index_flag = "is_index" in reader.fieldnames
+        skipped_indices = []
         for line, row in enumerate(reader, start=2):
             symbol = (row.get("symbol") or "").strip().upper()
             key = (row.get("instrument_key") or "").strip()
@@ -58,11 +66,32 @@ def read_instruments(path: Path):
                 raise ValueError(f"duplicate symbol or instrument_key on CSV line {line}")
             if not re.fullmatch(r"[A-Z0-9_.&-]+", symbol):
                 raise ValueError(f"invalid symbol on CSV line {line}")
+            is_index_raw = (row.get("is_index") or "").strip().lower() if has_index_flag else "false"
+            if is_index_raw not in {"true", "false"}:
+                raise ValueError(f"invalid is_index value on CSV line {line}: {is_index_raw!r}")
+            is_index = is_index_raw == "true"
             seen_symbols.add(symbol)
             seen_keys.add(key)
+            if is_index:
+                if not stocks_only:
+                    raise ValueError(
+                        f"{symbol} is a point-in-time index-futures contract; "
+                        "a single current contract key cannot represent multi-month "
+                        "continuous history. Re-run with --stocks-only to exclude "
+                        "index rows until expiry-aware rollover support is available."
+                    )
+                skipped_indices.append(symbol)
+                continue
+            if has_index_flag and not key.startswith("NSE_EQ|"):
+                raise ValueError(
+                    f"{symbol}: non-index research row must use an NSE_EQ cash-equity key"
+                )
             instruments.append((symbol, key))
     if not instruments:
-        raise ValueError("instrument CSV contains no instruments")
+        raise ValueError("instrument CSV contains no downloadable stock instruments")
+    if skipped_indices:
+        log.warning("Excluded %d index futures pending expiry-aware rollover: %s",
+                    len(skipped_indices), ", ".join(skipped_indices))
     return instruments
 
 
@@ -100,6 +129,10 @@ def parse_args(argv=None):
     parser.add_argument("--to-date", required=True, type=date.fromisoformat,
                         help="inclusive YYYY-MM-DD")
     parser.add_argument("--output-dir", type=Path, default=Path("research_data"))
+    parser.add_argument(
+        "--stocks-only", action="store_true",
+        help="exclude index-futures rows from a research manifest; required until expiry-aware rollover is implemented",
+    )
     return parser.parse_args(argv)
 
 
@@ -111,7 +144,7 @@ def main(argv=None):
         raise SystemExit("Set UPSTOX_ANALYTICS_TOKEN (or legacy UPSTOX_ACCESS_TOKEN) first")
 
     try:
-        instruments = read_instruments(args.instruments)
+        instruments = read_instruments(args.instruments, stocks_only=args.stocks_only)
         client = UpstoxClient()
         for symbol, key in instruments:
             log.info("Downloading 5-minute history for %s", symbol)
