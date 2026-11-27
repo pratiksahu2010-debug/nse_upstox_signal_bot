@@ -929,7 +929,10 @@ class Engine:
             option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
-            snapshots = dict(streamed_option_quotes)
+            snapshots = {
+                key: stream_quote_snapshot(value)
+                for key, value in streamed_option_quotes.items()
+            }
             if self.market_stream is not None:
                 for key in option_keys:
                     raw_snapshot = stream_quote_snapshot(self.market_stream.quote(key))
