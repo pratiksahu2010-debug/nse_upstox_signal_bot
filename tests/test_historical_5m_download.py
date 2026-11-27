@@ -101,9 +101,9 @@ def test_write_atomic_produces_timestamped_csv(tmp_path):
 def test_manifest_index_futures_fail_closed_without_stocks_only(tmp_path):
     path = tmp_path / "manifest.csv"
     path.write_text(
-        "symbol,instrument_key,is_index,price_source\\n"
-        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\\n"
-        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\\n",
+        "symbol,instrument_key,is_index,price_source\n"
+        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\n"
+        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="point-in-time index-futures"):
@@ -113,9 +113,9 @@ def test_manifest_index_futures_fail_closed_without_stocks_only(tmp_path):
 def test_stocks_only_explicitly_excludes_index_futures(tmp_path, caplog):
     path = tmp_path / "manifest.csv"
     path.write_text(
-        "symbol,instrument_key,is_index,price_source\\n"
-        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\\n"
-        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\\n",
+        "symbol,instrument_key,is_index,price_source\n"
+        "RELIANCE,NSE_EQ|INE002A01018,false,cash_equity\n"
+        "NIFTY,NSE_FO|NIFTY-FUT,true,index_future\n",
         encoding="utf-8",
     )
     assert read_instruments(path, stocks_only=True) == [
@@ -127,8 +127,8 @@ def test_stocks_only_explicitly_excludes_index_futures(tmp_path, caplog):
 def test_manifest_rejects_non_index_row_with_futures_key(tmp_path):
     path = tmp_path / "manifest.csv"
     path.write_text(
-        "symbol,instrument_key,is_index\\n"
-        "RELIANCE,NSE_FO|WRONG,false\\n",
+        "symbol,instrument_key,is_index\n"
+        "RELIANCE,NSE_FO|WRONG,false\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="NSE_EQ cash-equity key"):
