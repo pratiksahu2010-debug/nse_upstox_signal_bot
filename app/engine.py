@@ -589,9 +589,15 @@ class Engine:
                 phase=state.get("phase","IDLE"); side=int(state.get("side",0) or 0)
                 gap=f.bar_ts-last_bar
                 if gap != pd.Timedelta(minutes=ENGINE.candle_min):
+                    # A missed scan boundary invalidates the old lifecycle, but
+                    # the current completed candle is still eligible for a fresh
+                    # setup evaluation. Previously this was an if/elif chain,
+                    # which discarded that entire candle for every gapped symbol.
                     state={"phase":"IDLE","side":0,"cooldown_remaining":0,"invalidated":False}
+                    phase="IDLE"
+                    side=0
                     d["rejects"]["state_gap_reset"] += 1
-                elif phase == "IDLE":
+                if phase == "IDLE":
                     side=mod.setup_side(f)
                     if side:
                         state.update({"phase":"ARMED","side":side,"armed_bar":f.bar_ts.isoformat(),"cooldown_remaining":0,"invalidated":False})
