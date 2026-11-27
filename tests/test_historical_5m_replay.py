@@ -81,3 +81,54 @@ def test_replay_is_causal_and_uses_normal_lifecycle(monkeypatch):
 
 def test_empty_replay_returns_no_signals():
     assert replay.replay_frame("ABC", _bars(0)) == []
+
+
+
+def test_load_tick_sizes_validates_and_normalizes_symbols(tmp_path):
+    path = tmp_path / "ticks.csv"
+    path.write_text("symbol,tick_size\\nabc,0.01\\nXYZ,0.05\\n", encoding="utf-8")
+    assert replay.load_tick_sizes(path) == {"ABC": 0.01, "XYZ": 0.05}
+
+
+@pytest.mark.parametrize(
+    "content, message",
+    [
+        ("symbol,tick_size\\nABC,0\\n", "positive finite"),
+        ("symbol,tick_size\\nABC,nan\\n", "positive finite"),
+        ("symbol,tick_size\\nABC,0.05\\nABC,0.01\\n", "duplicate"),
+        ("symbol,price_tick\\nABC,0.05\\n", "must contain"),
+    ],
+)
+def test_load_tick_sizes_rejects_invalid_mappings(tmp_path, content, message):
+    path = tmp_path / "ticks.csv"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        replay.load_tick_sizes(path)
+
+
+def test_replay_directory_uses_each_symbols_tick_size(monkeypatch, tmp_path):
+    input_dir = tmp_path / "data"
+    input_dir.mkdir()
+    (input_dir / "ABC.csv").write_text("placeholder", encoding="utf-8")
+    (input_dir / "XYZ.csv").write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(replay, "load_ohlcv", lambda path: _bars(1))
+    seen = []
+    monkeypatch.setattr(
+        replay, "replay_frame",
+        lambda symbol, frame, tick: seen.append((symbol, tick)) or [],
+    )
+    replay.replay_directory(
+        input_dir, tmp_path / "out.csv", tick_sizes={"ABC": 0.01, "XYZ": 0.05}
+    )
+    assert seen == [("ABC", 0.01), ("XYZ", 0.05)]
+
+
+def test_replay_directory_fails_closed_when_tick_mapping_is_missing(monkeypatch, tmp_path):
+    input_dir = tmp_path / "data"
+    input_dir.mkdir()
+    (input_dir / "ABC.csv").write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(replay, "load_ohlcv", lambda path: _bars(1))
+    with pytest.raises(ValueError, match="no tick_size mapping for ABC"):
+        replay.replay_directory(
+            input_dir, tmp_path / "out.csv", tick_sizes={"XYZ": 0.05}
+        )
