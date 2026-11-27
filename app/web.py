@@ -226,8 +226,6 @@ def _safe_config():
         "session_end": config.NORMAL.session_end.strftime("%H:%M"),
         "adx_min": config.NORMAL.adx_min,
         "score_min": config.NORMAL.score_min,
-        "momentum_enabled": config.ENABLE_MOMENTUM,
-        "momentum_score_min": config.MOMENTUM.score_min,
         "ema_fast": config.IND.ema_fast,
         "ema_slow": config.IND.ema_slow,
         "rsi_period": config.IND.rsi_n,
@@ -327,7 +325,7 @@ def readiness():
         return unavailable("application_not_initialized")
     if not config.RUN_SCHEDULER:
         return unavailable("scheduler_disabled")
-    if not (config.ENABLE_NORMAL or config.ENABLE_MOMENTUM):
+    if not config.ENABLE_NORMAL:
         return unavailable("all_strategies_disabled")
     if not config.UPSTOX_TOKEN:
         return unavailable("upstox_token_missing")
