@@ -72,6 +72,7 @@ def test_replay_is_causal_and_uses_normal_lifecycle(monkeypatch):
 
     results = replay.replay_frame("ABC", frame)
     assert len(results) == 1
+    assert results[0]["option_type"] == "CALL"
     assert results[0]["status"] == "TP2"
     assert results[0]["net_r"] == 2.0
     assert prefix_lengths == list(range(50, 53))
