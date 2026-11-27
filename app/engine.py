@@ -843,13 +843,15 @@ class Engine:
                 metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
                 status = "ATM_FALLBACK_UNVERIFIED"
             selected = dict(selected)
-            if OPTION_LIQUIDITY_CHECKS and status != "LIQUIDITY_VERIFIED":
-                d["rejects"]["option_no_liquid_contract"] += 1
-                continue
+            # Do not reject an unverified ATM fallback yet. The selected contract
+            # is subscribed below, and its live quote gets one final chance to
+            # satisfy the same hard liquidity rules before persistence.
             selected.update({
                 "selection_status": status,
                 "atm_reference": "FUTURES_PROXY" if getattr(getattr(sig, "info", None), "is_index", False) else "CASH_SPOT",
-                "_candidate_snapshot": raw,
+                # Only a quote that passed validation may override a newer
+                # WebSocket quote later in this dispatch pass.
+                "_candidate_snapshot": raw if status == "LIQUIDITY_VERIFIED" else None,
                 **metrics,
             })
             sig.option = selected
@@ -921,6 +923,9 @@ class Engine:
                     if not valid:
                         d["rejects"][f"option_{reason}"] += 1
                         continue
+                    # A fresh stream/REST quote has now verified the selected
+                    # fallback contract; keep its status truthful in the alert.
+                    sig.option["selection_status"] = "LIQUIDITY_VERIFIED"
                 retained.append(sig)
             prepared = retained
 
