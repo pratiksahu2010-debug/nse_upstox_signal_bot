@@ -71,8 +71,18 @@ def simulate(row: dict, df: pd.DataFrame, session_end: time, candle_min: int = 5
     return "OPEN", None
 
 
-def measure_target_times(row: dict, df: pd.DataFrame):
-    """Return completed 5m bars to first TP1 and TP2 touch; SL wins same-bar ties."""
+def measure_target_times(
+    row: dict,
+    df: pd.DataFrame,
+    session_end: Optional[time] = None,
+    candle_min: int = 5,
+):
+    """Return bars to TP1/TP2, stopping at the same session cutoff as replay.
+
+    A target touched in the final eligible candle counts. Candles beginning
+    after session_end never count, keeping research metrics consistent with
+    simulate()'s end-of-session close.
+    """
     risk = abs(float(row["entry"]) - float(row["sl"]))
     if risk <= 0:
         return None, None
@@ -82,9 +92,11 @@ def measure_target_times(row: dict, df: pd.DataFrame):
     after = df[df.index > _ts(row["bar_ts"])]
     stage, bars_held = "OPEN", 0
     bars_to_tp1 = bars_to_tp2 = None
-    for _bar_ts, bar in after.iterrows():
+    for bar_ts, bar in after.iterrows():
         bars_held += 1
         low, high = float(bar["low"]), float(bar["high"])
+        bar_end = (bar_ts + pd.Timedelta(minutes=candle_min)).time()
+        eod = session_end is not None and bar_end >= session_end
         if stage == "OPEN":
             hit_sl = low <= sl if side > 0 else high >= sl
             hit_tp1 = high >= tp1 if side > 0 else low <= tp1
@@ -108,6 +120,8 @@ def measure_target_times(row: dict, df: pd.DataFrame):
             if hit_tp2:
                 bars_to_tp2 = bars_held
                 break
+        if eod:
+            break
     return bars_to_tp1, bars_to_tp2
 
 
