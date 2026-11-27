@@ -311,8 +311,14 @@ class Engine:
                         retry.append(st)
                         retry_details.append(f"{symbol}:empty")
                     elif df.index[-1] < expected:
-                        retry.append(st)
-                        retry_details.append(f"{symbol}:stale:{df.index[-1].isoformat()}")
+                        # Retry only a one-candle publication lag. A symbol still
+                        # returning a prior-session candle cannot become current
+                        # after a 2-second refresh; repeating that request wastes
+                        # the shared Upstox budget and delays the whole scan.
+                        stale_age = expected - df.index[-1]
+                        if stale_age <= pd.Timedelta(minutes=ENGINE.candle_min):
+                            retry.append(st)
+                            retry_details.append(f"{symbol}:stale:{df.index[-1].isoformat()}")
                 if not retry or getattr(self.client, "auth_failed", False):
                     break
                 all_empty = all((out.get(s.info.symbol) is None or len(out[s.info.symbol]) == 0) for s in retry)
@@ -421,6 +427,18 @@ class Engine:
         d["loaded"] = sum(1 for v in strategy_data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in strategy_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["stale_count"] = sum(
+            1 for v in strategy_data.values()
+            if v is not None and len(v) and isinstance(v.index, pd.DatetimeIndex)
+            and v.index[-1] < expected
+        )
+        d["stale_symbols"] = [
+            f"{symbol}:{frame.index[-1].isoformat()}"
+            for symbol, frame in strategy_data.items()
+            if frame is not None and len(frame)
+            and isinstance(frame.index, pd.DatetimeIndex)
+            and frame.index[-1] < expected
+        ][:10]
         d["entry_training_loaded"] = sum(1 for v in training_data.values() if v is not None and len(v))
         d["entry_training_fresh"] = sum(1 for v in training_data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in strategy_states if s.err][:5]
@@ -454,9 +472,14 @@ class Engine:
                 }
             budget_after = self.client.budget.usage() if hasattr(self.client, "budget") else {}
             budget_before = getattr(self, "_api_budget_before_cycle", {}) or {}
-            d["api_budget_wait_seconds"] = round(
+            # This is the sum of wait time across concurrent worker threads,
+            # not elapsed wall-clock time; it can exceed the scan duration.
+            budget_worker_wait = round(
                 max(0.0, float(budget_after.get("wait_seconds", 0.0)) - float(budget_before.get("wait_seconds", 0.0))), 3
             )
+            d["api_budget_wait_worker_seconds"] = budget_worker_wait
+            # Backward-compatible diagnostic key; semantics are aggregate worker-seconds.
+            d["api_budget_wait_seconds"] = budget_worker_wait
             d["api_budget_wait_count"] = max(0, int(budget_after.get("wait_count", 0)) - int(budget_before.get("wait_count", 0)))
         except Exception:
             d["api_diagnostics_error"] = True
@@ -728,13 +751,13 @@ class Engine:
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
             "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs "
-            "api_requests=%d api_failures=%d api_avg=%.3fs budget_wait=%.2fs rejects=%s",
+            "api_requests=%d api_failures=%d api_avg=%.3fs budget_worker_wait=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
             len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
             d["duration_seconds"], d.get("api_requests", 0), d.get("api_failures", 0),
             (d.get("api_latency") or {}).get("avg_seconds", 0.0),
-            d.get("api_budget_wait_seconds", 0.0), dict(d["rejects"].most_common(6)),
+            d.get("api_budget_wait_worker_seconds", 0.0), dict(d["rejects"].most_common(6)),
         )
         return d
 
