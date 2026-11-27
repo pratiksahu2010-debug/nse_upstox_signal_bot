@@ -681,25 +681,9 @@ class Engine:
                         log.exception("could not persist Normal state for %s; signal suppressed",sym)
                 if state.get("phase") in ("ARMED","TRIGGERED","COOLDOWN"): watching += 1
                 continue
-            elif module == "normal":
-                # Normal can be disabled while the independent Momentum module runs.
-                continue
             else:
-                try:
-                    sig, why = mod.evaluate(st.info, ind, f, Ctx(ignore_time=force))
-                except Exception:
-                    sig, why = None, "eval_error"
-                    log.exception("evaluate %s/%s failed", module, sym)
-            if module != "normal" and sig is not None:
-                sig.indicator_snapshot = {
-                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
-                    for k, v in vars(f).items()
-                }
-                cands.append(sig)
-            elif module != "normal":
-                d["rejects"][why or "trigger_rejected"] += 1
-                if why in NEAR_MISS and len(d["near_miss"]) < 8:
-                    d["near_miss"].append(f"{sym}:{why}")
+                # The Normal state machine owns all live entry decisions.
+                continue
         d["watching"] = watching
         d["evaluate_seconds"] = round(_time.monotonic() - evaluate_started, 3)
         dispatch_started = _time.monotonic()
