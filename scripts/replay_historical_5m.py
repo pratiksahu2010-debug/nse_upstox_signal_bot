@@ -4,7 +4,9 @@ Input: one timestamped OHLCV CSV per underlying, as produced by
 scripts.download_historical_5m. No broker, database, Telegram, or order APIs.
 """
 import argparse
+import csv
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -184,16 +186,50 @@ def replay_frame(
     return results
 
 
-def replay_directory(input_dir: Path, output: Path, tick: float = 0.05):
-    """Replay every CSV in a directory and write a single signal/outcome CSV."""
+def load_tick_sizes(path: Path) -> dict[str, float]:
+    """Load an explicit symbol,tick_size mapping; reject ambiguous or unsafe values."""
+    tick_sizes = {}
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or not {"symbol", "tick_size"}.issubset(reader.fieldnames):
+            raise ValueError("tick CSV must contain symbol,tick_size columns")
+        for line, row in enumerate(reader, start=2):
+            symbol = (row.get("symbol") or "").strip().upper()
+            raw_tick = (row.get("tick_size") or "").strip()
+            try:
+                value = float(raw_tick)
+            except (TypeError, ValueError):
+                raise ValueError(f"invalid tick_size on CSV line {line}") from None
+            if not symbol or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"invalid symbol or positive finite tick_size on CSV line {line}")
+            if symbol in tick_sizes:
+                raise ValueError(f"duplicate symbol in tick CSV on line {line}: {symbol}")
+            tick_sizes[symbol] = value
+    if not tick_sizes:
+        raise ValueError("tick CSV contains no symbol mappings")
+    return tick_sizes
+
+
+def replay_directory(
+    input_dir: Path,
+    output: Path,
+    tick: float = 0.05,
+    tick_sizes: dict[str, float] | None = None,
+):
+    """Replay every CSV, using explicit per-symbol ticks when supplied."""
     files = sorted(input_dir.glob("*.csv"))
     if not files:
         raise ValueError(f"no CSV files found in {input_dir}")
     rows = []
     for path in files:
         symbol = path.stem.upper()
-        log.info("Replaying %s", symbol)
-        rows.extend(replay_frame(symbol, load_ohlcv(path), tick=tick))
+        symbol_tick = tick
+        if tick_sizes is not None:
+            if symbol not in tick_sizes:
+                raise ValueError(f"no tick_size mapping for {symbol}")
+            symbol_tick = tick_sizes[symbol]
+        log.info("Replaying %s with tick_size=%s", symbol, symbol_tick)
+        rows.extend(replay_frame(symbol, load_ohlcv(path), tick=symbol_tick))
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=[
         "symbol", "bar_ts", "option_type", "entry", "sl", "tp1", "tp2",
@@ -208,10 +244,15 @@ def main(argv=None):
     parser.add_argument("--input-dir", required=True, type=Path)
     parser.add_argument("--output", type=Path, default=Path("research_results/normal_5m_replay.csv"))
     parser.add_argument("--tick", type=float, default=0.05,
-                        help="underlying tick size; supply per-symbol ticks for accurate tick rounding")
+                        help="fallback tick size when --ticks-csv is not supplied")
+    parser.add_argument("--ticks-csv", type=Path,
+                        help="CSV with symbol,tick_size columns; requires a mapping for every input file")
     args = parser.parse_args(argv)
     try:
-        replay_directory(args.input_dir, args.output, args.tick)
+        if not math.isfinite(args.tick) or args.tick <= 0:
+            raise ValueError("--tick must be a positive finite number")
+        tick_sizes = load_tick_sizes(args.ticks_csv) if args.ticks_csv else None
+        replay_directory(args.input_dir, args.output, args.tick, tick_sizes)
     except (OSError, ValueError) as exc:
         log.error("Replay stopped: %s", exc)
         return 1
