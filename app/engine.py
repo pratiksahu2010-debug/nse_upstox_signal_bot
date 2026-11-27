@@ -907,12 +907,32 @@ class Engine:
         # not one reconnect per candidate contract.
         self._sync_market_stream_keys()
 
+        # A lazy option subscription causes one feed resubscribe. Give it a
+        # short bounded window to deliver the first fresh exchange tick before
+        # falling back to REST; this does not relax the quote-age requirement.
+        streamed_option_quotes = {}
+        if self.market_stream is not None and prepared:
+            option_keys = list(dict.fromkeys(
+                sig.option.get("_key") for sig in prepared if sig.option.get("_key")
+            ))
+            try:
+                streamed_option_quotes = self.market_stream.wait_for_quotes(
+                    option_keys,
+                    max_age_sec=OPTION_MAX_QUOTE_AGE_SEC,
+                    timeout_sec=2.0,
+                )
+            except Exception:
+                log.exception("bounded wait for fresh selected-option quotes failed")
+
         # Quote snapshots provide bid/ask, volume and OI; enabled liquidity gates fail closed.
         if (OPTION_MARKET_SNAPSHOT or OPTION_LIQUIDITY_CHECKS or OPTION_PREMIUM_TRACKING or self.market_stream is not None) and prepared:
             option_keys = list(dict.fromkeys(
                 sig.option.get("_key") for sig in prepared if sig.option.get("_key")
             ))
-            snapshots = {}
+            snapshots = {
+                key: stream_quote_snapshot(value)
+                for key, value in streamed_option_quotes.items()
+            }
             if self.market_stream is not None:
                 for key in option_keys:
                     raw_snapshot = stream_quote_snapshot(self.market_stream.quote(key))

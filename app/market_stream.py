@@ -83,6 +83,36 @@ class UpstoxMarketStream:
             value = self._quotes.get(instrument_key)
             return dict(value) if value is not None else None
 
+    def wait_for_quotes(self, instrument_keys, max_age_sec=20.0,
+                        timeout_sec=2.0, poll_sec=0.1):
+        """Wait briefly for fresh first ticks after a lazy option subscription.
+
+        Exchange timestamps, not local receipt time, determine freshness. A
+        missing/stale quote remains missing when the bounded wait expires.
+        """
+        import time
+
+        keys = list(dict.fromkeys(key for key in instrument_keys if key))
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        while True:
+            now_ms = time.time() * 1000.0
+            fresh = {}
+            for key in keys:
+                quote = self.quote(key)
+                if not quote:
+                    continue
+                try:
+                    stamp_ms = float(quote.get("exchange_ts_ms") or 0)
+                    age_sec = (now_ms - stamp_ms) / 1000.0
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 <= age_sec <= max(0.0, float(max_age_sec)):
+                    fresh[key] = quote
+            if len(fresh) == len(keys) or time.monotonic() >= deadline:
+                return fresh
+            time.sleep(min(max(0.01, float(poll_sec)),
+                           max(0.0, deadline - time.monotonic())))
+
     def diagnostics(self):
         with self._lock:
             last_message_at = self.last_message_at
