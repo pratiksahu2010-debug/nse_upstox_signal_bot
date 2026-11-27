@@ -16,11 +16,11 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from . import mod_normal, mod_momentum
+from . import mod_normal
 from .market_stream import UpstoxMarketStream
 from .scanner_lease import ScannerLease
 from .common import Ctx, Signal, SymbolInfo
-from .config import (ENGINE, IST, NORMAL, MOMENTUM, ENABLE_MOMENTUM, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
+from .config import (ENGINE, IST, NORMAL, OPTION_QUOTE, OPTION_MARKET_SNAPSHOT, OPTION_LIQUIDITY_CHECKS, OPTION_MIN_VOLUME, OPTION_MIN_OI, OPTION_MAX_SPREAD_PCT, OPTION_MAX_QUOTE_AGE_SEC, UPSTOX_STREAM_ENABLED, TRAINING_COST_R, OPTION_PREMIUM_TRACKING, OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE)
 from .indicators import add_indicators, compute_features
 from .options import (snapshot_metrics, validate_option_liquidity, stream_quote_snapshot,
                      initial_option_tracking, update_option_tracking)
@@ -104,14 +104,6 @@ def _cooldown_state_after_bar(state: dict, current_side: int) -> dict:
             "invalidated": invalidated,
         })
     return next_state
-
-
-def _momentum_without_persisted_normal(candidates: list, persisted: set) -> list:
-    """Keep a same-candle Momentum candidate unless Normal reached durable storage."""
-    return [
-        item for item in candidates
-        if (item.symbol, item.bar_ts.isoformat()) not in persisted
-    ]
 
 
 def _trigger_state_after_persist(state: dict, persisted: bool) -> dict:
@@ -408,21 +400,13 @@ class Engine:
             d["scope"] = "market_closed_today"
             return d
         t_close = floor5(now).time()
-        full = force or (cfg.first_signal <= t_close <= cfg.last_entry) or (
-            module == "normal" and ENABLE_MOMENTUM
-            and MOMENTUM.first_signal <= t_close <= MOMENTUM.last_entry
-        )
+        full = force or (cfg.first_signal <= t_close <= cfg.last_entry)
         states = self._mod_states(module)
         training_symbols = set()
         training_only_symbols = set()
         open_rows: dict = {}
         for r in self.store.open_signals(day, module):
             open_rows.setdefault(r["symbol"], []).append(r)
-        if module == "normal":
-            # Continue outcome/quote tracking for existing Momentum signals even
-            # when the module is disabled for new entries.
-            for r in self.store.open_signals(day, "momentum"):
-                open_rows.setdefault(r["symbol"], []).append(r)
         if not full:
             if module == "normal":
                 try:
@@ -532,7 +516,6 @@ class Engine:
 
         evaluate_started = _time.monotonic()
         cands: list = []
-        momentum_candidates: list = []
         pending_trigger_states: dict = {}
         watching = 0
         for sym, df in data.items():
@@ -549,10 +532,9 @@ class Engine:
                 d["rejects"]["warmup"] += 1
                 continue
             for r in open_rows.get(sym, []):
-                outcome_cfg = MOMENTUM if r.get("module") == "momentum" else cfg
-                status, rr = simulate(r, ind, outcome_cfg.session_end)
-                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, outcome_cfg.session_end)
-                bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind, outcome_cfg.session_end)
+                status, rr = simulate(r, ind, cfg.session_end)
+                mfe_r, mae_r, bars_held, _last_bar = measure_excursions(r, ind, cfg.session_end)
+                bars_to_tp1, bars_to_tp2 = measure_target_times(r, ind, cfg.session_end)
                 # Do not close a signal until all training metrics for this
                 # replay have been persisted. The row remains OPEN/TP1 on any
                 # transient metrics write failure, so the next scan retries it.
@@ -595,25 +577,6 @@ class Engine:
             if self.paused:
                 d["rejects"]["paused"] += 1
                 continue
-
-            # Evaluate Momentum Explosion on the same fetched completed 5m frame,
-            # so the 150-symbol universe is not fetched a second time.
-            if module == "normal" and ENABLE_MOMENTUM:
-                try:
-                    momentum_signal, momentum_reason = mod_momentum.evaluate(
-                        st.info, ind, f, Ctx(ignore_time=force),
-                    )
-                    if momentum_signal is not None:
-                        momentum_signal.indicator_snapshot = {
-                            k: (v.isoformat() if hasattr(v, "isoformat") else v)
-                            for k, v in vars(f).items()
-                        }
-                        momentum_candidates.append(momentum_signal)
-                    elif momentum_reason:
-                        d["rejects"][f"momentum_{momentum_reason}"] += 1
-                except Exception:
-                    d["rejects"]["momentum_eval_error"] += 1
-                    log.exception("Momentum Explosion evaluation failed for %s", sym)
 
             # Process the Normal lifecycle once per newly completed 5m candle.
             if module == "normal" and _on("ENABLE_NORMAL"):
@@ -746,22 +709,8 @@ class Engine:
             if self.scanner_lease.lost:
                 d["rejects"]["scanner_lease_lost"] += 1
                 cands.clear()
-                momentum_candidates.clear()
                 pending_trigger_states.clear()
             d["signals"] = self._dispatch(module, cfg, cands, now, force, d)
-            if module == "normal" and ENABLE_MOMENTUM:
-                # Give Normal priority only when its signal is actually present
-                # (new or already deduplicated) in durable storage. If Normal
-                # fails option validation, cooldown or persistence, Momentum
-                # may still use the same candle rather than being silently lost.
-                normal_persisted = set(d.get("_persisted_candidates", set()))
-                before = len(momentum_candidates)
-                momentum_candidates = _momentum_without_persisted_normal(
-                    momentum_candidates, normal_persisted,
-                )
-                if before > len(momentum_candidates):
-                    d["rejects"]["momentum_same_bar_primary_signal"] += before - len(momentum_candidates)
-                d["momentum_signals"] = self._dispatch("momentum", MOMENTUM, momentum_candidates, now, force, d)
         finally:
             persisted_candidates = d.pop("_persisted_candidates", set())
             for (sym, bar_ts), triggered_state in pending_trigger_states.items():
@@ -793,11 +742,11 @@ class Engine:
                 log.exception("option premium tracking failed; live signals remain unaffected")
         d["duration_seconds"] = round(_time.monotonic() - cycle_started, 3)
         log.info(
-            "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
+            "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d "
             "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs "
             "api_requests=%d api_failures=%d api_avg=%.3fs budget_worker_wait=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
-            len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
+            len(cands), d["signals"],
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
             d["duration_seconds"], d.get("api_requests", 0), d.get("api_failures", 0),
             (d.get("api_latency") or {}).get("avg_seconds", 0.0),
@@ -1300,16 +1249,13 @@ class Engine:
             self.scanner_lease.start_heartbeat()
             self.ensure_universe(now)
             t = floor5(now).time()
-            for m, enabled in (("normal", _on("ENABLE_NORMAL") or _on("ENABLE_MOMENTUM")),):
+            for m, enabled in (("normal", _on("ENABLE_NORMAL")),):
                 if only and only != m:
                     continue
                 if not enabled and not force:
                     continue
                 cfg = MODULES[m][1]
-                active = (
-                    NORMAL.first_signal <= t <= NORMAL.session_end
-                    or (_on("ENABLE_MOMENTUM") and MOMENTUM.first_signal <= t <= MOMENTUM.session_end)
-                )
+                active = NORMAL.first_signal <= t <= NORMAL.session_end
                 if not (active or force):
                     continue
                 try:
@@ -1325,7 +1271,7 @@ class Engine:
                     key: value for key, value in result.items()
                     if key in (
                         "scope", "symbols", "loaded", "fresh", "signals",
-                        "momentum_signals", "watching", "duration_seconds",
+                        "watching", "duration_seconds",
                         "fetch_seconds", "evaluate_seconds", "dispatch_seconds",
                         "api_requests", "api_failures", "api_latency",
                         "api_latency_by_endpoint", "api_budget_wait_seconds",
@@ -1410,12 +1356,12 @@ class Engine:
         top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
         return "\n".join([
             f"💓 <b>{m.upper()} scan {d['at']}</b>",
-            f"<b>symbols {d['loaded']}/{d['symbols']} · normal {d['signals']} · momentum {d.get('momentum_signals', 0)}</b>",
+            f"<b>symbols {d['loaded']}/{d['symbols']} · normal {d['signals']}</b>",
             f"<b>watching {d.get('watching', 0)} · top rejects: {top}</b>",
         ])
 
     def eod_text(self, day: date, tag: str) -> str:
-        mods = ("normal", "momentum")
+        mods = ("normal",)
         rows = [r for r in self.store.stats(day) if r["module"] in mods]
         if not rows:
             return f"📊 <b>EOD {tag.upper()}: no signals today</b>"
