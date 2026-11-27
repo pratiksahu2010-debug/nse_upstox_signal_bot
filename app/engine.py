@@ -217,8 +217,7 @@ class Engine:
         h = h[OHLCV] if len(h) else pd.DataFrame(columns=OHLCV)
         if len(h):
             days = sorted(set(h.index.date))[-ENGINE.warm_sessions:]
-            h = h[np.isin(h.index.date, days)]
-        if not len(h):
+            h = h[np.isin(h.index.date, days)]        if not len(h):
             # An empty response can be transient. Do not mark this symbol warmed
             # for the day; retry with a per-symbol backoff on a later scan.
             st.hist = pd.DataFrame(columns=OHLCV)
@@ -311,8 +310,14 @@ class Engine:
                         retry.append(st)
                         retry_details.append(f"{symbol}:empty")
                     elif df.index[-1] < expected:
-                        retry.append(st)
-                        retry_details.append(f"{symbol}:stale:{df.index[-1].isoformat()}")
+                        # Retry only a one-candle publication lag. A symbol still
+                        # returning a prior-session candle cannot become current
+                        # after a 2-second refresh; repeating that request wastes
+                        # the shared Upstox budget and delays the whole scan.
+                        stale_age = expected - df.index[-1]
+                        if stale_age <= pd.Timedelta(minutes=ENGINE.candle_min):
+                            retry.append(st)
+                            retry_details.append(f"{symbol}:stale:{df.index[-1].isoformat()}")
                 if not retry or getattr(self.client, "auth_failed", False):
                     break
                 all_empty = all((out.get(s.info.symbol) is None or len(out[s.info.symbol]) == 0) for s in retry)
@@ -421,6 +426,15 @@ class Engine:
         d["loaded"] = sum(1 for v in strategy_data.values() if v is not None and len(v))
         # Fresh means the dataframe ends on the exact latest completed 5m bar.
         d["fresh"] = sum(1 for v in strategy_data.values() if v is not None and len(v) and v.index[-1] == expected)
+        d["stale_count"] = sum(
+            1 for v in strategy_data.values()
+            if v is not None and len(v) and v.index[-1] < expected
+        )
+        d["stale_symbols"] = [
+            f"{symbol}:{frame.index[-1].isoformat()}"
+            for symbol, frame in strategy_data.items()
+            if frame is not None and len(frame) and frame.index[-1] < expected
+        ][:10]
         d["entry_training_loaded"] = sum(1 for v in training_data.values() if v is not None and len(v))
         d["entry_training_fresh"] = sum(1 for v in training_data.values() if v is not None and len(v) and v.index[-1] == expected)
         d["errors"] = [f"{s.info.symbol}: {s.err}" for s in strategy_states if s.err][:5]
@@ -437,8 +451,7 @@ class Engine:
             latency_total_delta = max(0.0, float(latency_after.get("total_seconds", 0.0)) - float(latency_before.get("total_seconds", 0.0)))
             d["api_latency"] = {
                 "requests": request_delta,
-                "avg_seconds": round(latency_total_delta / request_delta, 3) if request_delta else 0.0,
-                "max_seconds_process": latency_after.get("max_seconds", 0.0),
+                "avg_seconds": round(latency_total_delta / request_delta, 3) if request_delta else 0.0,                "max_seconds_process": latency_after.get("max_seconds", 0.0),
             }
             endpoint_before = latency_before.get("by_endpoint", {}) or {}
             endpoint_after = latency_after.get("by_endpoint", {}) or {}
@@ -454,9 +467,14 @@ class Engine:
                 }
             budget_after = self.client.budget.usage() if hasattr(self.client, "budget") else {}
             budget_before = getattr(self, "_api_budget_before_cycle", {}) or {}
-            d["api_budget_wait_seconds"] = round(
+            # This is the sum of wait time across concurrent worker threads,
+            # not elapsed wall-clock time; it can exceed the scan duration.
+            budget_worker_wait = round(
                 max(0.0, float(budget_after.get("wait_seconds", 0.0)) - float(budget_before.get("wait_seconds", 0.0))), 3
             )
+            d["api_budget_wait_worker_seconds"] = budget_worker_wait
+            # Backward-compatible diagnostic key; semantics are aggregate worker-seconds.
+            d["api_budget_wait_seconds"] = budget_worker_wait
             d["api_budget_wait_count"] = max(0, int(budget_after.get("wait_count", 0)) - int(budget_before.get("wait_count", 0)))
         except Exception:
             d["api_diagnostics_error"] = True
@@ -657,8 +675,7 @@ class Engine:
             else:
                 try:
                     sig, why = mod.evaluate(st.info, ind, f, Ctx(ignore_time=force))
-                except Exception:
-                    sig, why = None, "eval_error"
+                except Exception:                    sig, why = None, "eval_error"
                     log.exception("evaluate %s/%s failed", module, sym)
             if module != "normal" and sig is not None:
                 sig.indicator_snapshot = {
@@ -728,13 +745,13 @@ class Engine:
         log.info(
             "scan %s scope=%s symbols=%d loaded=%d fresh=%d normal_candidates=%d normal_sent=%d momentum_candidates=%d momentum_sent=%d "
             "watching=%d fetch=%.2fs evaluate=%.2fs dispatch=%.2fs total=%.2fs "
-            "api_requests=%d api_failures=%d api_avg=%.3fs budget_wait=%.2fs rejects=%s",
+            "api_requests=%d api_failures=%d api_avg=%.3fs budget_worker_wait=%.2fs rejects=%s",
             module, d["scope"], d["symbols"], d["loaded"], d.get("fresh", 0),
             len(cands), d["signals"], len(momentum_candidates), d.get("momentum_signals", 0),
             d["watching"], d["fetch_seconds"], d["evaluate_seconds"], d["dispatch_seconds"],
             d["duration_seconds"], d.get("api_requests", 0), d.get("api_failures", 0),
             (d.get("api_latency") or {}).get("avg_seconds", 0.0),
-            d.get("api_budget_wait_seconds", 0.0), dict(d["rejects"].most_common(6)),
+            d.get("api_budget_wait_worker_seconds", 0.0), dict(d["rejects"].most_common(6)),
         )
         return d
 
@@ -898,454 +915,3 @@ class Engine:
                     if not valid:
                         d["rejects"][f"option_{reason}"] += 1
                         continue
-                retained.append(sig)
-            prepared = retained
-
-        # Never persist the raw broker payload in signal details/training rows.
-        for sig in prepared:
-            sig.option.pop("_candidate_snapshot", None)
-
-        quotes = {}
-        if OPTION_QUOTE and prepared:
-            missing = [sig.option.get("_key") for sig in prepared
-                       if sig.option.get("_key") and not sig.option.get("ltp")]
-            keys = list(dict.fromkeys(missing))
-            if keys:
-                try:
-                    quotes = self.client.ltp(keys) or {}
-                except Exception as e:
-                    log.warning("batched optional option LTP failed: %s", type(e).__name__)
-        for sig in prepared:
-            key = sig.option.pop("_key", None)
-            sig.option["instrument_key"] = key
-            if key and OPTION_QUOTE and not sig.option.get("ltp"):
-                sig.option["ltp"] = quotes.get(key)
-            if OPTION_PREMIUM_TRACKING:
-                sig.option_tracking = initial_option_tracking(
-                    key, sig.option, OPTION_MAX_QUOTE_AGE_SEC,
-                    OPTION_EST_ROUND_TRIP_FEE_PCT, OPTION_EST_SLIPPAGE_BPS_PER_SIDE,
-                )
-            else:
-                sig.option_tracking = {"instrument_key": key, "tracking_status": "DISABLED"}
-            if sig.option.get("selection_status"):
-                sig.option_tracking["selection_status"] = sig.option["selection_status"]
-                sig.option_tracking["atm_reference"] = sig.option.get("atm_reference")
-
-        accepted = 0
-        entry_training_signals = []
-        for sig in prepared:
-            if self.scanner_lease.lost:
-                d["rejects"]["scanner_lease_lost"] += 1
-                break
-            if already + accepted >= cfg.daily_cap:
-                d["rejects"]["daily_cap"] += 1
-                continue
-            if accepted >= cfg.per_cycle_top:
-                d["rejects"]["cycle_top_n"] += 1
-                continue
-            message = format_signal(sig)
-            shadow = None
-            try:
-                from .telegram_polling import get_persistent_state
-                if get_persistent_state(self.store, "training_shadow_mode", False):
-                    from .training import shadow_result
-                    proposal = get_persistent_state(self.store, "training_proposal", None)
-                    shadow = shadow_result(getattr(sig, "indicator_snapshot", {}), proposal)
-            except Exception:
-                log.exception("shadow evaluation failed; live signal remains unaffected")
-            row = {"module": module, "symbol": sig.symbol, "side": sig.side, "bar_ts": sig.bar_ts.to_pydatetime(),
-                   "trade_day": sig.bar_ts.date(), "entry": sig.entry, "sl": sig.sl, "tp1": sig.tp1, "tp2": sig.tp2,
-                   "score": sig.score, "trig": sig.trigger, "cost_r": TRAINING_COST_R,
-                   "option_tracking": dict(getattr(sig, "option_tracking", {}) or {}),
-                    "details": {"reasons": sig.reasons, "atr": sig.atr, "forced": force,
-                               "indicator_snapshot": getattr(sig, "indicator_snapshot", {}), "shadow": shadow,
-                               "option": dict(sig.option or {}), "telegram_text": message}}
-            if self.scanner_lease.lost:
-                d["rejects"]["scanner_lease_lost"] += 1
-                break
-            # Fetch/evaluation/option validation may take several minutes. Recheck
-            # the candle immediately before persistence so an old candidate can
-            # never become a late alert after a slow scan.
-            cycle_started = getattr(self, "_cycle_started_monotonic", None)
-            if cycle_started is not None:
-                elapsed_since_cycle_start = max(0.0, _time.monotonic() - cycle_started)
-                dispatch_now = now + timedelta(seconds=elapsed_since_cycle_start)
-                if not dispatch_bar_is_fresh(sig.bar_ts, dispatch_now):
-                    d["rejects"]["stale_before_dispatch"] += 1
-                    continue
-            try:
-                sid = self.store.add_signal(row)
-            except Exception:
-                d["rejects"]["storage_error"] += 1
-                log.exception("could not persist signal %s/%s; alert was not sent", module, sig.symbol)
-                continue
-            if sid is None:
-                d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
-                d["rejects"]["duplicate"] += 1
-                continue
-            d["_persisted_candidates"].add((sig.symbol, sig.bar_ts.isoformat()))
-            accepted += 1
-            if module == "normal":
-                entry_training_signals.append((sid, sig))
-            log.info("SIGNAL %s %s %s score=%d entry=%.2f sl=%.2f", module, sig.symbol, sig.side, sig.score,
-                     sig.entry, sig.sl)
-            try:
-                result = (send(message, signal_id=sid) if self.notify is send
-                          else self.notify(message))
-                ok = result is not False
-                delivery_error = None if ok else "notify returned false"
-            except Exception as e:
-                ok = False
-                delivery_error = str(e)
-                log.exception("Telegram delivery failed for signal id=%s", sid)
-            try:
-                self.store.mark_notification(sid, ok, delivery_error)
-            except Exception:
-                d["rejects"]["delivery_state_error"] += 1
-                log.exception("could not persist Telegram delivery state for signal id=%s", sid)
-            if ok:
-                sent += 1
-            else:
-                d["rejects"]["telegram_failed"] += 1
-        if module == "normal" and entry_training_signals:
-            try:
-                from .entry_training import record_signals
-                record_signals(self.store, entry_training_signals, day)
-            except Exception:
-                # Persist research data only after all live signal notifications were attempted.
-                log.exception("batch entry timing registration failed; live alerts already dispatched")
-        return sent
-
-    def _deliver_pending(self, d: dict, now: datetime):
-        if self.last_outbox_retry_at and now - self.last_outbox_retry_at < timedelta(minutes=5):
-            return
-        self.last_outbox_retry_at = now
-        try:
-            pending = self.store.pending_notifications(limit=25)
-        except Exception:
-            d["rejects"]["outbox_read_error"] += 1
-            log.exception("could not read Telegram outbox")
-            return
-        for item in pending:
-            if self.scanner_lease.lost:
-                d["rejects"]["scanner_lease_lost"] += 1
-                break
-            try:
-                result = (send(item["text"], signal_id=item["id"]) if self.notify is send
-                          else self.notify(item["text"]))
-                ok = result is not False
-                self.store.mark_notification(item["id"], ok, None if ok else "notify returned false")
-                if not ok:
-                    d["rejects"]["telegram_retry_failed"] += 1
-            except Exception as e:
-                try:
-                    self.store.mark_notification(item["id"], False, str(e))
-                except Exception:
-                    log.exception("could not persist Telegram retry failure")
-                d["rejects"]["telegram_retry_failed"] += 1
-                log.exception("Telegram retry failed for signal id=%s", item["id"])
-
-    def _track_option_quotes(self, open_rows: dict, now: datetime, diag: dict):
-        """Track fresh option quotes for persisted open signals; never gate signals."""
-        rows = [row for items in open_rows.values() for row in items]
-        keyed = []
-        for row in rows:
-            tracking = row.get("option_tracking") or {}
-            if isinstance(tracking, str):
-                try:
-                    import json
-                    tracking = json.loads(tracking)
-                except Exception:
-                    tracking = {}
-            key = tracking.get("instrument_key")
-            if key:
-                keyed.append((row, key, tracking))
-                if self.market_stream is not None and key not in self._stream_keys:
-                    self._stream_keys.append(key)
-                    base_keys = [item.key for item in self.uni.normal if item.key] if self.uni else []
-                    base_set = set(base_keys)
-                    option_keys = [item for item in self._stream_keys if item not in base_set][-1000:]
-                    self._stream_keys = list(dict.fromkeys(base_keys + option_keys))
-                    self._stream_keys_dirty = True
-        if not keyed:
-            return
-        self._sync_market_stream_keys()
-        snapshots = {}
-        if self.market_stream is not None:
-            for _row, key, _tracking in keyed:
-                raw = stream_quote_snapshot(self.market_stream.quote(key))
-                if raw:
-                    snapshots[key] = raw
-
-        # A disconnected/stale WebSocket must not silently stop premium
-        # excursion tracking. Batch only contracts whose stream quote is
-        # missing or older than the same freshness limit used by the tracker.
-        def quote_for(key):
-            raw = snapshots.get(key)
-            if raw is None:
-                raw = next((value for value in snapshots.values()
-                            if isinstance(value, dict) and value.get("instrument_token") == key), None)
-            return raw
-
-        rest_keys = []
-        for _row, key, _tracking in keyed:
-            raw = quote_for(key)
-            metrics = snapshot_metrics(raw, now.timestamp()) if raw is not None else {}
-            age = metrics.get("quote_age_sec")
-            if age is None or age > OPTION_MAX_QUOTE_AGE_SEC:
-                if key not in rest_keys:
-                    rest_keys.append(key)
-        if rest_keys:
-            full_quotes = getattr(self.client, "full_quotes", None)
-            if callable(full_quotes):
-                try:
-                    rest_snapshots = full_quotes(rest_keys) or {}
-                    if isinstance(rest_snapshots, dict):
-                        for key in rest_keys:
-                            rest_raw = rest_snapshots.get(key)
-                            if rest_raw is None:
-                                rest_raw = next((value for value in rest_snapshots.values()
-                                                 if isinstance(value, dict)
-                                                 and value.get("instrument_token") == key), None)
-                            if rest_raw is not None:
-                                # Replace a stale direct-key stream quote even
-                                # when the REST response is keyed by token.
-                                snapshots[key] = rest_raw
-                except Exception as exc:
-                    log.warning("optional option-tracking REST fallback failed: %s", type(exc).__name__)
-
-        for row, key, old in keyed:
-            raw = quote_for(key)
-            if raw is None:
-                continue
-            metrics = snapshot_metrics(raw, now.timestamp())
-            updated = update_option_tracking(old, metrics, OPTION_MAX_QUOTE_AGE_SEC)
-            if updated != old:
-                try:
-                    self.store.update_option_tracking(row["id"], updated)
-                except Exception:
-                    diag["rejects"]["option_tracking_storage_error"] += 1
-                    log.exception("could not persist option premium metrics for signal id=%s", row["id"])
-
-    def _option_for(self, sig: Signal, now: datetime) -> Optional[dict]:
-        if not self.uni or not sig.info:
-            return None
-        rec = pick_option(self.uni, sig.info.underlying, sig.entry, sig.side, now, sig.info.is_index)
-        if not rec:
-            return None
-        # Keep the instrument key internal until all candidate contracts are
-        # collected and quoted in one optional batch request.
-        candidates = nearby_options(
-            self.uni, sig.info.underlying, sig.entry, sig.side, now, candidate_count=5,
-        )
-        if not candidates:
-            return None
-        atm = candidates[0]
-        return {
-            "tsym": atm.tsym, "lot": atm.lot, "strike": atm.strike,
-            "ltp": None, "_key": atm.key,
-            "_candidates": [
-                {"tsym": rec.tsym, "lot": rec.lot, "strike": rec.strike,
-                 "ltp": None, "_key": rec.key}
-                for rec in candidates
-            ],
-        }
-
-    def _sync_market_stream_keys(self):
-        if self.market_stream is not None and self._stream_keys_dirty:
-            self.market_stream.set_keys(self._stream_keys)
-            self._stream_keys_dirty = False
-
-    # ------------------------------------------------------------------ orchestration
-    def run_boundary(self, now: datetime, only: Optional[str] = None, force: bool = False) -> dict:
-        """Run every module that is active at `now`. Returns {module: diag}."""
-        if not self.lock.acquire(blocking=False):
-            self.last_cycle_busy_count += 1
-            return {"busy": True}
-        # The local mutex prevents scheduler-vs-/force overlap in this process;
-        # the PostgreSQL lease additionally prevents overlapping Render
-        # instances from running the same expensive 150-symbol scan.
-        if not self.scanner_lease.acquire():
-            self.scanner_lease_standby = bool(self.scanner_lease.contended)
-            self.last_cycle_busy_count += 1
-            self.lock.release()
-            return {"busy": True, "scanner_lease": "held_by_another_instance"}
-        self.scanner_lease_standby = False
-        started_at = datetime.now(IST)
-        self.last_cycle_started_at = started_at.isoformat(timespec="seconds")
-        out = {}
-        try:
-            self.scanner_lease.start_heartbeat()
-            self.ensure_universe(now)
-            t = floor5(now).time()
-            for m, enabled in (("normal", _on("ENABLE_NORMAL") or _on("ENABLE_MOMENTUM")),):
-                if only and only != m:
-                    continue
-                if not enabled and not force:
-                    continue
-                cfg = MODULES[m][1]
-                active = (
-                    NORMAL.first_signal <= t <= NORMAL.session_end
-                    or (_on("ENABLE_MOMENTUM") and MOMENTUM.first_signal <= t <= MOMENTUM.session_end)
-                )
-                if not (active or force):
-                    continue
-                try:
-                    out[m] = self.cycle(m, now, force)
-                except Exception as e:
-                    self.last_error = f"{m}: {e}"
-                    log.exception("cycle %s failed", m)
-                    out[m] = {"error": f"{type(e).__name__}: {str(e)[:240]}"}
-                    if getattr(self.client, "auth_failed", False):
-                        self._alert_once("auth", "⚠️ <b>Upstox token rejected (401/403) - update UPSTOX_ACCESS_TOKEN</b>", now)
-            self.last_cycle_result = {
-                name: {
-                    key: value for key, value in result.items()
-                    if key in (
-                        "scope", "symbols", "loaded", "fresh", "signals",
-                        "momentum_signals", "watching", "duration_seconds",
-                        "fetch_seconds", "evaluate_seconds", "dispatch_seconds",
-                        "api_requests", "api_failures", "api_latency",
-                        "api_latency_by_endpoint", "api_budget_wait_seconds",
-                        "api_budget_wait_count", "error",
-                    )
-                }
-                for name, result in out.items() if isinstance(result, dict)
-            }
-            normal_result = out.get("normal")
-            if isinstance(normal_result, dict):
-                if normal_result.get("error"):
-                    self.last_cycle_error = str(normal_result["error"])[:240]
-                else:
-                    expected = int(normal_result.get("symbols") or 0)
-                    loaded = int(normal_result.get("loaded") or 0)
-                    fresh = int(normal_result.get("fresh") or 0)
-                    minimum_loaded = max(1, int(expected * 0.90)) if expected else 1
-                    idle_cycle = normal_result.get("scope") == "idle" and expected == 0
-                    if idle_cycle or (expected > 0 and loaded >= minimum_loaded and fresh >= minimum_loaded):
-                        # A tracking-window cycle with no open signals or armed
-                        # setups is valid idle work, not a 0/0 data failure.
-                        self.last_successful_cycle_at = datetime.now(IST).isoformat(timespec="seconds")
-                        self.last_cycle_error = ""
-                    else:
-                        self.last_cycle_error = f"normal_scan_incomplete:loaded={loaded}/{expected},fresh={fresh}/{expected}"
-            elif out:
-                self.last_cycle_error = "normal_scan_not_run"
-            return out
-        except Exception as e:
-            self.last_cycle_error = f"{type(e).__name__}: {str(e)[:240]}"
-            raise
-        finally:
-            self.last_cycle_completed_at = datetime.now(IST).isoformat(timespec="seconds")
-            self.scanner_lease.release()
-            self.lock.release()
-
-    def _alert_once(self, key: str, text: str, now: datetime, every_min: int = 60):
-        last = self.last_heartbeat.get("alert:" + key)
-        if last is None or now - last > timedelta(minutes=every_min):
-            self.last_heartbeat["alert:" + key] = now
-            self.notify(text)
-
-    def housekeeping(self, now: datetime):
-        """Pre-warm, heartbeat and end-of-day summary. Cheap; called every few seconds."""
-        if now.weekday() >= 5:
-            return
-        self.ensure_universe(now)
-        if self.market_stream is not None:
-            try:
-                feed_state = self.market_stream.diagnostics()
-                if not feed_state.get("thread_alive"):
-                    self.market_stream.start(self._stream_keys)
-            except Exception:
-                log.exception("market feed worker restart check failed")
-        t = now.time()
-        if ENGINE.prewarm_nse <= t < time(9, 15):
-            self.prewarm(now, "nse")
-        if ENGINE.heartbeat_min:
-            for m in ("normal",):
-                d = self.diag.get(m)
-                if not d or d.get("scope") not in ("full",):
-                    continue
-                last = self.last_heartbeat.get(m)
-                if last is None or now - last >= timedelta(minutes=ENGINE.heartbeat_min):
-                    self.last_heartbeat[m] = now
-                    self._notify_silent(self.heartbeat_text(m, d))
-        if ENGINE.eod_summary:
-            for tag, end in (("nse", NORMAL.session_end),):
-                key = (tag, now.date())
-                if key not in self.eod_sent and t >= (datetime.combine(now.date(), end) + timedelta(minutes=20)).time():
-                    self.eod_sent.add(key)
-                    self._notify_silent(self.eod_text(now.date(), tag))
-
-    def _notify_silent(self, text: str):
-        if _accepts_silent(self.notify):
-            self.notify(text, silent=True)
-        else:
-            self.notify(text)
-
-    # ------------------------------------------------------------------ reports
-    def heartbeat_text(self, m: str, d: dict) -> str:
-        top = ", ".join(f"{k} {v}" for k, v in d["rejects"].most_common(4)) or "-"
-        return "\n".join([
-            f"💓 <b>{m.upper()} scan {d['at']}</b>",
-            f"<b>symbols {d['loaded']}/{d['symbols']} · normal {d['signals']} · momentum {d.get('momentum_signals', 0)}</b>",
-            f"<b>watching {d.get('watching', 0)} · top rejects: {top}</b>",
-        ])
-
-    def eod_text(self, day: date, tag: str) -> str:
-        mods = ("normal", "momentum")
-        rows = [r for r in self.store.stats(day) if r["module"] in mods]
-        if not rows:
-            return f"📊 <b>EOD {tag.upper()}: no signals today</b>"
-        lines = [f"📊 <b>EOD {tag.upper()} {day:%d %b}</b>"]
-        for r in rows:
-            wr = f"{100 * r['wins'] / r['closed']:.0f}%" if r["closed"] else "n/a"
-            lines.append(f"<b>{r['module']}: {r['n']} signals · closed {r['closed']} · win {wr} · net {r['sum_r']:+.1f}R</b>")
-        return "\n".join(lines)
-
-    def status(self) -> dict:
-        bud = self.client.budget.usage() if hasattr(self.client, "budget") else {}
-        return {
-            "started": self.started.isoformat(),
-            "store": getattr(self.store, "kind", "?"),
-            "universe": ({
-                "ready": getattr(self.uni, "ready", True),
-                "validation_errors": getattr(self.uni, "validation_errors", []),
-                "configured_symbols": len(self.uni.configured_symbols),
-                "validated_symbols": len(self.uni.normal),
-                "invalid_symbols": self.uni.dropped,
-                "stocks": sum(not item.is_index for item in self.uni.normal),
-                "indices": sum(item.is_index for item in self.uni.normal),
-                "total": len(self.uni.normal),
-                "stock_symbols": [item.symbol for item in self.uni.normal if not item.is_index],
-                "index_symbols": [item.symbol for item in self.uni.normal if item.is_index],
-            } if self.uni else {}),
-            "dropped": self.uni.dropped if self.uni else {},
-            "api_budget": bud,
-            "auth_failed": getattr(self.client, "auth_failed", False),
-            "closed_days": sorted(f"{segment}:{day}" for segment, day in self.closed_days),
-            "last_error": self.last_error,
-            "last_cycle_started_at": self.last_cycle_started_at,
-            "last_cycle_completed_at": self.last_cycle_completed_at,
-            "last_successful_cycle_at": self.last_successful_cycle_at,
-            "last_cycle_error": self.last_cycle_error,
-            "last_cycle_result": dict(self.last_cycle_result),
-            "last_cycle_busy_count": self.last_cycle_busy_count,
-            "scanner_lease_lost": self.scanner_lease.lost,
-        }
-
-    def diag_json(self) -> dict:
-        return {m: dict(d, rejects=dict(d["rejects"].most_common())) for m, d in self.diag.items()}
-
-
-def _on(name: str) -> bool:
-    from . import config
-    return bool(getattr(config, name))
-
-
-def _accepts_silent(fn) -> bool:
-    try:
-        import inspect
-        return "silent" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
