@@ -111,3 +111,42 @@ def test_scanner_lease_database_error_is_not_misreported_as_standby():
 
     assert lease.acquire() is False
     assert lease.contended is False
+
+
+def test_rejected_auth_skips_intraday_request_after_warmup_failure():
+    now = pd.Timestamp("2026-11-23 10:16:06", tz=IST).to_pydatetime()
+    index = pd.date_range(end="2026-11-23 10:10:00", periods=60, freq="5min", tz=IST)
+    frame = pd.DataFrame(
+        {
+            "open": range(100, 160),
+            "high": range(101, 161),
+            "low": range(99, 159),
+            "close": range(100, 160),
+            "volume": [1000] * 60,
+        },
+        index=index,
+    )
+
+    class RejectedAuthClient(_WarmupFailingClient):
+        auth_failed = False
+
+        def __init__(self):
+            self.intraday_calls = 0
+
+        def historical(self, *args, **kwargs):
+            self.auth_failed = True
+            raise RuntimeError("auth error 401")
+
+        def intraday(self, *args, **kwargs):
+            self.intraday_calls += 1
+            return frame
+
+    client = RejectedAuthClient()
+    engine = Engine(client, _Store())
+    state = SymbolState(SimpleNamespace(key="NSE_EQ|TEST", symbol="TEST"))
+
+    import pytest
+    with pytest.raises(RuntimeError, match="auth error 401"):
+        engine._load(state, now, "normal")
+
+    assert client.intraday_calls == 0
