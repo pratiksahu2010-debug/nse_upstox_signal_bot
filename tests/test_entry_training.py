@@ -36,7 +36,17 @@ def _frame(stamp, count):
     return pd.DataFrame(rows, index=index)
 
 
-def test_one_day_lab_compares_only_completed_bars_after_signal():
+def test_one_day_lab_compares_only_completed_bars_after_signal(monkeypatch):
+    # Keep this historical fixture inside market hours regardless of CI runner time.
+    import app.entry_training as entry_training
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 27, 10, 0, tzinfo=IST)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(entry_training, "datetime", _FrozenDateTime)
     store = MemoryStore()
     set_enabled(store, True)
     stamp = datetime(2026, 11, 27, 9, 15, tzinfo=IST)

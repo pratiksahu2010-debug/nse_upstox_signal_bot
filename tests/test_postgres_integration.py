@@ -14,7 +14,20 @@ from app.db import PostgresStore
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated TEST_DATABASE_URL")
-def test_postgres_migrations_and_signal_lifecycle_round_trip():
+def test_postgres_migrations_and_signal_lifecycle_round_trip(monkeypatch):
+    # current_report() must see the fixture's session as intraday even when CI
+    # executes after the exchange close; do not alter production cutoff logic.
+    import app.entry_training as entry_training
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime.now(ZoneInfo("Asia/Kolkata")).replace(
+                hour=10, minute=0, second=0, microsecond=0
+            )
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(entry_training, "datetime", _FrozenDateTime)
     store = PostgresStore(os.environ["TEST_DATABASE_URL"])
     signal_id = None
     legacy_id = None
