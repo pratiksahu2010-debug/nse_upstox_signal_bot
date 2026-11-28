@@ -16,11 +16,15 @@ The read-only audit writes two reports:
   NO_DATA status and counts.
 - `session_detail.csv`: one row per observed session (or each date in an
   explicitly supplied calendar), with complete/incomplete/no-data status,
-  missing 5-minute bars, duplicates, and off-session candles.
+  missing 5-minute bars, duplicates, invalid OHLCV rows, and off-session candles.
 
 A regular NSE session is checked against 75 candle start times from 09:15
 through 15:25 IST. A session is COMPLETE only when every expected timestamp is
-present exactly once and there are no off-session candles. A header-only
+present exactly once, there are no off-session candles, and every OHLCV row is
+valid. The audit checks numeric finite open/high/low/close/volume values,
+non-negative volume, high at or above open/close, and low at or below
+open/close. Invalid OHLCV rows are counted in both reports and force REVIEW;
+they must be corrected or excluded before replay. A header-only
 download is reported as NO_DATA rather than being silently treated as a valid
 empty history.
 
