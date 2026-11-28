@@ -89,12 +89,20 @@ The summary CSV includes a `group_type` column with `overall`, `symbol`,
 and `session` rows. Session groups use the Asia/Kolkata calendar date even
 when input timestamps carry another timezone offset. Each group reports
 signal/closed/open counts, win rate, average and total net R, profit factor,
-and maximum drawdown in R. OPEN signals are excluded from closed-trade
-performance metrics.
+and maximum drawdown in R. Overall and per-symbol rows also report the
+number of sessions with closed trades, percentage of profitable sessions,
+median session net R, and best/worst session net R. These session-consistency
+fields aggregate all closed signals for each IST date; OPEN signals are
+excluded from closed-trade and session-performance metrics.
 
-Use the per-session rows to check whether aggregate results depend on a small
-number of unusually strong days or whether performance is inconsistent across
-the evaluation period. Session rows are descriptive diagnostics, not
+Use the per-session rows and the overall/per-symbol session-consistency
+fields to check whether aggregate results depend on a small number of
+unusually strong days or whether performance is inconsistent across the
+evaluation period. A profitable-session percentage is a descriptive fraction
+of observed trading dates, not a win probability or a statistical confidence
+measure. Median/best/worst session R use the sum of closed signal R for each
+date; they do not account for correlated signals, overlapping exposure, or
+capital allocation. Session rows are descriptive diagnostics, not
 independent statistical samples; multiple symbols and overlapping signals can
 share the same market-day conditions. Do not infer statistical significance
 or future profitability from these summaries alone.
