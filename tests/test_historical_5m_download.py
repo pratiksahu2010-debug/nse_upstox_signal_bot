@@ -133,3 +133,82 @@ def test_manifest_rejects_non_index_row_with_futures_key(tmp_path):
     )
     with pytest.raises(ValueError, match="NSE_EQ cash-equity key"):
         read_instruments(path)
+
+
+
+def test_dataset_manifest_records_provenance_and_checksums(tmp_path):
+    import hashlib
+    import json
+
+    from scripts.download_historical_5m import (
+        build_dataset_manifest,
+        write_dataset_manifest,
+    )
+
+    index = pd.DatetimeIndex([
+        pd.Timestamp("2026-05-29 09:15", tz="Asia/Kolkata"),
+        pd.Timestamp("2026-05-29 09:20", tz="Asia/Kolkata"),
+    ])
+    frame = pd.DataFrame(
+        {"open": [100, 101], "high": [102, 103], "low": [99, 100],
+         "close": [101, 102], "volume": [10, 20], "oi": [None, None]},
+        index=index,
+    )
+    write_atomic(frame, tmp_path / "RELIANCE.csv")
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume", "oi"])
+    write_atomic(empty, tmp_path / "SBIN.csv")
+    instruments = [
+        ("RELIANCE", "NSE_EQ|INE002A01018"),
+        ("SBIN", "NSE_EQ|INE062A01020"),
+    ]
+
+    manifest = build_dataset_manifest(
+        instruments, tmp_path, date(2026, 5, 1), date(2026, 5, 31)
+    )
+    assert manifest["manifest_version"] == 1
+    assert manifest["interval_minutes"] == 5
+    assert manifest["timezone"] == "Asia/Kolkata"
+    assert manifest["instrument_count"] == 2
+    assert manifest["total_candles"] == 2
+    assert manifest["instruments"][0]["download_status"] == "DOWNLOADED"
+    assert manifest["instruments"][0]["candle_count"] == 2
+    assert manifest["instruments"][0]["sha256"] == hashlib.sha256(
+        (tmp_path / "RELIANCE.csv").read_bytes()
+    ).hexdigest()
+    assert manifest["instruments"][1]["download_status"] == "NO_DATA"
+    assert manifest["instruments"][1]["first_timestamp"] is None
+
+    output = write_dataset_manifest(
+        instruments, tmp_path, date(2026, 5, 1), date(2026, 5, 31)
+    )
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["total_candles"] == 2
+    assert not (tmp_path / "dataset_manifest.json.tmp").exists()
+
+
+def test_dataset_manifest_fails_when_symbol_file_missing(tmp_path):
+    from scripts.download_historical_5m import build_dataset_manifest
+
+    with pytest.raises(ValueError, match="CSV is missing"):
+        build_dataset_manifest(
+            [("RELIANCE", "NSE_EQ|INE002A01018")],
+            tmp_path,
+            date(2026, 5, 1),
+            date(2026, 5, 31),
+        )
+
+
+def test_dataset_manifest_fails_on_invalid_timestamp(tmp_path):
+    from scripts.download_historical_5m import build_dataset_manifest
+
+    (tmp_path / "RELIANCE.csv").write_text(
+        "timestamp,open,high,low,close,volume,oi\\nnot-a-date,1,2,0,1,10,\\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid timestamps"):
+        build_dataset_manifest(
+            [("RELIANCE", "NSE_EQ|INE002A01018")],
+            tmp_path,
+            date(2026, 5, 1),
+            date(2026, 5, 31),
+        )
