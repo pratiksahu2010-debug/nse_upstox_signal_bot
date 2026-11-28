@@ -132,3 +132,48 @@ def test_replay_directory_fails_closed_when_tick_mapping_is_missing(monkeypatch,
         replay.replay_directory(
             input_dir, tmp_path / "out.csv", tick_sizes={"XYZ": 0.05}
         )
+
+
+
+def test_quality_gate_accepts_exact_pass_symbol_set(tmp_path):
+    files = [tmp_path / "abc.csv", tmp_path / "XYZ.csv"]
+    summary = tmp_path / "symbol_summary.csv"
+    summary.write_text(
+        "symbol,status,rows\nABC,PASS,150\nXYZ,PASS,150\n",
+        encoding="utf-8",
+    )
+    replay.validate_quality_summary(files, summary)
+
+
+@pytest.mark.parametrize(
+    "rows, message",
+    [
+        ("symbol,status\nABC,REVIEW\nXYZ,PASS\n", "must have PASS"),
+        ("symbol,status\nABC,PASS\n", "symbol set mismatch"),
+        ("symbol,status\nABC,PASS\nXYZ,PASS\nEXTRA,PASS\n", "symbol set mismatch"),
+        ("symbol,status\nABC,PASS\nABC,PASS\nXYZ,PASS\n", "duplicate"),
+        ("symbol,status\n,PASS\nXYZ,PASS\n", "empty symbol"),
+    ],
+)
+def test_quality_gate_rejects_non_pass_or_ambiguous_summary(tmp_path, rows, message):
+    files = [tmp_path / "abc.csv", tmp_path / "XYZ.csv"]
+    summary = tmp_path / "symbol_summary.csv"
+    summary.write_text(rows, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        replay.validate_quality_summary(files, summary)
+
+
+def test_replay_directory_runs_quality_gate_before_loading_data(monkeypatch, tmp_path):
+    input_dir = tmp_path / "data"
+    input_dir.mkdir()
+    (input_dir / "ABC.csv").write_text("not read", encoding="utf-8")
+    summary = tmp_path / "symbol_summary.csv"
+    summary.write_text("symbol,status\nABC,REVIEW\n", encoding="utf-8")
+    monkeypatch.setattr(
+        replay, "load_ohlcv",
+        lambda path: pytest.fail("OHLCV must not load when quality gate rejects"),
+    )
+    with pytest.raises(ValueError, match="must have PASS"):
+        replay.replay_directory(
+            input_dir, tmp_path / "out.csv", quality_summary=summary
+        )
