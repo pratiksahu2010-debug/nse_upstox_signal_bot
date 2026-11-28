@@ -210,16 +210,53 @@ def load_tick_sizes(path: Path) -> dict[str, float]:
     return tick_sizes
 
 
+def validate_quality_summary(input_files: list[Path], summary_path: Path) -> None:
+    """Fail closed unless every replay input has exactly one PASS audit row."""
+    expected = {path.stem.strip().upper() for path in input_files}
+    if len(expected) != len(input_files):
+        raise ValueError("input directory contains duplicate symbols after normalization")
+
+    observed = {}
+    with summary_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or not {"symbol", "status"}.issubset(reader.fieldnames):
+            raise ValueError("quality summary must contain symbol,status columns")
+        for line, row in enumerate(reader, start=2):
+            symbol = (row.get("symbol") or "").strip().upper()
+            status = (row.get("status") or "").strip().upper()
+            if not symbol:
+                raise ValueError(f"quality summary has an empty symbol on line {line}")
+            if symbol in observed:
+                raise ValueError(f"duplicate symbol in quality summary on line {line}: {symbol}")
+            observed[symbol] = status
+
+    if not observed:
+        raise ValueError("quality summary contains no symbol rows")
+    missing = sorted(expected - set(observed))
+    extra = sorted(set(observed) - expected)
+    if missing or extra:
+        raise ValueError(
+            f"quality summary symbol set mismatch; missing={missing}, extra={extra}"
+        )
+    rejected = {symbol: observed[symbol] for symbol in sorted(expected)
+                if observed[symbol] != "PASS"}
+    if rejected:
+        raise ValueError(f"replay blocked: every input symbol must have PASS quality status: {rejected}")
+
+
 def replay_directory(
     input_dir: Path,
     output: Path,
     tick: float = 0.05,
     tick_sizes: dict[str, float] | None = None,
+    quality_summary: Path | None = None,
 ):
-    """Replay every CSV, using explicit per-symbol ticks when supplied."""
+    """Replay every CSV, optionally requiring a matching PASS quality audit."""
     files = sorted(input_dir.glob("*.csv"))
     if not files:
         raise ValueError(f"no CSV files found in {input_dir}")
+    if quality_summary is not None:
+        validate_quality_summary(files, quality_summary)
     rows = []
     for path in files:
         symbol = path.stem.upper()
@@ -247,12 +284,17 @@ def main(argv=None):
                         help="fallback tick size when --ticks-csv is not supplied")
     parser.add_argument("--ticks-csv", type=Path,
                         help="CSV with symbol,tick_size columns; requires a mapping for every input file")
+    parser.add_argument("--quality-summary", type=Path,
+                        help="symbol_summary.csv from audit_historical_5m; every input symbol must be PASS")
     args = parser.parse_args(argv)
     try:
         if not math.isfinite(args.tick) or args.tick <= 0:
             raise ValueError("--tick must be a positive finite number")
         tick_sizes = load_tick_sizes(args.ticks_csv) if args.ticks_csv else None
-        replay_directory(args.input_dir, args.output, args.tick, tick_sizes)
+        replay_directory(
+            args.input_dir, args.output, args.tick, tick_sizes,
+            quality_summary=args.quality_summary,
+        )
     except (OSError, ValueError) as exc:
         log.error("Replay stopped: %s", exc)
         return 1
