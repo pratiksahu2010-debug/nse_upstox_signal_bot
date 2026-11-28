@@ -8,9 +8,11 @@ import math
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 REQUIRED = {"symbol", "bar_ts", "option_type", "status", "net_r"}
 VALID_STATUSES = {"OPEN", "TP1", "SL", "TP1_BE", "TP2", "EOD"}
+RESEARCH_TZ = ZoneInfo("Asia/Kolkata")
 
 
 def _parse_timestamp(value: str, line: int) -> datetime:
@@ -65,7 +67,7 @@ def load_replay(path: Path) -> list[dict]:
     return rows
 
 
-def _metrics(rows: list[dict], label: str) -> dict:
+def _metrics(rows: list[dict], label: str, group_type: str) -> dict:
     closed = [row for row in rows if row["net_r"] is not None]
     values = [row["net_r"] for row in closed]
     wins = [value for value in values if value > 0]
@@ -79,6 +81,7 @@ def _metrics(rows: list[dict], label: str) -> dict:
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
     return {
+        "group_type": group_type,
         "group": label,
         "signals": len(rows),
         "closed": len(closed),
@@ -95,11 +98,15 @@ def _metrics(rows: list[dict], label: str) -> dict:
 
 
 def build_report(rows: list[dict]) -> list[dict]:
-    grouped = defaultdict(list)
+    by_symbol = defaultdict(list)
+    by_session = defaultdict(list)
     for row in rows:
-        grouped[row["symbol"]].append(row)
-    report = [_metrics(rows, "ALL")]
-    report.extend(_metrics(grouped[symbol], symbol) for symbol in sorted(grouped))
+        by_symbol[row["symbol"]].append(row)
+        session_date = row["bar_ts"].astimezone(RESEARCH_TZ).date().isoformat()
+        by_session[session_date].append(row)
+    report = [_metrics(rows, "ALL", "overall")]
+    report.extend(_metrics(by_symbol[symbol], symbol, "symbol") for symbol in sorted(by_symbol))
+    report.extend(_metrics(by_session[day], day, "session") for day in sorted(by_session))
     return report
 
 
