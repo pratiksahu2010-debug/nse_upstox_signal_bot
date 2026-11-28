@@ -21,12 +21,12 @@ EXPECTED_BARS = 75
 SUMMARY_COLUMNS = [
     "symbol", "status", "rows", "trading_days", "complete_sessions",
     "incomplete_sessions", "missing_bars", "duplicate_timestamps",
-    "invalid_timestamps", "off_session_bars", "first_timestamp",
+    "invalid_timestamps", "invalid_ohlcv_rows", "off_session_bars", "first_timestamp",
     "last_timestamp",
 ]
 SESSION_COLUMNS = [
     "symbol", "session_date", "status", "observed_bars",
-    "missing_bars", "duplicate_timestamps", "off_session_bars",
+    "missing_bars", "duplicate_timestamps", "invalid_ohlcv_rows", "off_session_bars",
     "first_timestamp", "last_timestamp",
 ]
 
@@ -91,6 +91,20 @@ def audit_file(
     if end_date is not None:
         frame = frame.loc[frame["timestamp"].dt.date <= end_date]
 
+    ohlcv_columns = ["open", "high", "low", "close", "volume"]
+    numeric = frame[ohlcv_columns].apply(pd.to_numeric, errors="coerce")
+    finite = pd.DataFrame(
+        {column: pd.Series(pd.notna(numeric[column]) & numeric[column].map(
+            lambda value: bool(pd.notna(value)) and abs(float(value)) != float("inf")
+        ), index=numeric.index) for column in ohlcv_columns},
+        index=numeric.index,
+    ).all(axis=1)
+    valid_ohlcv = finite.copy()
+    valid_ohlcv &= numeric["volume"] >= 0
+    valid_ohlcv &= numeric["high"] >= numeric[["open", "close"]].max(axis=1)
+    valid_ohlcv &= numeric["low"] <= numeric[["open", "close"]].min(axis=1)
+    frame["__invalid_ohlcv"] = ~valid_ohlcv
+
     if expected_sessions is None:
         session_dates = sorted(set(frame["timestamp"].dt.date))
     else:
@@ -109,12 +123,13 @@ def audit_file(
         missing_count = len(expected.difference(on_session))
         off_session_count = int((~day_frame["timestamp"].isin(expected)).sum())
         day_duplicates = int(day_frame["timestamp"].duplicated(keep="last").sum())
+        day_invalid_ohlcv = int(day_frame["__invalid_ohlcv"].sum())
         first = day_frame["timestamp"].min() if not day_frame.empty else None
         last = day_frame["timestamp"].max() if not day_frame.empty else None
 
         if day_frame.empty:
             status = "NO_DATA"
-        elif day_duplicates or off_session_count or missing_count:
+        elif day_duplicates or day_invalid_ohlcv or off_session_count or missing_count:
             status = "INCOMPLETE"
         else:
             status = "COMPLETE"
@@ -126,6 +141,7 @@ def audit_file(
             "observed_bars": int(len(day_frame)),
             "missing_bars": int(missing_count),
             "duplicate_timestamps": day_duplicates,
+            "invalid_ohlcv_rows": day_invalid_ohlcv,
             "off_session_bars": off_session_count,
             "first_timestamp": first.isoformat() if first is not None else "",
             "last_timestamp": last.isoformat() if last is not None else "",
@@ -138,9 +154,10 @@ def audit_file(
     total_missing = sum(row["missing_bars"] for row in session_rows)
     total_duplicates = int(frame["timestamp"].duplicated(keep="last").sum())
     total_off_session = sum(row["off_session_bars"] for row in session_rows)
+    total_invalid_ohlcv = int(frame["__invalid_ohlcv"].sum())
     if raw_count == 0 or (frame.empty and invalid_timestamps == 0):
         status = "NO_DATA"
-    elif invalid_timestamps or incomplete or no_data:
+    elif invalid_timestamps or total_invalid_ohlcv or incomplete or no_data:
         status = "REVIEW"
     else:
         status = "PASS"
@@ -157,6 +174,7 @@ def audit_file(
         "missing_bars": int(total_missing),
         "duplicate_timestamps": int(total_duplicates),
         "invalid_timestamps": int(invalid_timestamps),
+        "invalid_ohlcv_rows": total_invalid_ohlcv,
         "off_session_bars": int(total_off_session),
         "first_timestamp": first.isoformat() if first is not None else "",
         "last_timestamp": last.isoformat() if last is not None else "",
