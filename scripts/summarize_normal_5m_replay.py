@@ -8,6 +8,7 @@ import math
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from statistics import median
 from zoneinfo import ZoneInfo
 
 REQUIRED = {"symbol", "bar_ts", "option_type", "status", "net_r"}
@@ -75,6 +76,12 @@ def _metrics(rows: list[dict], label: str, group_type: str) -> dict:
     flats = len(values) - len(wins) - len(losses)
     gross_profit = sum(wins)
     gross_loss = abs(sum(losses))
+    session_totals = defaultdict(float)
+    for row in closed:
+        session_date = row["bar_ts"].astimezone(RESEARCH_TZ).date().isoformat()
+        session_totals[session_date] += row["net_r"]
+    session_values = list(session_totals.values())
+    profitable_sessions = sum(value > 0 for value in session_values)
     equity = peak = max_drawdown = 0.0
     for row in sorted(closed, key=lambda item: (item["bar_ts"], item["symbol"], item["option_type"])):
         equity += row["net_r"]
@@ -94,6 +101,13 @@ def _metrics(rows: list[dict], label: str, group_type: str) -> dict:
         "total_net_r": round(sum(values), 6) if values else "",
         "profit_factor": round(gross_profit / gross_loss, 6) if gross_loss else ("INF" if gross_profit else ""),
         "max_drawdown_r": round(max_drawdown, 6) if closed else "",
+        "sessions_with_closed_trades": len(session_values),
+        "profitable_sessions_pct": (
+            round(100 * profitable_sessions / len(session_values), 4) if session_values else ""
+        ),
+        "median_session_net_r": round(median(session_values), 6) if session_values else "",
+        "best_session_net_r": round(max(session_values), 6) if session_values else "",
+        "worst_session_net_r": round(min(session_values), 6) if session_values else "",
     }
 
 
