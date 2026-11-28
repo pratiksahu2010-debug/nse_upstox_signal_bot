@@ -1,4 +1,5 @@
 """Bounded virtual-actor runtime for per-symbol serialized processing."""
 from .runtime import ActorQueueFull, ActorRuntime
+from .event_sourced import EventAppendConflict, EventSourcedActorRuntime
 
-__all__ = ["ActorQueueFull", "ActorRuntime"]
+__all__ = ["ActorQueueFull", "ActorRuntime", "EventAppendConflict", "EventSourcedActorRuntime"]
