@@ -242,4 +242,4 @@ def test_429_applies_shared_cooldown_before_retry(monkeypatch):
 
     assert client._get("/test", retries=2) == {"ok": True}
     assert sleeps == [3.0]
-    assert budget.usage()["total"] == 1
+    assert budget.usage()["total"] == 2
