@@ -28,6 +28,10 @@ the audit can only assess dates that contain at least one candle. The quality
 gate is optional for backward compatibility, so omit it only when you have
 independently reviewed the audit results.
 
+For a statistically cleaner evaluation window, use `--evaluation-from-date`. By default the replay then requires at least `ENGINE.warm_sessions` (currently six) distinct earlier sessions for every symbol. Those earlier candles remain available to initialize the continuous EMA/RSI/ADX/ATR series, but signals before the evaluation date are excluded from the output. Override the requirement explicitly with `--warmup-sessions N` only when the research methodology justifies it. This is a count of distinct dates in the file; the separate quality audit should still be used to verify that each session is complete.
+
+Example: add `--evaluation-from-date 2026-05-11` to the replay command after downloading at least six prior trading sessions for every symbol.
+
 The replay is offline and signal-only. It uses the existing Normal strategy
 module, 5-minute indicators, score gate, tick-rounded stop/targets, session
 window, persisted-state transition helpers and outcome simulator. For each
