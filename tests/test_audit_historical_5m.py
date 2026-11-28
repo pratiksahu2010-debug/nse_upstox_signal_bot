@@ -124,6 +124,7 @@ def test_audit_flags_invalid_ohlcv_rows(tmp_path, column, value):
         "close": [100.5] * 75,
         "volume": [1000] * 75,
     })
+    frame[column] = frame[column].astype(object)
     frame.loc[10, column] = value
     frame.to_csv(path, index=False)
 
