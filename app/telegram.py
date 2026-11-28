@@ -115,6 +115,14 @@ def send(text: str, silent: bool = False, signal_id: Optional[int] = None) -> bo
             log.error("telegram request returned HTTP %s", r.status_code)
             if r.status_code in (400, 401, 403, 404):
                 return False
+            # Telegram can return transient gateway/server errors. Retry with
+            # bounded backoff rather than immediately hammering the Bot API.
+            if r.status_code in (408, 425) or 500 <= r.status_code <= 599:
+                if attempt < 3:
+                    time.sleep(min(8.0, 1.0 * (2 ** attempt)))
+                continue
+            # Other non-success responses are not expected to recover by retry.
+            return False
         except requests.RequestException as exc:
             # requests exception text can contain the complete Bot API URL and token.
             log.error("telegram request failed (%s)", type(exc).__name__)
