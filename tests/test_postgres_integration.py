@@ -5,6 +5,7 @@ This deliberately starts from the production-era schema_migrations and signals
 layouts so startup reconciliation is tested against the real legacy shape.
 """
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -294,7 +295,27 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip(monkeypatch):
         assert replayed[1]["payload"] == {"score": 84}
         assert store.save_actor_snapshot("symbol", event_aggregate, 2, {"phase": "CONFIRMED"})
         assert store.save_actor_snapshot("symbol", event_aggregate, 1, {"phase": "IDLE"}) is False
+        assert store.save_actor_snapshot("symbol", event_aggregate, 3, {"phase": "AHEAD"}) is False
         assert store.load_actor_snapshot("symbol", event_aggregate)["state"] == {"phase": "CONFIRMED"}
+
+        # Concurrent writers proposing the same next sequence must serialize
+        # on the aggregate lock; exactly one append may win.
+        concurrent_aggregate = "CI_EVENT_CONCURRENT"
+        concurrent_events = [
+            dict(event_one, event_id="ci-concurrent-a", aggregate_id=concurrent_aggregate),
+            dict(event_one, event_id="ci-concurrent-b", aggregate_id=concurrent_aggregate),
+        ]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            concurrent_results = list(executor.map(store.append_domain_event, concurrent_events))
+        assert sorted(concurrent_results) == [False, True]
+        concurrent_next = dict(
+            event_one, event_id="ci-concurrent-next",
+            aggregate_id=concurrent_aggregate, sequence=2,
+        )
+        assert store.append_domain_event(concurrent_next) is True
+        assert [item["sequence"] for item in store.load_domain_events(
+            "symbol", concurrent_aggregate
+        )] == [1, 2]
 
         signal = {
             "module": "normal",
@@ -373,4 +394,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip(monkeypatch):
                        ("symbol", "CI_EVENT_STORE"))
             store._run("DELETE FROM actor_snapshots WHERE aggregate_type=%s AND aggregate_id=%s",
                        ("symbol", "CI_EVENT_STORE"))
+            store._run("DELETE FROM domain_events WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_CONCURRENT"))
+            store._run("DELETE FROM actor_snapshots WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_CONCURRENT"))
         store.close()

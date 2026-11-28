@@ -37,11 +37,32 @@ def test_event_store_rejects_sequence_gaps():
     assert store.replay("symbol", "NIFTY")[0]["sequence"] == 1
 
 
-def test_snapshots_are_monotonic_and_restorable():
+def test_snapshots_are_monotonic_and_must_match_a_persisted_event_prefix():
     store = EventStore(MemoryStore())
-    assert store.checkpoint("symbol", "NIFTY", 4, {"phase": "ARMED"})
-    assert not store.checkpoint("symbol", "NIFTY", 3, {"phase": "IDLE"})
+    assert not store.checkpoint("symbol", "NIFTY", 1, {"phase": "AHEAD"})
+    first = DomainEvent("evt-1", "symbol", "NIFTY", 1, "SETUP", {}, datetime.now(timezone.utc))
+    second = DomainEvent("evt-2", "symbol", "NIFTY", 2, "CONFIRM", {}, datetime.now(timezone.utc))
+    assert store.append(first)
+    assert store.append(second)
+    assert not store.checkpoint("symbol", "NIFTY", 3, {"phase": "AHEAD"})
+    assert store.checkpoint("symbol", "NIFTY", 2, {"phase": "ARMED"})
+    assert not store.checkpoint("symbol", "NIFTY", 1, {"phase": "IDLE"})
     assert store.restore("symbol", "NIFTY")["state"] == {"phase": "ARMED"}
+
+
+def test_concurrent_memory_appends_cannot_claim_the_same_sequence():
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = EventStore(MemoryStore())
+    events = [
+        DomainEvent(f"evt-{index}", "symbol", "NIFTY", 1, "SETUP", {},
+                    datetime.now(timezone.utc))
+        for index in range(2)
+    ]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(store.append, events))
+    assert sorted(results) == [False, True]
+    assert [row["sequence"] for row in store.replay("symbol", "NIFTY")] == [1]
 
 
 def test_event_model_requires_timezone_aware_time():

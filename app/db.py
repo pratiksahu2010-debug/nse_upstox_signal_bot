@@ -473,11 +473,20 @@ class MemoryStore:
         key = (aggregate_type, aggregate_id)
         with self.lock:
             current = self.actor_snapshots.get(key)
-            if current and int(current["version"]) >= int(version):
+            version = int(version)
+            if current and int(current["version"]) >= version:
+                return False
+            latest_event = max(
+                (int(row["sequence"]) for row in self.domain_events
+                 if row["aggregate_type"] == aggregate_type
+                 and row["aggregate_id"] == aggregate_id),
+                default=0,
+            )
+            if version > latest_event:
                 return False
             self.actor_snapshots[key] = {
                 "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
-                "version": int(version), "state": dict(state),
+                "version": version, "state": dict(state),
             }
             return True
 
@@ -849,24 +858,71 @@ class PostgresStore(MemoryStore):
         self._run("INSERT INTO normal_setup_state (trade_day, symbol, state, updated_at) VALUES (%s,%s,%s,now()) ON CONFLICT (trade_day, symbol) DO UPDATE SET state=EXCLUDED.state, updated_at=now()", (day, symbol, json.dumps(state)))
 
     def append_domain_event(self, event: dict) -> bool:
-        """Append an immutable event with idempotent event and aggregate-sequence keys."""
-        row = self._run(
-            """INSERT INTO domain_events
-                   (event_id, aggregate_type, aggregate_id, sequence, event_type, payload, occurred_at)
-               SELECT %s, %s, %s, %s, %s, %s::jsonb, %s
-                WHERE %s = COALESCE((
-                    SELECT MAX(sequence) + 1 FROM domain_events
-                     WHERE aggregate_type=%s AND aggregate_id=%s
-                ), 1)
-               ON CONFLICT DO NOTHING
-               RETURNING event_id""",
-            (event["event_id"], event["aggregate_type"], event["aggregate_id"],
-             int(event["sequence"]), event["event_type"],
-             json.dumps(event.get("payload") or {}), event["occurred_at"],
-             int(event["sequence"]), event["aggregate_type"], event["aggregate_id"]),
-            "one",
-        )
-        return bool(row)
+        """Append an event under an aggregate lock using a fresh READ COMMITTED snapshot.
+
+        Lock acquisition and sequence allocation are separate statements in the
+        same transaction. A transaction waiting for another writer therefore
+        reads the previous writer's committed sequence instead of a stale
+        statement snapshot. A stale/gapped sequence or duplicate key returns
+        False so the caller can reload and retry.
+        """
+        from psycopg2 import InterfaceError, OperationalError
+
+        for attempt in range(2):
+            conn = self.pool.getconn()
+            discard = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = 120000")
+                    cur.execute("SET LOCAL lock_timeout = 15000")
+                    cur.execute("SET LOCAL idle_in_transaction_session_timeout = 60000")
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(731904, hashtext(%s || chr(31) || %s))",
+                        (event["aggregate_type"], event["aggregate_id"]),
+                    )
+                    cur.execute(
+                        """SELECT COALESCE(MAX(sequence), 0) + 1
+                             FROM domain_events
+                            WHERE aggregate_type=%s AND aggregate_id=%s""",
+                        (event["aggregate_type"], event["aggregate_id"]),
+                    )
+                    expected_sequence = int(cur.fetchone()[0])
+                    if int(event["sequence"]) != expected_sequence:
+                        conn.rollback()
+                        return False
+                    cur.execute(
+                        """INSERT INTO domain_events
+                               (event_id, aggregate_type, aggregate_id, sequence,
+                                event_type, payload, occurred_at)
+                           VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                           ON CONFLICT DO NOTHING
+                           RETURNING event_id""",
+                        (event["event_id"], event["aggregate_type"], event["aggregate_id"],
+                         int(event["sequence"]), event["event_type"],
+                         json.dumps(event.get("payload") or {}), event["occurred_at"]),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+                return bool(row)
+            except (OperationalError, InterfaceError):
+                discard = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    log.warning("Postgres event append failed; discarding connection and retrying once")
+                    continue
+                raise
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    discard = True
+                raise
+            finally:
+                self.pool.putconn(conn, close=discard or bool(conn.closed))
+        return False
 
     def load_domain_events(self, aggregate_type: str, aggregate_id: str,
                            after_sequence: int = 0, limit: int = 1000) -> list:
@@ -891,12 +947,17 @@ class PostgresStore(MemoryStore):
                             version: int, state: dict) -> bool:
         row = self._run(
             """INSERT INTO actor_snapshots (aggregate_type, aggregate_id, version, state)
-               VALUES (%s, %s, %s, %s::jsonb)
+               SELECT %s, %s, %s, %s::jsonb
+                WHERE %s <= COALESCE((
+                    SELECT MAX(sequence) FROM domain_events
+                     WHERE aggregate_type=%s AND aggregate_id=%s
+                ), 0)
                ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
                    SET version=EXCLUDED.version, state=EXCLUDED.state, updated_at=now()
                  WHERE actor_snapshots.version < EXCLUDED.version
                RETURNING version""",
-            (aggregate_type, aggregate_id, int(version), json.dumps(state or {})),
+            (aggregate_type, aggregate_id, int(version), json.dumps(state or {}),
+             int(version), aggregate_type, aggregate_id),
             "one",
         )
         return bool(row)
