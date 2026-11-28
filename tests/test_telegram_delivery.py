@@ -82,3 +82,28 @@ def test_telegram_http_200_requires_valid_success_payload(monkeypatch):
     sleeps = []
     _configure(monkeypatch, [Response(200, {"ok": True, "result": {"message_id": 456}})], sleeps)
     assert telegram.send("alert", signal_id=12) is True
+
+
+
+def test_telegram_5xx_retries_with_bounded_backoff(monkeypatch):
+    sleeps = []
+    calls = _configure(
+        monkeypatch,
+        [
+            Response(503),
+            Response(502),
+            Response(200, {"ok": True, "result": {"message_id": 789}}),
+        ],
+        sleeps,
+    )
+    assert telegram.send("alert") is True
+    assert len(calls) == 3
+    assert sleeps == [1.0, 2.0]
+
+
+def test_telegram_permanent_http_error_is_not_retried(monkeypatch):
+    sleeps = []
+    calls = _configure(monkeypatch, [Response(400)], sleeps)
+    assert telegram.send("alert") is False
+    assert len(calls) == 1
+    assert sleeps == []
