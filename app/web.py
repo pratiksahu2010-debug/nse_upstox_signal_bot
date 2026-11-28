@@ -75,7 +75,11 @@ def _init():
             log.info("startup phase=engine_constructed elapsed_seconds=%.2f", _time.monotonic() - phase_started)
             candidate.paused = bool(get_persistent_state(candidate_store, "paused", False))
             if not config.UPSTOX_TOKEN:
-                log.error("No Upstox Analytics Token configured; set UPSTOX_ANALYTICS_TOKEN in Render")
+                log.error(
+                    "Upstox token is missing (source=%s); set UPSTOX_ANALYTICS_TOKEN "
+                    "or the legacy UPSTOX_ACCESS_TOKEN",
+                    config.UPSTOX_TOKEN_SOURCE,
+                )
 
             # Start the Telegram poller before the scheduler so a poller
             # startup failure cannot leave a live scanner behind during retry.
@@ -241,6 +245,12 @@ def _safe_config():
         "option_max_quote_age_sec": config.OPTION_MAX_QUOTE_AGE_SEC,
         "scheduler_enabled": config.RUN_SCHEDULER,
         "upstox_stream_enabled": config.UPSTOX_STREAM_ENABLED,
+        "scanner_workers": config.ENGINE.workers,
+        "api_rate_budget": {
+            "per_second": config.ENGINE.rate_per_sec,
+            "per_minute": config.ENGINE.rate_per_min,
+            "per_30_minutes": config.ENGINE.rate_per_30min,
+        },
         "signal_only": True,
         "orders_enabled": False,
     }
@@ -571,9 +581,10 @@ def readiness():
             "strategy_enabled": True,
         },
         "upstox": {
-            "token_configured": True,
+            "token_configured": bool(config.UPSTOX_TOKEN),
             "token_source": config.UPSTOX_TOKEN_SOURCE,
-            "auth_failed": False,
+            "auth_failed": bool(getattr(client, "auth_failed", False)),
+            "auth_status": getattr(client, "auth_status", None),
             "last_success_at": (
                 provider_health.get("last_success_at")
                 or getattr(client, "last_success_at", None)
