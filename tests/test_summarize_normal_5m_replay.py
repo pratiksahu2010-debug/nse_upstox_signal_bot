@@ -57,6 +57,31 @@ def test_report_computes_closed_trade_metrics_and_excludes_open(tmp_path):
     assert session_rows[0]["signals"] == 4
 
 
+def test_overall_and_symbol_rows_report_session_consistency(tmp_path):
+    path = tmp_path / "replay.csv"
+    _write(path, [
+        _row(stamp="2026-11-02T09:30:00+05:30", net_r="2"),
+        _row(stamp="2026-11-03T09:30:00+05:30", net_r="-1"),
+        _row(stamp="2026-11-04T09:30:00+05:30", net_r="0"),
+        _row("XYZ", "2026-11-03T09:35:00+05:30", "TP2", "3"),
+        _row("XYZ", "2026-11-04T09:35:00+05:30", "OPEN", ""),
+    ])
+    report = summary.build_report(summary.load_replay(path))
+    overall = report[0]
+    assert overall["sessions_with_closed_trades"] == 3
+    assert overall["profitable_sessions_pct"] == 66.6667
+    assert overall["median_session_net_r"] == 2.0
+    assert overall["best_session_net_r"] == 2.0
+    assert overall["worst_session_net_r"] == 0.0
+
+    abc = next(row for row in report if row["group_type"] == "symbol" and row["group"] == "ABC")
+    assert abc["sessions_with_closed_trades"] == 3
+    assert abc["profitable_sessions_pct"] == 33.3333
+    assert abc["median_session_net_r"] == 0.0
+    assert abc["best_session_net_r"] == 2.0
+    assert abc["worst_session_net_r"] == -1.0
+
+
 def test_session_groups_use_ist_calendar_date(tmp_path):
     path = tmp_path / "replay.csv"
     _write(path, [
