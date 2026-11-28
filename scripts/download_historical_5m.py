@@ -177,7 +177,7 @@ def write_dataset_manifest(instruments, output_dir: Path, start: date, end: date
     try:
         with temp.open("w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2, sort_keys=True)
-            handle.write("\\n")
+            handle.write("\n")
         os.replace(temp, destination)
     finally:
         if temp.exists():
