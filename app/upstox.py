@@ -38,6 +38,13 @@ class Budget:
         self.total = 0
         self.wait_seconds = 0.0
         self.wait_count = 0
+        self.cooldown_until = 0.0
+
+    def defer(self, seconds: float):
+        """Pause all workers after an upstream rate-limit response."""
+        delay = max(0.0, min(30.0, float(seconds)))
+        with self.lock:
+            self.cooldown_until = max(self.cooldown_until, time.monotonic() + delay)
 
     def acquire(self):
         wait_started = time.monotonic()
@@ -46,7 +53,7 @@ class Budget:
                 now = time.monotonic()
                 while self.hits and now - self.hits[0] > 1800.0:
                     self.hits.popleft()
-                wait = 0.0
+                wait = max(0.0, self.cooldown_until - now)
                 for win, cap in self.caps:
                     recent = [h for h in self.hits if now - h <= win]
                     if len(recent) >= cap:
@@ -278,8 +285,8 @@ class UpstoxClient:
                 with self._state_lock:
                     self.failure_count += 1
                     self.last_error = str(last)
+                self.budget.defer(delay)
                 if attempt + 1 < retries:
-                    time.sleep(delay)
                     continue
                 break
 
