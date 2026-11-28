@@ -110,7 +110,7 @@ The values below match the committed `.env.example` template and the defaults in
 | `DRY_RUN` | `0` | When 1, log signals without Telegram delivery |
 | `FETCH_DELAY_SEC` | `6` | Delay after candle close before fetching |
 | `STALE_MAX_BARS` | `1` | Legacy compatibility setting; new entries require the exact latest eligible 5m candle |
-| `WORKERS` | `24` (bounded to 16–24) | I/O-bound candle fetch concurrency; Upstox request pacing remains enforced |
+| `WORKERS` | `16` (bounded to 8–16) | I/O-bound candle fetch concurrency; Upstox request pacing remains enforced |
 | `RATE_PER_SEC` | `15` | Upstox request pacing per second |
 | `RATE_PER_MIN` | `450` | Upstox request pacing per minute |
 | `RATE_PER_30MIN` | `1800` | Upstox request pacing per 30 minutes |
@@ -149,7 +149,7 @@ Every scan boundary acquires a PostgreSQL-backed, owner-token lease before fetch
 
 ### Render-specific settings
 
-The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. Use `/health` as Render liveness path; `/ready` is an operational diagnostic and may correctly return 503 during a broker outage, scan cycle, or temporary data gap. A strict readiness failure must not restart the web process. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS` setting controls fetch concurrency (bounded to 16–24) and is unrelated to Gunicorn's `--workers 1`.
+The Blueprint sets Python 3.11.9, `TZ=Asia/Kolkata`, `KEEPALIVE=1` and `REQUIRE_PERSISTENT_DB=1`; secret variables are configured in the Render Dashboard. Use `/health` as Render liveness path; `/ready` is an operational diagnostic and may correctly return 503 during a broker outage, scan cycle, or temporary data gap. A strict readiness failure must not restart the web process. The deployed service must use one Gunicorn worker because the scanner and Telegram poller are in-process. The internal `WORKERS` setting controls fetch concurrency (bounded to 8–16) and is unrelated to Gunicorn's `--workers 1`.
 
 ## Local setup
 
@@ -175,7 +175,7 @@ GitHub Actions runs pytest on Python 3.11. The suite covers existing indicator, 
 
 Remaining master-prompt work and live-verification gaps:
 1. The exact 150-symbol static list and startup validation are implemented. It contains 144 selected NSE F&O stocks plus six explicitly allowlisted index underlyings. IEX and IREDA are excluded ahead of their 25 Nov 2026 F&O exit and RELIANCE and SBIN replace them. Startup remains fail-closed if the configured list is not exactly 150 unique entries or if all 150 cannot be validated against the Upstox instrument master; an incomplete master resolution is retried after a five-minute backoff.
-2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate defaults to enabled and must be verified with the production Analytics Token before merging; no unverified fallback is emitted when the gate is active.
+2. Option contracts are resolved from the daily instrument master. Upstox option-contract and option-chain REST methods exist, but option-chain OI/PCR context is not yet wired into selection. The full-quote liquidity gate defaults to disabled (`OPTION_LIQUIDITY_CHECKS=0`). Enable it only after verifying fresh bid/ask depth, spread, volume, OI and quote-age fields with the production Analytics Token; when enabled, it fails closed and emits no recommendation if no candidate passes.
 3. The V3 WebSocket subscribes to all validated underlyings and batches selected option-contract subscriptions; fresh option quotes are attached when available. Live feed authorization, quote freshness and liquidity thresholds still require a credentialed paper-session smoke test.
 4. MFE/MAE, bars held, a persistent six-bar time-stop review flag, time-to-TP1/TP2 and option-premium outcome tracking are implemented. Live quote coverage and cost estimates still require credentialed paper-session validation. Signal feedback buttons, user labels, automatic gross/net-R labels, indicator snapshots and bounded offline walk-forward research are implemented.
 5. The offline trainer searches only a small bounded set of post-signal cohort filters (ADX/RVOL), uses chronological train/validation/held-out partitions and enforces sample floors. It does not reconstruct missed signals or claim counterfactual strategy performance. Proposals are stored as diffs; /approve stages approval and /rollback marks rollback, but neither changes live strategy settings. Optional /shadow mode records whether each new live signal would match the proposal and never blocks or alters alerts. Configure TRAINING_COST_R from measured round-trip costs; its default is zero, so net-R is not cost-adjusted until configured.
