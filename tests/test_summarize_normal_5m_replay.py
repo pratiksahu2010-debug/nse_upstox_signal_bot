@@ -14,10 +14,19 @@ def _write(path, rows):
         writer.writerows(rows)
 
 
-def _row(symbol="ABC", stamp="2026-11-02T09:30:00+05:30", status="TP2", net_r="2"):
+def _row(
+    symbol="ABC",
+    stamp="2026-11-02T09:30:00+05:30",
+    status="TP2",
+    net_r="2",
+    option_type="CALL",
+):
     return {
-        "symbol": symbol, "bar_ts": stamp, "option_type": "CALL",
-        "status": status, "net_r": net_r,
+        "symbol": symbol,
+        "bar_ts": stamp,
+        "option_type": option_type,
+        "status": status,
+        "net_r": net_r,
     }
 
 
