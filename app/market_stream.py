@@ -150,6 +150,16 @@ class UpstoxMarketStream:
             "quote_cache_size": cache_size,
         }
 
+    async def _wait_or_stop(self, delay: float):
+        """Wait through reconnect backoff, but wake promptly when stop is requested."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, float(delay))
+        while not self._stop.is_set():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.1, remaining))
+
     async def _run(self):
         delay = 1.0
         while not self._stop.is_set():
@@ -197,7 +207,7 @@ class UpstoxMarketStream:
                     # Include the provider's HTTP status/handshake reason. The
                     # authorized redirect URI and bearer token are never logged.
                     log.warning("Upstox market feed disconnected; reconnecting: %s", self.last_error)
-                    await asyncio.sleep(delay)
+                    await self._wait_or_stop(delay)
                     delay = min(30.0, delay * 2)
         with self._lock:
             self.connected = False
