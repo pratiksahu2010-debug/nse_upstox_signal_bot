@@ -1,14 +1,32 @@
 # Offline Normal 5-minute replay
 
-After downloading candles with `scripts.download_historical_5m`, replay them
-without connecting to the live scanner:
+After downloading candles with `scripts.download_historical_5m`, audit their
+coverage and completeness before replay. The replay can enforce the audit
+summary as a fail-closed gate:
 
 ```bash
+python -m scripts.audit_historical_5m \
+  --input-dir research_data \
+  --output-dir research_results/data_quality \
+  --from-date 2026-05-01 \
+  --to-date 2026-10-31 \
+  --calendar nse_trading_dates.csv
+
 python -m scripts.replay_historical_5m \
   --input-dir research_data \
   --output research_results/normal_5m_replay.csv \
-  --ticks-csv research_ticks.csv
+  --ticks-csv research_ticks.csv \
+  --quality-summary research_results/data_quality/symbol_summary.csv
 ```
+
+When `--quality-summary` is supplied, replay stops before loading OHLCV if
+the report is missing, has duplicate or mismatched symbols, or any input
+symbol is not marked `PASS`. The report must be generated from the same input
+directory and intended date range. For detection of fully missing sessions,
+supply an authoritative NSE trading-date calendar to the audit; without one,
+the audit can only assess dates that contain at least one candle. The quality
+gate is optional for backward compatibility, so omit it only when you have
+independently reviewed the audit results.
 
 The replay is offline and signal-only. It uses the existing Normal strategy
 module, 5-minute indicators, score gate, tick-rounded stop/targets, session
