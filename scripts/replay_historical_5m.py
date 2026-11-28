@@ -8,12 +8,13 @@ import csv
 import logging
 import math
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from app.common import Ctx, SymbolInfo
-from app.config import NORMAL
+from app.config import ENGINE, NORMAL
 from app.engine import (
     _cooldown_state_after_bar,
     _recover_normal_state_after_gap,
@@ -68,6 +69,7 @@ def replay_frame(
     frame: pd.DataFrame,
     tick: float = 0.05,
     session_end=None,
+    evaluation_from_date: date | None = None,
 ) -> list[dict]:
     """Replay one underlying chronologically using only information available at each bar."""
     if frame.empty:
@@ -154,7 +156,9 @@ def replay_frame(
             state = _initial_state(features.bar_ts)
 
         state["last_bar"] = features.bar_ts.isoformat()
-        if signal is not None:
+        if signal is not None and (
+            evaluation_from_date is None or features.bar_ts.date() >= evaluation_from_date
+        ):
             outcome_row = {
                 "side": signal.side,
                 "bar_ts": signal.bar_ts,
@@ -244,12 +248,31 @@ def validate_quality_summary(input_files: list[Path], summary_path: Path) -> Non
         raise ValueError(f"replay blocked: every input symbol must have PASS quality status: {rejected}")
 
 
+
+def validate_warmup_history(
+    frame: pd.DataFrame, evaluation_from_date: date, warmup_sessions: int = ENGINE.warm_sessions
+) -> None:
+    """Require enough distinct prior sessions before the first scored replay date."""
+    if isinstance(warmup_sessions, bool) or int(warmup_sessions) != warmup_sessions or warmup_sessions < 1:
+        raise ValueError("warmup_sessions must be a positive integer")
+    if frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+        raise ValueError("cannot validate warm-up history for empty or unindexed data")
+    prior_sessions = {stamp.date() for stamp in frame.index if stamp.date() < evaluation_from_date}
+    if len(prior_sessions) < warmup_sessions:
+        raise ValueError(
+            f"insufficient warm-up history before {evaluation_from_date}: "
+            f"found {len(prior_sessions)} prior sessions, require {warmup_sessions}"
+        )
+
+
 def replay_directory(
     input_dir: Path,
     output: Path,
     tick: float = 0.05,
     tick_sizes: dict[str, float] | None = None,
     quality_summary: Path | None = None,
+    evaluation_from_date: date | None = None,
+    warmup_sessions: int = ENGINE.warm_sessions,
 ):
     """Replay every CSV, optionally requiring a matching PASS quality audit."""
     files = sorted(input_dir.glob("*.csv"))
@@ -266,7 +289,18 @@ def replay_directory(
                 raise ValueError(f"no tick_size mapping for {symbol}")
             symbol_tick = tick_sizes[symbol]
         log.info("Replaying %s with tick_size=%s", symbol, symbol_tick)
-        rows.extend(replay_frame(symbol, load_ohlcv(path), tick=symbol_tick))
+        frame = load_ohlcv(path)
+        if evaluation_from_date is not None:
+            validate_warmup_history(frame, evaluation_from_date, warmup_sessions)
+        if evaluation_from_date is None:
+            # Preserve the original call shape for existing callers and test doubles.
+            symbol_rows = replay_frame(symbol, frame, tick=symbol_tick)
+        else:
+            symbol_rows = replay_frame(
+                symbol, frame, tick=symbol_tick,
+                evaluation_from_date=evaluation_from_date,
+            )
+        rows.extend(symbol_rows)
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=[
         "symbol", "bar_ts", "option_type", "entry", "sl", "tp1", "tp2",
@@ -284,6 +318,10 @@ def main(argv=None):
                         help="fallback tick size when --ticks-csv is not supplied")
     parser.add_argument("--ticks-csv", type=Path,
                         help="CSV with symbol,tick_size columns; requires a mapping for every input file")
+    parser.add_argument("--evaluation-from-date", type=date.fromisoformat,
+                        help="first date included in performance output; earlier sessions are indicator warm-up only")
+    parser.add_argument("--warmup-sessions", type=int, default=ENGINE.warm_sessions,
+                        help=f"minimum distinct prior sessions required (default: {ENGINE.warm_sessions})")
     parser.add_argument("--quality-summary", type=Path,
                         help="symbol_summary.csv from audit_historical_5m; every input symbol must be PASS")
     args = parser.parse_args(argv)
@@ -294,6 +332,8 @@ def main(argv=None):
         replay_directory(
             args.input_dir, args.output, args.tick, tick_sizes,
             quality_summary=args.quality_summary,
+            evaluation_from_date=args.evaluation_from_date,
+            warmup_sessions=args.warmup_sessions,
         )
     except (OSError, ValueError) as exc:
         log.error("Replay stopped: %s", exc)
