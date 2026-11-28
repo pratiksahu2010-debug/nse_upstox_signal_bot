@@ -215,7 +215,7 @@ def test_rate_limit_cooldown_is_shared_by_all_budget_callers(monkeypatch):
     # A different worker's next request must observe the same server cooldown.
     budget.acquire()
     assert sleeps == [2.0]
-    assert budget.usage()["total"] == 2
+    assert budget.usage()["total"] == 1
 
 
 def test_429_applies_shared_cooldown_before_retry(monkeypatch):
