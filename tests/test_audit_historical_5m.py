@@ -99,3 +99,37 @@ def test_date_filter_with_no_matching_rows_is_not_pass(tmp_path):
     assert summary["status"] == "NO_DATA"
     assert summary["trading_days"] == 0
     assert sessions == []
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("open", "not-a-price"),
+        ("high", 99.0),
+        ("low", 102.0),
+        ("close", float("inf")),
+        ("volume", -1),
+    ],
+)
+def test_audit_flags_invalid_ohlcv_rows(tmp_path, column, value):
+    path = tmp_path / "ABC.csv"
+    frame = pd.DataFrame({
+        "timestamp": [ts.isoformat() for ts in expected_session_index(date(2026, 11, 2))],
+        "open": [100.0] * 75,
+        "high": [101.0] * 75,
+        "low": [99.0] * 75,
+        "close": [100.5] * 75,
+        "volume": [1000] * 75,
+    })
+    frame.loc[10, column] = value
+    frame.to_csv(path, index=False)
+
+    summary, sessions = audit_file(path)
+
+    assert summary["status"] == "REVIEW"
+    assert summary["invalid_ohlcv_rows"] == 1
+    assert sessions[0]["status"] == "INCOMPLETE"
+    assert sessions[0]["invalid_ohlcv_rows"] == 1
