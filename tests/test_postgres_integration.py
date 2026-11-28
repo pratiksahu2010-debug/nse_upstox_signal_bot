@@ -297,6 +297,49 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip(monkeypatch):
         assert store.save_actor_snapshot("symbol", event_aggregate, 1, {"phase": "IDLE"}) is False
         assert store.save_actor_snapshot("symbol", event_aggregate, 3, {"phase": "AHEAD"}) is False
         assert store.load_actor_snapshot("symbol", event_aggregate)["state"] == {"phase": "CONFIRMED"}
+        # Exercise the opt-in event-sourced actor coordinator against real PostgreSQL:
+        # checkpoint, restart, snapshot restore, and replay of the post-snapshot tail.
+        from app.actors import EventSourcedActorRuntime
+        from app.events import EventStore
+
+        actor_aggregate = "CI_EVENT_SOURCED_ACTOR"
+
+        def actor_reducer(state, record):
+            next_state = dict(state)
+            next_state["bars"] = list(next_state.get("bars", [])) + [
+                record["payload"]["bar"]
+            ]
+            next_state["last_bar"] = record["payload"]["bar"]
+            return next_state
+
+        actor_store = EventStore(store)
+        actor = EventSourcedActorRuntime(
+            actor_store, actor_reducer, max_workers=1,
+            snapshot_every=2, replay_page_size=1,
+        )
+        actor.recover([actor_aggregate])
+        try:
+            for bar in ("09:20", "09:25", "09:30"):
+                _event, future = actor.publish(
+                    actor_aggregate, "COMPLETED_5M_CANDLE", {"bar": bar},
+                    occurred_at=stamp,
+                )
+                future.result(timeout=5)
+            assert actor.state(actor_aggregate)["bars"] == ["09:20", "09:25", "09:30"]
+        finally:
+            actor.close()
+
+        restored_actor = EventSourcedActorRuntime(
+            actor_store, actor_reducer, max_workers=1,
+            snapshot_every=2, replay_page_size=1,
+        )
+        try:
+            assert restored_actor.recover([actor_aggregate]) == {actor_aggregate: 3}
+            assert restored_actor.state(actor_aggregate)["bars"] == [
+                "09:20", "09:25", "09:30"
+            ]
+        finally:
+            restored_actor.close()
 
         # Concurrent writers proposing the same next sequence must serialize
         # on the aggregate lock; exactly one append may win.
@@ -398,4 +441,8 @@ def test_postgres_migrations_and_signal_lifecycle_round_trip(monkeypatch):
                        ("symbol", "CI_EVENT_CONCURRENT"))
             store._run("DELETE FROM actor_snapshots WHERE aggregate_type=%s AND aggregate_id=%s",
                        ("symbol", "CI_EVENT_CONCURRENT"))
+            store._run("DELETE FROM domain_events WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_SOURCED_ACTOR"))
+            store._run("DELETE FROM actor_snapshots WHERE aggregate_type=%s AND aggregate_id=%s",
+                       ("symbol", "CI_EVENT_SOURCED_ACTOR"))
         store.close()
