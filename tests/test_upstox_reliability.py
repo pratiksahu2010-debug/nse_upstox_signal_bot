@@ -10,6 +10,9 @@ class NoWaitBudget:
     def acquire(self):
         pass
 
+    def defer(self, seconds):
+        pass
+
 
 class FakeResponse:
     def __init__(self, status, payload=None, headers=None, text=""):
