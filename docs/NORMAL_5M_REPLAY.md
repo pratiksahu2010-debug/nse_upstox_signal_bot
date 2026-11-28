@@ -60,7 +60,6 @@ profitability.
 - The output is research-only. It does not mutate strategy configuration,
   production database state, Telegram, or broker orders.
 
-
 Example `research_ticks.csv`:
 
 ```csv
@@ -71,3 +70,22 @@ ABC,0.01
 
 The example values are illustrative only; do not copy them without checking
 the correct tick size for each instrument and research period.
+
+## Summarize replay results
+
+After replay, generate an overall and per-symbol report:
+
+```bash
+python -m scripts.summarize_normal_5m_replay \
+  --input research_results/normal_5m_replay.csv \
+  --output research_results/normal_5m_summary.csv
+```
+
+The report includes signal/closed/open counts, win rate, average and total
+net R, profit factor, and maximum drawdown in R. OPEN signals are excluded
+from closed-trade performance metrics. The combined ALL row sums signal R
+chronologically; it is a descriptive research series, not a capital-weighted
+portfolio backtest and does not model overlapping exposure or position sizing.
+All R statistics are based on the underlying price path and the existing
+conservative OHLC outcome simulator. They are not CALL/PUT option-premium
+returns and exclude option selection, decay, spreads, slippage, fees, and fills.
