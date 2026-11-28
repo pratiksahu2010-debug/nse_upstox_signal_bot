@@ -248,3 +248,29 @@ def test_429_applies_shared_cooldown_before_retry(monkeypatch):
     assert client._get("/test", retries=2) == {"ok": True}
     assert sleeps == [3.0]
     assert budget.usage()["total"] == 2
+
+
+
+def test_retry_after_http_date_is_parsed(monkeypatch):
+    from datetime import datetime, timezone
+
+    now = datetime(2015, 10, 21, 7, 27, 55, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr("app.upstox.time.time", lambda: now)
+    assert UpstoxClient._retry_after(
+        "Wed, 21 Oct 2015 07:28:00 GMT", fallback=2.0
+    ) == 5.0
+
+
+def test_retry_after_expired_http_date_is_clamped(monkeypatch):
+    from datetime import datetime, timezone
+
+    now = datetime(2015, 10, 21, 7, 28, 5, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr("app.upstox.time.time", lambda: now)
+    assert UpstoxClient._retry_after(
+        "Wed, 21 Oct 2015 07:28:00 GMT", fallback=2.0
+    ) == 0.5
+
+
+def test_retry_after_non_finite_values_use_fallback():
+    assert UpstoxClient._retry_after("inf", fallback=4.0) == 4.0
+    assert UpstoxClient._retry_after("nan", fallback=4.0) == 4.0
