@@ -202,7 +202,7 @@ def test_dataset_manifest_fails_on_invalid_timestamp(tmp_path):
     from scripts.download_historical_5m import build_dataset_manifest
 
     (tmp_path / "RELIANCE.csv").write_text(
-        "timestamp,open,high,low,close,volume,oi\\nnot-a-date,1,2,0,1,10,\\n",
+        "timestamp,open,high,low,close,volume,oi\nnot-a-date,1,2,0,1,10,\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="invalid timestamps"):
