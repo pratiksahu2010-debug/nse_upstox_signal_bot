@@ -292,9 +292,15 @@ def replay_directory(
         frame = load_ohlcv(path)
         if evaluation_from_date is not None:
             validate_warmup_history(frame, evaluation_from_date, warmup_sessions)
-        rows.extend(replay_frame(
-            symbol, frame, tick=symbol_tick, evaluation_from_date=evaluation_from_date
-        ))
+        if evaluation_from_date is None:
+            # Preserve the original call shape for existing callers and test doubles.
+            symbol_rows = replay_frame(symbol, frame, tick=symbol_tick)
+        else:
+            symbol_rows = replay_frame(
+                symbol, frame, tick=symbol_tick,
+                evaluation_from_date=evaluation_from_date,
+            )
+        rows.extend(symbol_rows)
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=[
         "symbol", "bar_ts", "option_type", "entry", "sl", "tp1", "tp2",
