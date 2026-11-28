@@ -11,12 +11,14 @@ orders, changes strategy settings, or writes to the production database.
 """
 import argparse
 import csv
+import hashlib
+import json
 import logging
 import os
 import re
 import sys
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -120,6 +122,69 @@ def write_atomic(frame: pd.DataFrame, destination: Path):
     os.replace(temp, destination)
 
 
+
+def build_dataset_manifest(instruments, output_dir: Path, start: date, end: date):
+    """Describe the exact downloaded files and their cryptographic checksums.
+
+    The manifest records provenance, not data quality: EMPTY files are retained
+    as explicit NO_DATA entries and must still fail the later quality gate.
+    """
+    entries = []
+    for symbol, instrument_key in instruments:
+        path = output_dir / f"{symbol}.csv"
+        if not path.is_file():
+            raise ValueError(f"{symbol}: downloaded CSV is missing: {path}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        frame = pd.read_csv(path)
+        if "timestamp" not in frame.columns:
+            raise ValueError(f"{symbol}: downloaded CSV has no timestamp column")
+        timestamps = pd.to_datetime(frame["timestamp"], errors="coerce")
+        if timestamps.isna().any():
+            raise ValueError(f"{symbol}: downloaded CSV contains invalid timestamps")
+        if timestamps.dt.tz is None:
+            timestamps = timestamps.dt.tz_localize("Asia/Kolkata")
+        else:
+            timestamps = timestamps.dt.tz_convert("Asia/Kolkata")
+        entries.append({
+            "symbol": symbol,
+            "instrument_key": instrument_key,
+            "file": path.name,
+            "sha256": digest,
+            "candle_count": int(len(frame)),
+            "first_timestamp": timestamps.min().isoformat() if len(timestamps) else None,
+            "last_timestamp": timestamps.max().isoformat() if len(timestamps) else None,
+            "download_status": "DOWNLOADED" if len(frame) else "NO_DATA",
+        })
+    return {
+        "manifest_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "interval_minutes": 5,
+        "timezone": "Asia/Kolkata",
+        "requested_from_date": start.isoformat(),
+        "requested_to_date": end.isoformat(),
+        "instrument_count": len(entries),
+        "total_candles": sum(item["candle_count"] for item in entries),
+        "instruments": entries,
+    }
+
+
+def write_dataset_manifest(instruments, output_dir: Path, start: date, end: date):
+    """Atomically write dataset provenance after every symbol download succeeds."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = build_dataset_manifest(instruments, output_dir, start, end)
+    destination = output_dir / "dataset_manifest.json"
+    temp = destination.with_suffix(destination.suffix + ".tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temp, destination)
+    finally:
+        if temp.exists():
+            temp.unlink()
+    return destination
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--instruments", required=True, type=Path,
@@ -152,7 +217,11 @@ def main(argv=None):
             target = args.output_dir / f"{symbol}.csv"
             write_atomic(frame, target)
             log.info("%s: %d candles saved to %s", symbol, len(frame), target)
-    except (OSError, ValueError, UpstoxError) as exc:
+        manifest_path = write_dataset_manifest(
+            instruments, args.output_dir, args.from_date, args.to_date
+        )
+        log.info("Dataset provenance written to %s", manifest_path)
+    except (OSError, ValueError, UpstoxError, pd.errors.ParserError) as exc:
         log.error("Historical download stopped: %s", exc)
         return 1
     return 0

@@ -56,3 +56,18 @@ CSV and should be treated as missing data during research.
   option selection assumptions, and conservative stop/target ordering.
 - Keep this dataset outside the live scanner and production database. Never
   commit access tokens or private market-data exports to the repository.
+
+
+## Dataset provenance manifest
+
+After every requested instrument has downloaded successfully, the downloader
+atomically writes `dataset_manifest.json` into the output directory.
+It records the requested date range, 5-minute interval, Asia/Kolkata timezone,
+instrument symbol and exact instrument key, CSV filename, candle count, first
+and last timestamps, download status, and SHA-256 checksum of each CSV.
+
+`NO_DATA` entries are deliberately recorded rather than hidden. A
+provenance manifest does **not** certify data quality or complete session
+coverage; run the data-quality audit and require `PASS` for every
+symbol before replay. Keep the manifest with the downloaded CSVs so future
+research can verify that it used the same files and instrument mapping.
