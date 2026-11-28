@@ -41,6 +41,7 @@ def test_report_computes_closed_trade_metrics_and_excludes_open(tmp_path):
     rows = summary.load_replay(path)
     report = summary.build_report(rows)
     all_row = report[0]
+    assert all_row["group_type"] == "overall"
     assert all_row["signals"] == 4
     assert all_row["closed"] == 3
     assert all_row["open"] == 1
@@ -49,7 +50,24 @@ def test_report_computes_closed_trade_metrics_and_excludes_open(tmp_path):
     assert all_row["win_rate_pct"] == 66.6667
     assert all_row["total_net_r"] == 1.5
     assert all_row["max_drawdown_r"] == 1.0
-    assert {row["group"] for row in report[1:]} == {"ABC", "XYZ"}
+    assert {row["group"] for row in report if row["group_type"] == "symbol"} == {"ABC", "XYZ"}
+    session_rows = [row for row in report if row["group_type"] == "session"]
+    assert len(session_rows) == 1
+    assert session_rows[0]["group"] == "2026-11-02"
+    assert session_rows[0]["signals"] == 4
+
+
+def test_session_groups_use_ist_calendar_date(tmp_path):
+    path = tmp_path / "replay.csv"
+    _write(path, [
+        _row(stamp="2026-11-01T18:45:00+00:00", net_r="1"),
+        _row(stamp="2026-11-02T03:00:00+00:00", net_r="-1"),
+    ])
+    rows = summary.load_replay(path)
+    session_rows = [row for row in summary.build_report(rows) if row["group_type"] == "session"]
+    assert [row["group"] for row in session_rows] == ["2026-11-02"]
+    assert session_rows[0]["signals"] == 2
+    assert session_rows[0]["total_net_r"] == 0.0
 
 
 @pytest.mark.parametrize(
@@ -87,3 +105,5 @@ def test_write_report_creates_parent_and_csv(tmp_path):
     assert output_path.exists()
     assert report[0]["group"] == "ALL"
     assert report[0]["closed"] == 1
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        assert "group_type" in next(csv.reader(handle))

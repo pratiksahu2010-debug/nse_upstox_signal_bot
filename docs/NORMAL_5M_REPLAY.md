@@ -77,7 +77,7 @@ the correct tick size for each instrument and research period.
 
 ## Summarize replay results
 
-After replay, generate an overall and per-symbol report:
+After replay, generate an overall, per-symbol, and per-session report:
 
 ```bash
 python -m scripts.summarize_normal_5m_replay \
@@ -85,11 +85,23 @@ python -m scripts.summarize_normal_5m_replay \
   --output research_results/normal_5m_summary.csv
 ```
 
-The report includes signal/closed/open counts, win rate, average and total
-net R, profit factor, and maximum drawdown in R. OPEN signals are excluded
-from closed-trade performance metrics. The combined ALL row sums signal R
-chronologically; it is a descriptive research series, not a capital-weighted
-portfolio backtest and does not model overlapping exposure or position sizing.
-All R statistics are based on the underlying price path and the existing
-conservative OHLC outcome simulator. They are not CALL/PUT option-premium
-returns and exclude option selection, decay, spreads, slippage, fees, and fills.
+The summary CSV includes a `group_type` column with `overall`, `symbol`,
+and `session` rows. Session groups use the Asia/Kolkata calendar date even
+when input timestamps carry another timezone offset. Each group reports
+signal/closed/open counts, win rate, average and total net R, profit factor,
+and maximum drawdown in R. OPEN signals are excluded from closed-trade
+performance metrics.
+
+Use the per-session rows to check whether aggregate results depend on a small
+number of unusually strong days or whether performance is inconsistent across
+the evaluation period. Session rows are descriptive diagnostics, not
+independent statistical samples; multiple symbols and overlapping signals can
+share the same market-day conditions. Do not infer statistical significance
+or future profitability from these summaries alone.
+
+The combined ALL row sums signal R chronologically; it is a descriptive
+research series, not a capital-weighted portfolio backtest and does not model
+overlapping exposure or position sizing. All R statistics are based on the
+underlying price path and the existing conservative OHLC outcome simulator.
+They are not CALL/PUT option-premium returns and exclude option selection,
+decay, spreads, slippage, fees, and fills.
