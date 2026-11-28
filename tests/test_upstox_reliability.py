@@ -95,11 +95,13 @@ def test_rate_limit_retries_with_invalid_retry_after_fallback(monkeypatch):
         FakeResponse(200, {"ok": True}),
     ])
     monkeypatch.setattr(client, "_session", lambda: fake)
-    sleeps = []
-    monkeypatch.setattr("app.upstox.time.sleep", lambda seconds: sleeps.append(seconds))
+    deferred = []
+    monkeypatch.setattr(client.budget, "defer", lambda seconds: deferred.append(seconds))
     assert client._get("/test", retries=2) == {"ok": True}
     assert len(fake.calls) == 2
-    assert sleeps == [2.0]
+    # The fallback is shared through the process-wide budget; the retry's
+    # acquire() enforces the wait for every worker rather than sleeping locally.
+    assert deferred == [2.0]
 
 
 def test_server_error_retries_but_bad_request_does_not(monkeypatch):
