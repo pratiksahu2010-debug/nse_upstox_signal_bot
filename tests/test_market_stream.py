@@ -201,3 +201,18 @@ def test_market_feed_rejects_empty_or_invalid_quotes_for_freshness():
     assert health["last_quote_age_sec"] is None
     assert stream.quote("NSE_EQ|ZERO") is None
     assert stream.quote("NSE_EQ|NO_TIME") is None
+
+
+
+def test_market_feed_reconnect_backoff_wakes_promptly_on_stop():
+    import asyncio
+
+    stream = UpstoxMarketStream(FakeClient())
+
+    async def scenario():
+        task = asyncio.create_task(stream._wait_or_stop(30.0))
+        asyncio.get_running_loop().call_later(0.05, stream._stop.set)
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(scenario())
+    assert stream._stop.is_set()
