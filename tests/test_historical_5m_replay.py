@@ -79,6 +79,40 @@ def test_replay_is_causal_and_uses_normal_lifecycle(monkeypatch):
     assert all(size <= len(frame) for size in prefix_lengths)
 
 
+def test_warmup_history_requires_distinct_sessions_before_evaluation_date():
+    dates = []
+    for day in pd.date_range("2026-10-01", periods=6, freq="B"):
+        dates.extend(pd.date_range(day.replace(hour=9, minute=15), periods=2, freq="5min", tz="Asia/Kolkata"))
+    frame = pd.DataFrame({"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0}, index=pd.DatetimeIndex(dates))
+    replay.validate_warmup_history(frame, pd.Timestamp("2026-10-12").date(), 6)
+    with pytest.raises(ValueError, match="found 6 prior sessions, require 7"):
+        replay.validate_warmup_history(frame, pd.Timestamp("2026-10-12").date(), 7)
+
+
+def test_warmup_history_rejects_zero_sessions():
+    with pytest.raises(ValueError, match="positive integer"):
+        replay.validate_warmup_history(_bars(), pd.Timestamp("2026-11-03").date(), 0)
+
+
+def test_replay_frame_excludes_warmup_signals_from_results(monkeypatch):
+    first = _bars(52)
+    second = _bars(52)
+    second.index = second.index + pd.Timedelta(days=1)
+    frame = pd.concat([first, second])
+    monkeypatch.setattr(replay, "add_indicators", lambda data: data)
+    monkeypatch.setattr(replay, "compute_features", lambda data: SimpleNamespace(bar_ts=data.index[-1]))
+    monkeypatch.setattr(replay.mod_normal, "setup_side", lambda f: 1)
+    monkeypatch.setattr(replay.mod_normal, "rsi_triggered", lambda f, side: True)
+    monkeypatch.setattr(replay.mod_normal, "evaluate", lambda info, data, f, ctx: (
+        SimpleNamespace(side="LONG", bar_ts=f.bar_ts, entry=100.0, sl=98.0,
+                         tp1=103.0, tp2=104.0, atr=1.0, score=80), None
+    ))
+    monkeypatch.setattr(replay, "simulate", lambda row, data, session_end: ("TP2", 2.0))
+    results = replay.replay_frame("ABC", frame, evaluation_from_date=second.index[0].date())
+    assert results
+    assert all(pd.Timestamp(row["bar_ts"]).date() >= second.index[0].date() for row in results)
+
+
 def test_empty_replay_returns_no_signals():
     assert replay.replay_frame("ABC", _bars(0)) == []
 
