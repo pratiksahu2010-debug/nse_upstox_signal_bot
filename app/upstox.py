@@ -14,6 +14,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import Iterator, Optional
 from urllib.parse import quote
 
@@ -189,11 +190,20 @@ class UpstoxClient:
 
     @staticmethod
     def _retry_after(value, fallback: float) -> float:
-        try:
-            # Upstox normally returns seconds. Ignore HTTP-date or malformed values.
-            return max(0.5, min(30.0, float(value)))
-        except (TypeError, ValueError):
-            return max(0.5, min(30.0, fallback))
+        """Parse Retry-After delta-seconds or HTTP-date, bounded for scan safety."""
+        delay = None
+        if value not in (None, ""):
+            try:
+                delay = float(value)
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(str(value))
+                    delay = retry_at.timestamp() - time.time()
+                except (TypeError, ValueError, OverflowError, OSError):
+                    delay = None
+        if delay is None or not math.isfinite(delay):
+            delay = fallback
+        return max(0.5, min(30.0, delay))
 
     def _get(self, path: str, params: Optional[dict] = None, retries: int = 3,
              *, latch_auth: bool = True, api_version: Optional[str] = None) -> dict:
