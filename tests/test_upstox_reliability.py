@@ -192,3 +192,54 @@ def test_vectorized_candle_frame_preserves_validation_and_timestamp_semantics():
     assert frame.iloc[1]["close"] == 102
     assert frame.iloc[1]["oi"] == 7
     assert pd.isna(frame.iloc[2]["oi"])
+
+
+
+def test_rate_limit_cooldown_is_shared_by_all_budget_callers(monkeypatch):
+    clock = {"now": 100.0}
+    sleeps = []
+
+    def monotonic():
+        return clock["now"]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("app.upstox.time.monotonic", monotonic)
+    monkeypatch.setattr("app.upstox.time.sleep", sleep)
+
+    budget = Budget(10, 100, 1000)
+    budget.defer(2.0)
+
+    # A different worker's next request must observe the same server cooldown.
+    budget.acquire()
+    assert sleeps == [2.0]
+    assert budget.usage()["total"] == 1
+
+
+def test_429_applies_shared_cooldown_before_retry(monkeypatch):
+    clock = {"now": 200.0}
+    sleeps = []
+
+    def monotonic():
+        return clock["now"]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("app.upstox.time.monotonic", monotonic)
+    monkeypatch.setattr("app.upstox.time.sleep", sleep)
+
+    budget = Budget(10, 100, 1000)
+    client = UpstoxClient("token", budget=budget)
+    fake = FakeSession([
+        FakeResponse(429, headers={"Retry-After": "3"}),
+        FakeResponse(200, {"ok": True}),
+    ])
+    monkeypatch.setattr(client, "_session", lambda: fake)
+
+    assert client._get("/test", retries=2) == {"ok": True}
+    assert sleeps == [3.0]
+    assert budget.usage()["total"] == 1
