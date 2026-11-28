@@ -79,8 +79,11 @@ def test_loader_rejects_empty_input(tmp_path):
 
 
 def test_write_report_creates_parent_and_csv(tmp_path):
-    path = tmp_path / "nested" / "summary.csv"
-    report = summary.write_report([_row()], path)
-    assert path.exists()
+    input_path = tmp_path / "replay.csv"
+    _write(input_path, [_row()])
+    rows = summary.load_replay(input_path)
+    output_path = tmp_path / "nested" / "summary.csv"
+    report = summary.write_report(rows, output_path)
+    assert output_path.exists()
     assert report[0]["group"] == "ALL"
     assert report[0]["closed"] == 1
